@@ -5,7 +5,10 @@ import {
 } from "../../features/agent-protection/json-stream";
 import { CLAUDE_HOOK_EVENTS, type ClaudeHook, type ClaudeTurn } from "./hooks";
 import { mcpChoice, mcpName, mcpSettings, type ClaudeMcp } from "./mcp";
-import type { HarnessMcpServer } from "../../features/agents/harness-mcp";
+import type {
+  HarnessMcpServer,
+  HarnessMcpTool,
+} from "../../features/agents/harness-mcp";
 // One `claude` process driven over its stream-json protocol: the protocol the
 // Claude Agent SDK speaks to the same binary, so no Node runtime is needed. The
 // process stays alive between turns; messages sent while it works are folded
@@ -566,7 +569,6 @@ export class ClaudeProcess {
             this.sessionId ?? "initial",
             loaded,
             mcpChoice(launch.mcp, configured),
-            servers,
           );
         } finally {
           clearTimeout(timer);
@@ -621,17 +623,32 @@ export class ClaudeProcess {
         await new Promise((resolve) => setTimeout(resolve, 50));
         continue;
       }
-      const servers: HarnessMcpServer[] = native.map((row) => ({
+      const servers: (HarnessMcpServer & {
+        tools?: readonly HarnessMcpTool[];
+      })[] = native.map((row) => ({
         name: row.name,
         default: row.status !== "disabled",
-        ...(["connected", "failed", "disabled"].includes(row.status)
-          ? { state: row.status as "connected" | "failed" | "disabled" }
+        ...(["connected", "failed", "needs-auth", "disabled"].includes(
+          row.status,
+        )
+          ? {
+              state: row.status as
+                | "connected"
+                | "failed"
+                | "needs-auth"
+                | "disabled",
+            }
           : {}),
         ...(Array.isArray(row.tools)
           ? {
               tools: row.tools
                 .filter((tool: Message) => typeof tool?.name === "string")
-                .map((tool: Message) => ({ name: tool.name as string })),
+                .map((tool: Message) => ({
+                  name: tool.name as string,
+                  ...(typeof tool.description === "string" && {
+                    description: tool.description,
+                  }),
+                })),
             }
           : {}),
       }));
@@ -699,11 +716,15 @@ export class ClaudeProcess {
       this.mcpToolNames = new Map([...catalog, ...admitted]);
       const loaded = servers
         .filter((row) => row.state !== "disabled")
-        .map(({ name }) => ({
+        .map(({ name, state, tools: catalog }) => ({
           name,
+          ...(state && state !== "disabled" && { state }),
           tools: admittedTools
             .filter((tool) => tool.server === name)
-            .map((tool) => tool.tool),
+            .map(
+              ({ tool }) =>
+                catalog?.find((item) => item.name === tool) ?? { name: tool },
+            ),
         }));
       return { servers, loaded };
     }

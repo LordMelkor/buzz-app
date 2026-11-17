@@ -45,9 +45,6 @@ export type ActivityReceipt = Readonly<{
   /** The prompt was handed to the harness, after cancellation and provider
    * checks. */
   delivered?: () => void;
-  /** Opt-in provenance update immediately before a prompt or steer is sent.
-   * A steer that fails may already have influenced the running turn. */
-  admitting?: (steered: boolean) => void;
   /** Steps show on the latest acknowledged message of each scope. */
   activityScope?: string;
   step?: (tool: string, target?: string) => void;

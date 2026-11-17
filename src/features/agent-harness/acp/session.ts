@@ -37,10 +37,6 @@ export class AcpSession {
   /** Opt-in native controls; other ACP adapters keep their existing behavior. */
   controls?: Readonly<{
     beforePrompt?(signal: AbortSignal): Promise<void>;
-    permission?(
-      params: Record<string, unknown>,
-    ): Promise<Record<string, unknown>>;
-    update?(update: Record<string, unknown>): void;
   }>;
   /** The conversation it serves. */
   conversation: string | undefined;
@@ -69,7 +65,6 @@ export class AcpSession {
     refresh?: ActivityReceipt["refresh"];
     waiter?: Waiter;
     delivered?: () => void;
-    admitting?: ActivityReceipt["admitting"];
   }[] = [];
   /** The model the running turn runs on; empty is its provider's default. */
   private model = "";
@@ -189,7 +184,6 @@ export class AcpSession {
       this.queue.push({
         text,
         ...(activity.delivered ? { delivered: activity.delivered } : {}),
-        ...(activity.admitting ? { admitting: activity.admitting } : {}),
         ...(activity.current ? { current: activity.current } : {}),
         ...(activity.refresh ? { refresh: activity.refresh } : {}),
         waiter,
@@ -255,7 +249,6 @@ export class AcpSession {
 
   /** Called by the process with each `session/update` for this session. */
   update(update: Record<string, unknown>) {
-    this.controls?.update?.(update);
     const kind = update.sessionUpdate;
     // A cancel before goose has the final message's result would save that
     // call as interrupted. goose reports a batch's results together, once
@@ -342,7 +335,6 @@ export class AcpSession {
       const { steering } = this.acp.hooks;
       if (runId && steering) {
         try {
-          activity.admitting?.(true);
           await steering.steer(this.acp, this.id, runId, text);
           if (live()) {
             activity.delivered?.();
@@ -362,7 +354,6 @@ export class AcpSession {
         this.queue.splice(next < 0 ? this.queue.length : next, 0, {
           text,
           ...(activity.delivered ? { delivered: activity.delivered } : {}),
-          ...(activity.admitting ? { admitting: activity.admitting } : {}),
           ...(activity.current ? { current: activity.current } : {}),
           ...(activity.refresh ? { refresh: activity.refresh } : {}),
           waiter,
@@ -426,7 +417,6 @@ export class AcpSession {
           refresh,
           waiter,
           delivered,
-          admitting,
         } = this.queue.shift() ?? {
           text: "",
         };
@@ -464,7 +454,6 @@ export class AcpSession {
             if (waiter) this.discard(waiter);
             continue;
           }
-          admitting?.(false);
           delivered?.();
           sent = true;
           if (waiter) this.sent(waiter);

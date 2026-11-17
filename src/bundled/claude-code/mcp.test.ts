@@ -19,6 +19,7 @@ function native(
   catalog: Record<string, string[]> = {},
   context?: { name: string; serverName: string }[],
   beforeStatus?: () => Promise<void>,
+  description?: string,
 ) {
   const fake = fakeSpawn();
   const spawn: Spawn = async (id, options) => {
@@ -47,7 +48,10 @@ function native(
                       config: { env: { SECRET: "never report" } },
                       tools: (
                         catalog[name] ?? ["read_echo", "write_marker"]
-                      ).map((name) => ({ name })),
+                      ).map((name) => ({
+                        name,
+                        ...(description && { description }),
+                      })),
                     })),
                   }
                 : {
@@ -66,7 +70,10 @@ function native(
   return { ...fake, spawn };
 }
 const settings = (): ClaudeMcp => ({
-  choice: { alpha: ["write_marker"], beta: false },
+  choice: {
+    alpha: { off: ["write_marker"], known: ["read_echo", "write_marker"] },
+    beta: false,
+  },
   servers: [
     { name: "alpha", default: true },
     { name: "beta", default: true },
@@ -297,7 +304,7 @@ const agent = {
   config: { workspace: "/work" },
 } as Agent;
 
-it("keeps a session-only server and its last tools in the report after a later session turns it off", async () => {
+it("delivers live session inventory to the control without retaining it in static reports", async () => {
   const names = ["alpha"];
   const f = native(names);
   const runtime = new ClaudeRuntime(
@@ -309,7 +316,7 @@ it("keeps a session-only server and its last tools in the report after a later s
   let choice = {};
   runtime.mcp = {
     choice: async () => choice,
-    started: () => {},
+    started: vi.fn(),
   };
   const delivery = {
     agent: { ...agent } as unknown as AgentHandle,
@@ -330,16 +337,15 @@ it("keeps a session-only server and its last tools in the report after a later s
       signal: new AbortController().signal,
       prompt: async () => undefined,
     });
+    expect(runtime.mcp.started).toHaveBeenCalledWith(
+      expect.objectContaining({ key: agent.key }),
+      expect.any(String),
+      [{ name: "alpha", state: "connected", tools: [{ name: "read_echo" }] }],
+      { alpha: true },
+    );
     expect(await runtime.harnessMcp(agent)).toMatchObject({
       calls: true,
-      servers: [
-        {
-          name: "alpha",
-          default: true,
-          state: "connected",
-          tools: [{ name: "read_echo" }, { name: "write_marker" }],
-        },
-      ],
+      servers: [],
     });
     expect(
       await runtime.harnessMcp({ ...agent, protection: {} } as Agent),
@@ -562,11 +568,8 @@ it("reports the bounded native config union with native project approvals and me
   const read = vi.fn(async (path: string, _options?: { cwd?: string }) =>
     new TextEncoder().encode(JSON.stringify(files[path] ?? {})),
   );
-  const rows = await configuredMcp(read, "/work", [
-    { name: "seen", default: true, tools: [{ name: "read" }] },
-  ]);
+  const rows = await configuredMcp(read, "/work");
   expect(rows).toEqual([
-    { name: "seen", default: true, tools: [{ name: "read" }] },
     { name: "user", default: false, state: "disabled" },
     { name: "local", default: true },
     { name: "approved", default: true },
@@ -602,12 +605,22 @@ it("honors enable-all without overriding an explicit project rejection", async (
 });
 
 it("verifies admitted tools rather than the catalog and retains every configured applied choice", async () => {
-  const f = native(["alpha"], ["read_echo"], {
-    alpha: ["read_echo", "write.marker"],
-  });
+  const f = native(
+    ["alpha"],
+    ["read_echo"],
+    {
+      alpha: ["read_echo", "write.marker"],
+    },
+    undefined,
+    undefined,
+    "Native tool description",
+  );
   const mcp = {
     ...settings(),
-    choice: { alpha: ["write.marker"], beta: false },
+    choice: {
+      alpha: { off: ["write.marker"], known: ["read_echo", "write.marker"] },
+      beta: false,
+    },
   };
   const process = await ClaudeProcess.start(f.spawn, {
     cwd: "/work",
@@ -616,16 +629,17 @@ it("verifies admitted tools rather than the catalog and retains every configured
   });
   expect(mcp.started).toHaveBeenCalledWith(
     "initial",
-    [{ name: "alpha", tools: ["read_echo"] }],
-    { alpha: ["write.marker"], beta: false },
     [
       {
         name: "alpha",
-        default: true,
         state: "connected",
-        tools: [{ name: "read_echo" }, { name: "write.marker" }],
+        tools: [{ name: "read_echo", description: "Native tool description" }],
       },
     ],
+    {
+      alpha: { off: ["write.marker"], known: ["read_echo", "write.marker"] },
+      beta: false,
+    },
   );
   const args = f.processes[0]?.options.args ?? [];
   expect(JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}")).toEqual({
@@ -683,7 +697,7 @@ it("never prompts after core rejects readback, and strict-none keeps the SDK ser
     mcp: { choice: "none", servers: [], started },
   });
   expect(empty.processes[0]?.options.args).toContain("--strict-mcp-config");
-  expect(started).toHaveBeenCalledWith("initial", [], "none", []);
+  expect(started).toHaveBeenCalledWith("initial", [], "none");
   await process.kill();
 });
 

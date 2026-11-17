@@ -522,13 +522,7 @@ export class AcpProcess {
   ) {
     let reply: Wire;
     if (method === "session/request_permission") {
-      const session = this.sessions.get(String(params.sessionId));
-      const outcome = session?.controls?.permission
-        ? await session.controls
-            .permission(params)
-            .catch(() => ({ outcome: "cancelled" }))
-        : allow(params);
-      reply = { jsonrpc: "2.0", id, result: { outcome } };
+      reply = { jsonrpc: "2.0", id, result: { outcome: allow(params) } };
     } else
       reply = {
         jsonrpc: "2.0",

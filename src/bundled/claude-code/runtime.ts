@@ -92,11 +92,10 @@ import {
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { standaloneSessions } from "../../features/agents/standalone-sessions";
 import { ClaudeProcess } from "./claude";
-import { configuredMcp, MCP_NOTE } from "./mcp";
+import { configuredMcp } from "./mcp";
 import type {
   HarnessMcpAnswer,
   HarnessMcpKit,
-  HarnessMcpServer,
 } from "../../features/agents/harness-mcp";
 
 /** The effort levels Claude lists, which a session can switch to between
@@ -207,7 +206,6 @@ const NOTES_WAIT_MS = 2_000;
 
 export class ClaudeRuntime {
   mcp: HarnessMcpKit | undefined;
-  private readonly mcpRows = new Map<AgentKey, readonly HarnessMcpServer[]>();
   private readonly inspections = new Map<
     AbortController,
     { agent: AgentKey; done: Promise<unknown> }
@@ -297,23 +295,11 @@ export class ClaudeRuntime {
    * Claude's credentials. */
   explain: (error: string) => string = (error) => error;
 
-  private rememberMcp(agent: AgentKey, servers: readonly HarnessMcpServer[]) {
-    this.mcpRows.set(agent, [
-      ...new Map(
-        [...(this.mcpRows.get(agent) ?? []), ...servers].map((server) => [
-          server.name,
-          server,
-        ]),
-      ).values(),
-    ]);
-  }
-
   async harnessMcp(agent: Agent) {
     if (this.target || (await this.isRemote(agent.key))) return undefined;
     if (agent.protection)
       return {
         tools: true,
-        note: "A protected agent loads no MCP server.",
         servers: [],
       };
     const cwd = this.resolveConfig(agent.config).workspace;
@@ -321,12 +307,7 @@ export class ClaudeRuntime {
     return {
       tools: true,
       ...(this.mcp && this.host.spawn && { calls: true as const }),
-      note: MCP_NOTE,
-      servers: await configuredMcp(
-        this.host.readFile?.bind(this.host),
-        path,
-        this.mcpRows.get(agent.key),
-      ),
+      servers: await configuredMcp(this.host.readFile?.bind(this.host), path),
     };
   }
   inspectMcp(
@@ -390,7 +371,6 @@ export class ClaudeRuntime {
       signal.throwIfAborted();
       const { servers } = await process.readMcp();
       signal.throwIfAborted();
-      this.rememberMcp(agent.key, servers);
       const selected = servers.find((row) => row.name === server);
       if (selected?.state !== "connected")
         throw new Error("The selected MCP server did not connect");
@@ -1874,7 +1854,6 @@ export class ClaudeRuntime {
             ? await configuredMcp(
                 this.host.readFile?.bind(this.host),
                 (await this.host.resolveDirectory?.(cwd)) ?? cwd,
-                this.mcpRows.get(agent),
               )
             : [];
         return {
@@ -1891,9 +1870,7 @@ export class ClaudeRuntime {
                     applied:
                       | import("../../features/agents/harness-mcp").HarnessMcpChoice
                       | "none",
-                    servers: readonly HarnessMcpServer[],
                   ) => {
-                    this.rememberMcp(agent, servers);
                     this.mcp?.started(handle, session, loaded, applied);
                   },
                 },

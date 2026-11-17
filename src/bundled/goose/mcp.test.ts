@@ -4,7 +4,6 @@ import type { Agent } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
 import { GooseProcess } from "./goose";
 import { native, transport } from "./mcp-testing";
-import type { GooseHook } from "./hooks";
 import { GooseMcp } from "./mcp";
 import { GooseRuntime, DEFAULT_CONFIG } from "./runtime";
 
@@ -20,14 +19,12 @@ async function setup(initial: HarnessMcpAnswer = { fixture: true }) {
     choice: vi.fn(async () => choice),
     started: vi.fn(),
   };
-  const hook = vi.fn<GooseHook>(async () => ({}));
   const who = { key: "agent@example.org" };
   const mcp = new GooseMcp(kit, () => who);
   const goose = await GooseProcess.start(wire.spawn, {
     cwd: "/work",
     serve: wire.fake.serve,
     mcp,
-    hook,
   });
   const open = () =>
     goose.open({ cwd: "/work", systemPrompt: "", tools: async () => ({}) });
@@ -42,7 +39,6 @@ async function setup(initial: HarnessMcpAnswer = { fixture: true }) {
     ...wire,
     native: present(wire.fake.geese[0]),
     kit,
-    hook,
     who,
     goose,
     mcp,
@@ -53,28 +49,6 @@ async function setup(initial: HarnessMcpAnswer = { fixture: true }) {
     },
   };
 }
-
-const update = (
-  id: string,
-  toolName = "fixture__write_marker",
-  extensionName: string | null = "fixture",
-) => ({
-  sessionUpdate: "tool_call",
-  toolCallId: id,
-  rawInput: { fixture: true },
-  _meta: {
-    goose: { toolCall: { toolName, ...(extensionName && { extensionName }) } },
-  },
-});
-const ask = (sessionId: string, id: string) => ({
-  sessionId,
-  toolCall: { toolCallId: id },
-  options: [
-    { kind: "allow_always", optionId: "always" },
-    { kind: "allow_once", optionId: "once" },
-    { kind: "reject_once", optionId: "reject" },
-  ],
-});
 
 describe("Goose native MCP sessions", () => {
   it("keeps the no-control allowlist, auto mode and protocol unchanged", async () => {
@@ -155,7 +129,6 @@ describe("Goose native MCP sessions", () => {
         { name: "read_echo", description: "read_echo" },
         { name: "write_marker", description: "write_marker" },
       ]);
-      expect((await t.mcp.report(t.goose)).servers[0]?.tools).toEqual(tools);
       t.permission("write_marker", null);
       expect(
         await t.mcp.inspect(
@@ -241,9 +214,10 @@ describe("Goose native MCP sessions", () => {
         default: false,
         state: "failed",
       });
-      expect(report.note).toMatch(/fixture.*can't start|can't start.*fixture/);
-      expect(report.note).toContain("carry over");
-      expect(report.note).toContain(
+      const reason = report.servers.find((s) => s.name === "fixture")?.reason;
+      expect(reason).toMatch(/fixture.*can't start|can't start.*fixture/);
+      expect(reason).toContain("carry over");
+      expect(reason).toContain(
         "cwd" in saved ? "working directory" : "environment values",
       );
       expect(JSON.stringify(report)).not.toMatch(
@@ -279,7 +253,16 @@ describe("Goose native MCP sessions", () => {
       expect(t.kit.started).toHaveBeenLastCalledWith(
         t.who,
         session.id,
-        [{ name: "other", tools: ["read_echo", "write_marker"] }],
+        [
+          {
+            name: "other",
+            state: "connected",
+            tools: [
+              { name: "read_echo", description: "read_echo" },
+              { name: "write_marker", description: "write_marker" },
+            ],
+          },
+        ],
         { fixture: false, other: true },
       );
       present(t.native.turns[0]).finish();
@@ -314,10 +297,24 @@ describe("Goose native MCP sessions", () => {
       expect(t.kit.started).toHaveBeenLastCalledWith(
         t.who,
         session.id,
-        [{ name: "fixture", tools: ["read_echo", "write_marker"] }],
+        [
+          {
+            name: "fixture",
+            state: "connected",
+            tools: [
+              { name: "read_echo", description: "read_echo" },
+              { name: "write_marker", description: "write_marker" },
+            ],
+          },
+        ],
         { fixture: true, other: false },
       );
-      t.choose({ fixture: ["write_marker"] }); // The active turn keeps its selection.
+      t.choose({
+        fixture: {
+          off: ["write_marker"],
+          known: ["read_echo", "write_marker"],
+        },
+      }); // The active turn keeps its selection.
       expect(
         t.requests.filter(
           (r) => r.method === "_goose/unstable/session/extensions/add",
@@ -330,16 +327,36 @@ describe("Goose native MCP sessions", () => {
       expect(t.kit.started).toHaveBeenLastCalledWith(
         t.who,
         session.id,
-        [{ name: "fixture", tools: ["read_echo"] }],
-        { fixture: ["write_marker"], other: false },
+        [
+          {
+            name: "fixture",
+            state: "connected",
+            tools: [{ name: "read_echo", description: "read_echo" }],
+          },
+        ],
+        {
+          fixture: {
+            off: ["write_marker"],
+            known: ["read_echo", "write_marker"],
+          },
+          other: false,
+        },
       );
       present(t.native.turns.at(-1)).finish();
       await second;
-      t.choose({ fixture: ["read_echo", "write_marker"] });
+      t.choose({
+        fixture: {
+          off: ["read_echo", "write_marker"],
+          known: ["read_echo", "write_marker"],
+        },
+      });
       const third = session.send("All off");
       await vi.waitFor(() => expect(t.native.turns).toHaveLength(3));
       expect(t.kit.started).toHaveBeenLastCalledWith(t.who, session.id, [], {
-        fixture: ["read_echo", "write_marker"],
+        fixture: {
+          off: ["read_echo", "write_marker"],
+          known: ["read_echo", "write_marker"],
+        },
         other: false,
       });
       expect(
@@ -367,16 +384,75 @@ describe("Goose native MCP sessions", () => {
     }
   });
 
-  it("loads an empty denylist without needing a previously read catalog", async () => {
-    const t = await setup({ fixture: [] });
+  it("loads a supplied catalog with no excluded tools before any inspection", async () => {
+    const t = await setup({
+      fixture: { off: [], known: ["read_echo", "write_marker"] },
+    });
     try {
       const session = await t.open();
       const { done } = await t.finish(session);
       expect(t.kit.started).toHaveBeenLastCalledWith(
         t.who,
         session.id,
-        [{ name: "fixture", tools: ["read_echo", "write_marker"] }],
-        { fixture: [], other: false },
+        [
+          {
+            name: "fixture",
+            state: "connected",
+            tools: [
+              { name: "read_echo", description: "read_echo" },
+              { name: "write_marker", description: "write_marker" },
+            ],
+          },
+        ],
+        {
+          fixture: { off: [], known: ["read_echo", "write_marker"] },
+          other: false,
+        },
+      );
+      present(t.native.turns[0]).finish();
+      await done;
+    } finally {
+      await t.goose.kill();
+    }
+  });
+
+  it("keeps the allowed tools on a fresh adapter after a saved tool exclusion", async () => {
+    const t = await setup({
+      fixture: { off: ["write_marker"], known: ["read_echo", "write_marker"] },
+    });
+    try {
+      // No report, inspection or earlier session warms the adapter's inventory.
+      const session = await t.open();
+      const { done } = await t.finish(session);
+      const meta = present(t.native.opened[0])._meta as {
+        enabledExtensions: {
+          server?: { name: string };
+          available_tools?: string[];
+        }[];
+      };
+      expect(
+        meta.enabledExtensions.find((e) => e.server?.name === "fixture"),
+      ).toMatchObject({ available_tools: ["read_echo"] });
+      expect(t.kit.started).toHaveBeenLastCalledWith(
+        t.who,
+        session.id,
+        [
+          {
+            name: "fixture",
+            state: "connected",
+            tools: [{ name: "read_echo", description: "read_echo" }],
+          },
+        ],
+        {
+          fixture: {
+            off: ["write_marker"],
+            known: ["read_echo", "write_marker"],
+          },
+          other: false,
+        },
+      );
+      expect(t.requests.some((r) => r.method === "session/set_mode")).toBe(
+        false,
       );
       present(t.native.turns[0]).finish();
       await done;
@@ -401,210 +477,6 @@ describe("Goose native MCP sessions", () => {
       } finally {
         await t.goose.kill();
       }
-    }
-  });
-
-  it.each(["allow", "deny", "error", "missing-option"] as const)(
-    "routes native permission through an ordinary hook (%s)",
-    async (decision) => {
-      const t = await setup();
-      try {
-        t.hook.mockImplementation(async (_session, event) => {
-          if (event !== "PermissionRequest") return {};
-          if (decision === "error") throw new Error("Hook failed");
-          return {
-            decision: decision === "missing-option" ? "allow" : decision,
-            reason: "Fixture policy",
-          };
-        });
-        const session = await t.open();
-        const { done } = await t.finish(session);
-        expect(t.hook).toHaveBeenCalledWith(session, "PromptSubmit", {
-          session_id: session.id,
-        });
-        t.native.update(session.id, update("call-1"));
-        const response = await t.native.ask("session/request_permission", {
-          ...ask(session.id, "call-1"),
-          ...(decision === "missing-option" && { options: [] }),
-        });
-        expect(response.result).toEqual({
-          outcome:
-            decision === "error" || decision === "missing-option"
-              ? { outcome: "cancelled" }
-              : {
-                  outcome: "selected",
-                  optionId: decision === "allow" ? "once" : "reject",
-                },
-        });
-        expect(t.hook).toHaveBeenCalledWith(
-          session,
-          "PermissionRequest",
-          expect.objectContaining({
-            session_id: session.id,
-            tool_use_id: "call-1",
-            tool_name: "fixture__write_marker",
-            tool_input: { fixture: true },
-            mcp_server: "fixture",
-            mcp_tool: "write_marker",
-          }),
-        );
-        t.native.update(session.id, {
-          sessionUpdate: "tool_call_update",
-          toolCallId: "call-1",
-          status: decision === "allow" ? "completed" : "failed",
-          rawOutput: { result: "fixture" },
-        });
-        await vi.waitFor(() =>
-          expect(t.hook).toHaveBeenCalledWith(
-            session,
-            "ToolCall",
-            expect.objectContaining({
-              tool_use_id: "call-1",
-              mcp_server: "fixture",
-              mcp_tool: "write_marker",
-              permission_decision: decision === "allow" ? "allow" : "deny",
-              tool_response: { result: "fixture" },
-            }),
-          ),
-        );
-        present(t.native.turns[0]).finish();
-        await done;
-      } finally {
-        await t.goose.kill();
-      }
-    },
-  );
-
-  it("cancels a permission held across an interrupt", async () => {
-    const t = await setup();
-    let release!: (value: Record<string, unknown>) => void;
-    try {
-      t.hook.mockImplementation(async (_session, event) =>
-        event === "PermissionRequest"
-          ? new Promise((resolve) => {
-              release = resolve;
-            })
-          : {},
-      );
-      const session = await t.open();
-      const { done } = await t.finish(session);
-      t.native.update(session.id, update("held"));
-      const permission = t.native.ask(
-        "session/request_permission",
-        ask(session.id, "held"),
-      );
-      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
-      session.interrupt();
-      release({ decision: "allow" });
-      expect((await permission).result).toEqual({
-        outcome: { outcome: "cancelled" },
-      });
-      await done;
-    } finally {
-      release?.({});
-      await t.goose.kill();
-    }
-  });
-
-  it("observes preallowed calls and cancels only on a stop response", async () => {
-    const t = await setup();
-    try {
-      t.permission("write_marker", "always_allow");
-      t.hook.mockResolvedValue({ decision: "deny" }); // observation is not permission
-      const session = await t.open();
-      const { done } = await t.finish(session);
-      t.native.update(session.id, update("preallowed"));
-      t.native.update(session.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "preallowed",
-        status: "completed",
-      });
-      await vi.waitFor(() =>
-        expect(t.hook).toHaveBeenCalledWith(
-          session,
-          "ToolCall",
-          expect.objectContaining({
-            tool_use_id: "preallowed",
-            status: "completed",
-            mcp_server: "fixture",
-          }),
-        ),
-      );
-      expect(t.native.cancelled).toEqual([]);
-      t.hook.mockResolvedValue({ stop: "Stop this turn" });
-      t.native.update(session.id, update("next", "tree", null));
-      await vi.waitFor(() => expect(t.native.cancelled).toContain(session.id));
-      expect(t.hook).toHaveBeenLastCalledWith(
-        session,
-        "ToolCall",
-        expect.not.objectContaining({ mcp_server: expect.anything() }),
-      );
-      await done;
-    } finally {
-      await t.goose.kill();
-    }
-  });
-  it("waits for the permission reply before terminal observation and ignores stale stop replies", async () => {
-    const t = await setup();
-    let answer!: (value: Record<string, unknown>) => void;
-    let stop!: (value: Record<string, unknown>) => void;
-    try {
-      t.hook.mockImplementation(async (_session, event, input) => {
-        if (event === "PermissionRequest")
-          return new Promise((resolve) => {
-            answer = resolve;
-          });
-        if (event === "ToolCall" && input.status === "completed")
-          return new Promise((resolve) => {
-            stop = resolve;
-          });
-        return {};
-      });
-      const session = await t.open();
-      const first = await t.finish(session);
-      t.native.update(session.id, update("held"));
-      const permission = t.native.ask(
-        "session/request_permission",
-        ask(session.id, "held"),
-      );
-      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
-      t.native.update(session.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "held",
-        status: "completed",
-      });
-      answer({ decision: "allow" });
-      await permission;
-      await vi.waitFor(() => expect(stop).toBeTypeOf("function"));
-      expect(t.hook).toHaveBeenLastCalledWith(
-        session,
-        "ToolCall",
-        expect.objectContaining({
-          permission_decision: "allow",
-          tool_use_id: "held",
-        }),
-      );
-      present(t.native.turns[0]).finish();
-      await first.done;
-      const next = session.send("Next turn");
-      await vi.waitFor(() => expect(t.native.turns).toHaveLength(2));
-      stop({ stop: "Old call" });
-      // A new observed call is the completion barrier after the old callback settles.
-      t.native.update(session.id, update("new-turn"));
-      await vi.waitFor(() =>
-        expect(t.hook).toHaveBeenLastCalledWith(
-          session,
-          "ToolCall",
-          expect.objectContaining({ tool_use_id: "new-turn" }),
-        ),
-      );
-      expect(t.native.cancelled).toEqual([]);
-      present(t.native.turns[1]).finish();
-      await next;
-    } finally {
-      answer?.({});
-      stop?.({});
-      await t.goose.kill();
     }
   });
 });

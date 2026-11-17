@@ -19,7 +19,7 @@ every request it took since was one too) and `conversation`
 (`{ channel, root?, message? }`, where the trigger came from), the same facts
 added tools get as `Context.direct`. Core sets them only when it delivered that
 trigger to the agent; otherwise, and for events with no turn, both are absent.
-Codex, Claude and Goose tool events pass their admitted turns; Pi passes none.
+Codex and Claude tool events pass their admitted turns; Pi passes none.
 Absent `direct` means unknown, so a hook that requires owner-started work must
 check `direct === true`. Core verifies delivery of the trigger; the type plugin
 is trusted to associate it with the correct running turn.
@@ -30,7 +30,7 @@ for their own agent type namespace, using their native response acceptance and
 time budget. An optional `compose(output, pluginId)` option receives the
 accepted response and its registered plugin owner before delivery. Existing
 dispatchers without `compose` receive the unchanged native response. Buzz’s
-Claude, Codex, Goose and Pi adapters label agent-facing hook explanations with
+Claude, Codex and Pi adapters label agent-facing hook explanations with
 `[Buzz plugin: plugin-id]`; tool arguments and structured payloads retain their
 native values. The installed native dispatcher is fixed. Every event looks up
 the currently active plugin callbacks, ordered by plugin ID and registration ID.
@@ -41,8 +41,7 @@ for Codex Interrupt), below its native deadline. A throwing callback is logged
 and later callbacks are still evaluated in order. If none decides, callback
 errors propagate to the harness; deadline exhaustion also fails the dispatch.
 Claude and Codex continue an action after hook failure, while Pi rejects it.
-Goose cancels a failed permission callback or prompt callback; a failed
-observation callback cannot block execution. A timed-out callback is not
+A timed-out callback is not
 cancelled, but no later callback starts after the dispatch deadline.
 
 ## Claude
@@ -112,41 +111,6 @@ limitation, not an enforced policy boundary. Title generation disables Buzz's
 dispatcher. Plugin changes do not replace the shared Codex process, terminate
 titles or background terminals, or disable unrelated registered callbacks while
 a terminal runs.
-
-## Goose
-
-The `buzz.goose/goose` type exposes `PromptSubmit`, `PermissionRequest` and
-`ToolCall`. They run for ordinary sessions, with or without an MCP control.
-Protected sessions keep their native security hooks instead.
-
-- `PromptSubmit` runs before each new prompt, after applying native server
-  choices. Input is `{ session_id }`; it carries no turn because the new prompt
-  has not been delivered yet. Return `{ stop: reason }` to stop before
-  prompting.
-- `PermissionRequest` receives ACP's permission request, plus `session_id`,
-  `tool_use_id`, `tool_name` and `tool_input` from the matching native call.
-  Configured native MCP calls also add raw `mcp_server` and `mcp_tool`. Return
-  `{ decision: "allow" }` for allow-once or `{ decision: "deny", reason? }` for
-  reject-once. An absent choice of that kind, an aborted turn or a callback
-  error cancels the request. No hook response changes saved native permissions.
-  ACP sends the selected option, not a free-form reason, back to Goose.
-- `ToolCall` observes the initial ACP `tool_call` and terminal
-  `tool_call_update` (`completed` or `failed`). It carries native fields, the
-  same correlated tool identity/input, and `tool_response` when `rawOutput`
-  exists. A terminal event waits for an in-flight permission callback and
-  includes its `permission_decision` when one occurred. Initial calls precede
-  permission and are not evidence of execution; failed status can also mean a
-  native denial or unavailable tool. Return `{ stop: reason }` to cancel the
-  current turn. An observation cannot block an individual call. Replies from an
-  ended turn cannot cancel the next one.
-
-The first applicable response wins: `decision` for permission, `stop` for prompt
-or observation. Other results observe without deciding. Native preallowed calls
-bypass `PermissionRequest`, and child calls may not reach ACP. Goose therefore
-does not report `calls: true`; a plugin must not offer Ask mode based on these
-hooks alone. Controlled sessions use native `approve` mode; ordinary sessions
-retain `auto`. Call correlation is per session and resets before every prompt.
-Policy and allowed-call records belong to plugins.
 
 ## Pi
 

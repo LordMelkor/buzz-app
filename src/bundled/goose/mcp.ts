@@ -3,14 +3,14 @@
 import type {
   HarnessMcpAnswer,
   HarnessMcpKit,
-  HarnessMcpTool,
+  HarnessMcpChoice,
+  HarnessMcpLoaded,
 } from "../../features/agents/harness-mcp";
 import type { AgentHandle } from "../../features/agents/service";
 import {
   type AcpProcess,
   REQUEST_TIMEOUT_MS,
 } from "../../features/agent-harness/acp/process";
-import type { AcpSession } from "../../features/agent-harness/acp/session";
 import type { AcpHooks } from "../../features/agent-harness/acp/types";
 
 type Who = Pick<AgentHandle, "key" | "protection">;
@@ -35,9 +35,6 @@ const mcp = (e: { extension?: Extension }) =>
   e.extension?.type === "mcp" && e.extension.server?.name !== "buzz";
 
 export class GooseMcp {
-  private catalog = new Map<string, readonly HarnessMcpTool[]>();
-  private seen = new Map<string, readonly HarnessMcpTool[]>();
-  private sessions = new WeakMap<AcpSession, ReadonlyMap<string, Configured>>();
   constructor(
     private readonly kit: HarnessMcpKit,
     private readonly who: () => Who | undefined,
@@ -112,25 +109,17 @@ export class GooseMcp {
   async report(p: AcpProcess) {
     const configured = await this.configured(p);
     const servers = configured.map(({ name, enabled, unavailable }) => {
-      const tools = this.seen.get(name);
       return {
         name,
         default: false,
         ...(unavailable
-          ? { state: "failed" as const }
+          ? { state: "failed" as const, reason: unavailable }
           : !enabled && { state: "disabled" as const }),
-        ...(tools && { tools }),
       };
     });
     return {
       tools: true,
       servers,
-      note: [
-        "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip permission hooks.",
-        ...configured.flatMap((entry) =>
-          entry.unavailable ? [entry.unavailable] : [],
-        ),
-      ].join(" "),
     };
   }
   async inspect(p: AcpProcess, cwd: string, name: string, signal: AbortSignal) {
@@ -176,21 +165,12 @@ export class GooseMcp {
       name: t.name.startsWith(prefix) ? t.name.slice(prefix.length) : t.name,
       ...(typeof t.description === "string" && { description: t.description }),
     }));
-    this.catalog.set(entry.name, [
-      ...new Map(
-        [...(this.catalog.get(entry.name) ?? []), ...own].map((t) => [
-          t.name,
-          t,
-        ]),
-      ).values(),
-    ]);
-    this.seen.set(entry.name, own);
     return { tools: own };
   }
 
   private selection(configured: Configured[], choice: HarnessMcpAnswer) {
     const selected: Configured[] = [];
-    const applied: Record<string, boolean | readonly string[]> =
+    const applied: Record<string, HarnessMcpChoice[string]> =
       Object.create(null);
     for (const entry of configured) {
       const pick =
@@ -198,19 +178,14 @@ export class GooseMcp {
           ? (choice[entry.name] ?? false)
           : false;
       applied[entry.name] = pick;
-      if (pick === true || (Array.isArray(pick) && pick.length === 0))
-        selected.push(entry);
-      else if (Array.isArray(pick)) {
-        const catalog = this.catalog.get(entry.name);
-        // An unknown catalog cannot safely express "all except" before startup.
-        const available = catalog
-          ?.map((t) => t.name)
-          .filter(
-            (name) =>
-              !pick.includes(name) &&
-              (!entry.extension.available_tools?.length ||
-                entry.extension.available_tools.includes(name)),
-          );
+      if (pick === true) selected.push(entry);
+      else if (pick && typeof pick === "object") {
+        const available = pick.known.filter(
+          (name) =>
+            !pick.off.includes(name) &&
+            (!entry.extension.available_tools?.length ||
+              entry.extension.available_tools.includes(name)),
+        );
         // Goose interprets [] as unrestricted: all-off must omit the extension.
         if (available?.length)
           selected.push({
@@ -295,21 +270,12 @@ export class GooseMcp {
                 sessionId: session.id,
                 extension: entry.extension,
               });
-            await p.request(
-              "session/set_mode",
-              {
-                sessionId: session.id,
-                modeId: next === undefined ? "auto" : "approve",
-              },
-              REQUEST_TIMEOUT_MS,
-            );
             const actual = (await request(p, "session/extensions/list", {
               sessionId: session.id,
             })) as {
               extensions: { extensionKey: string; extension: Extension }[];
             };
-            const native = new Map<string, Configured>();
-            const loaded = [];
+            const loaded: HarnessMcpLoaded[number][] = [];
             for (const entry of actual.extensions.filter(mcp)) {
               const known = configured.find(
                 (e) => e.key === entry.extensionKey,
@@ -318,8 +284,7 @@ export class GooseMcp {
                 throw new Error("Goose loaded an unconfigured MCP server");
               const item = known;
               const { tools } = await this.tools(p, session.id, item);
-              native.set(item.key, item);
-              loaded.push({ name: item.name, tools: tools.map((t) => t.name) });
+              loaded.push({ name: item.name, state: "connected", tools });
             }
             this.kit.started(
               agent,
@@ -329,28 +294,10 @@ export class GooseMcp {
             );
             signal.throwIfAborted();
             choice = next;
-            this.sessions.set(session, native);
           },
         };
         base.sessionOpened?.(p, session, meta);
       },
     };
-  }
-
-  /** Resolve configured raw names from this session, never from model titles. */
-  names(session: AcpSession, input: Record<string, unknown>) {
-    const meta = input._meta as
-      | { goose?: { toolCall?: { extensionName?: string; toolName?: string } } }
-      | undefined;
-    const tool = meta?.goose?.toolCall;
-    const entry =
-      tool?.extensionName &&
-      this.sessions.get(session)?.get(tool.extensionName);
-    return entry && tool?.toolName?.startsWith(`${entry.key}__`)
-      ? {
-          mcp_server: entry.name,
-          mcp_tool: tool.toolName.slice(entry.key.length + 2),
-        }
-      : {};
   }
 }

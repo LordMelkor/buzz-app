@@ -7,8 +7,6 @@
 // goose acts in Buzz with the in-process Buzz tools over loopback HTTP MCP,
 // signed by the agent's native-held key; the runtime only reports a turn that
 // fails.
-import type { GooseHook } from "./hooks";
-import type { AgentHookRouting } from "../../features/agents/hooks";
 import { GooseMcp } from "./mcp";
 import type { HarnessMcpKit } from "../../features/agents/harness-mcp";
 import type { Context } from "../../buzz-mcp/client";
@@ -144,10 +142,6 @@ type Entry = {
   mcp?: GooseMcp;
   /** Native metadata/inspection processes, retained until their exit. */
   inspections: Map<() => Promise<void>, Promise<unknown>>;
-  hookTurns: Map<
-    string,
-    { turn: Pick<Delivery, "trigger">; current(): boolean }
-  >;
   lifetime: AbortController;
   protected?: boolean;
   /** Its own goose, stopped once the agent goes. */
@@ -208,13 +202,6 @@ export class GooseRuntime {
     /** What agents on Recommended run on; found at the first such run. */
     private readonly recommended?: RecommendedRun,
     private readonly mcpKit?: HarnessMcpKit,
-    private readonly hook?: (
-      agent: string,
-      session: string,
-      event: Parameters<GooseHook>[1],
-      input: Record<string, unknown>,
-      turn?: AgentHookRouting["turn"],
-    ) => Promise<Record<string, unknown>>,
   ) {
     // Once found, agents on Recommended take it up.
     this.unfollow = recommended?.subscribe(() => this.sync(this.synced));
@@ -237,7 +224,6 @@ export class GooseRuntime {
     if (agent.protection)
       return Promise.resolve({
         tools: true,
-        note: "A protected agent loads no MCP server.",
         servers: [],
       });
     const entry = this.entry(agent.key, this.settings(agent.config));
@@ -652,23 +638,6 @@ export class GooseRuntime {
                 : { channel, root: threadReference(event)?.rootId ?? event.id },
           );
           delivered = entry.sessions.deliver(key, text, shown, {
-            admitting: (steered) => {
-              const prior = entry.hookTurns.get(key);
-              const direct = (turn: Pick<Delivery, "trigger">) =>
-                turn.trigger.type === "mention" &&
-                turn.trigger.event.pubkey === agent.owner;
-              // A queued delivery has no authority over the active run. Accepted
-              // steering keeps a mixed run non-direct until its next real prompt.
-              if (
-                !steered ||
-                !direct({ trigger }) ||
-                (prior?.current() && direct(prior.turn))
-              )
-                entry.hookTurns.set(key, {
-                  turn: { trigger },
-                  current: entry.sessions.current(key),
-                });
-            },
             ...(wake
               ? {
                   current,
@@ -971,7 +940,6 @@ export class GooseRuntime {
       throw new Error("This agent’s previous native sessions have not retired");
     const existing = this.agents.get(agent);
     if (existing) return existing;
-    const hook = this.hook;
     const entry: Entry = {
       lifetime: new AbortController(),
       inspections: new Map(),
@@ -987,22 +955,8 @@ export class GooseRuntime {
         undefined,
         () => entry.handle,
         () => entry.mcp,
-        hook &&
-          ((session, event, input) => {
-            const admitted = entry.hookTurns.get(session.conversation ?? "");
-            return hook(
-              agent,
-              session.id,
-              event,
-              input,
-              event !== "PromptSubmit" && admitted?.current()
-                ? admitted.turn
-                : undefined,
-            );
-          }),
       ),
       contexts: new Map(),
-      hookTurns: new Map(),
       policies: new Map(),
     };
     if (this.mcpKit) entry.mcp = new GooseMcp(this.mcpKit, () => entry.handle);

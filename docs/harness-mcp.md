@@ -142,27 +142,22 @@ session and applies the answer; execution targets report and apply nothing.
   never included in the report. Full support needs a lossless native
   configuration-reference API.
 - A choice adds only configured native MCP extensions to the session's existing
-  Buzz and platform tools. Tool restrictions use the last-seen catalog to create
-  a session allowlist; an unknown catalog or a restriction leaving no tools
-  keeps the server out. Goose treats an empty `available_tools` list as
+  Buzz and platform tools. Tool restrictions use the control-supplied `known` tools minus its `off`
+  tools to create a session allowlist, including after a restart. An empty
+  allowlist keeps the server out. Goose treats an empty `available_tools` list as
   unrestricted. Native server filters remain in effect, and no per-agent choice
   writes native configuration or global tool permissions.
 - Before the next prompt, the adapter updates the session's native extension
   selection and reads back the admitted tools. A failed check closes the session
-  before inference. Controlled sessions use `approve` mode; ordinary no-control
-  sessions keep the existing extension set and `auto` mode. Mesh and helper
+  before inference. Native permission mode is unchanged. Ordinary no-control
+  sessions keep the existing extension set. Mesh and helper
   sessions keep their fixed native exclusions.
 - The report and choices accept configured MCP extensions only. The built-in
   Summon/delegate platform extension stays excluded even if a choice names it.
   Goose children inherit MCP servers without forwarding their ordinary call or
   result events to the parent, so Buzz cannot gate them.
-- Ordinary plugin hooks expose prompts, permission requests and tool
-  notifications. A permission callback answers allow-once, reject-once or
-  cancelled within the hook budget. Tool notifications can request turn
-  cancellation but cannot block the call. Native preallowed calls skip
-  permission, so the report omits `calls: true`. Policy plugins must leave Ask
-  tools off. Failed tool status does not prove execution; native denial and
-  unavailable tools can also fail.
+- This adapter exposes no plugin call hooks and omits `calls: true`. A policy
+  plugin must leave tools that require per-call approval off.
 - Inspection opens a separate process with only the selected native extension,
   lists its tools and stops the process on every exit path. It makes no model
   turn or tool call; Goose's provider may refresh its model catalog during
@@ -171,10 +166,9 @@ session and applies the answer; execution targets report and apply nothing.
 ### Claude Code
 
 - Reports read names from the user's `.claude.json`, its entry for the agent's
-  workspace, the workspace's `.mcp.json`, and metadata retained from that
-  agent's sessions. Project servers that Claude has not approved are off by
-  default. Servers from other sources appear after the agent's next session;
-  reporting starts no server.
+  workspace and the workspace's `.mcp.json`. Project servers that Claude has not
+  approved are off by default. Live tools and state go to the control after a
+  session's readback; reporting starts no server.
 - Controlled launches apply server denies and per-tool permission denies without
   changing native configuration. A changed choice replaces the conversation's
   process before its next turn; controlled sessions do not take an uncontrolled

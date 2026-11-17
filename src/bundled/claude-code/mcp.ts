@@ -14,11 +14,8 @@ export type ClaudeMcp = Readonly<{
     session: string,
     loaded: HarnessMcpLoaded,
     applied: HarnessMcpChoice | "none",
-    servers: readonly HarnessMcpServer[],
   ): void;
 }>;
-export const MCP_NOTE =
-  "Servers from other sources appear after this agent’s next session.";
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -30,11 +27,7 @@ const strings = (value: unknown): string[] =>
 export const mcpName = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_");
 
 /** Reads metadata only. Native Claude remains the owner of definitions and policy. */
-export async function configuredMcp(
-  read: Host["readFile"],
-  cwd: string,
-  seen: readonly HarnessMcpServer[] = [],
-) {
+export async function configuredMcp(read: Host["readFile"], cwd: string) {
   const json = async (path: string) => {
     if (!read) return {};
     try {
@@ -63,7 +56,7 @@ export async function configuredMcp(
   const all =
     { ...userSettings, ...projectSettings, ...localSettings }
       .enableAllProjectMcpServers === true;
-  const rows = new Map(seen.map((server) => [server.name, server]));
+  const rows = new Map<string, HarnessMcpServer>();
   for (const [servers, needsApproval] of [
     [user.mcpServers, false],
     [local.mcpServers, false],
@@ -76,7 +69,6 @@ export async function configuredMcp(
         (needsApproval &&
           (rejected.has(name) || (!all && !approved.has(name))));
       rows.set(name, {
-        ...rows.get(name),
         name,
         default: !off,
         ...(off ? { state: "disabled" as const } : {}),
@@ -117,8 +109,8 @@ export function mcpSettings(mcp: ClaudeMcp) {
         choice === "none"
           ? []
           : Object.entries(choice).flatMap(([server, tools]) =>
-              Array.isArray(tools)
-                ? tools.map(
+              typeof tools === "object"
+                ? tools.off.map(
                     (tool) => `mcp__${mcpName(server)}__${mcpName(tool)}`,
                   )
                 : [],
