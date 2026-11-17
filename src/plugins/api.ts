@@ -40,6 +40,10 @@ export type PluginManifest = Readonly<{
       }>;
     }>[];
     networkOrigins?: readonly string[];
+    /** Event kinds the plugin may sign as the viewer and publish with
+     * `host.publish`: distinct integers 1–65535, at most 8, never a kind Buzz
+     * signs itself. */
+    relayKinds?: readonly number[];
     /** Separate authority access; ordinary HTTPS grants never authorize a session. */
     federatedIdentity?: Readonly<{
       authority: string;

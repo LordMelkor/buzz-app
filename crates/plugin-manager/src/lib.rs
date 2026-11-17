@@ -17,6 +17,8 @@ pub mod access;
 pub mod imports;
 pub mod managed;
 mod migrate_agent_flag;
+mod relay_kinds;
+pub use relay_kinds::{reserved_relay_kind, MAX_RELAY_KINDS};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const LIMIT: u64 = 8 * 1024 * 1024;
@@ -73,6 +75,10 @@ pub struct HostGrants {
     pub commands: Vec<HostCommand>,
     #[serde(default)]
     pub network_origins: Vec<String>,
+    /// Event kinds the plugin may sign as the viewer and publish with
+    /// `host.publish`; never one Buzz keeps for its own signing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_kinds: Vec<u16>,
     /// Programs the plugin may start as long-lived processes. Unlike a command,
     /// a process takes stdin and the caller appends its own arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -331,6 +337,7 @@ impl Manifest {
                     return Err("Invalid host process declaration".into());
                 }
             }
+            relay_kinds::validate(&host.relay_kinds)?;
             let mut origins = std::collections::HashSet::new();
             for origin in &host.network_origins {
                 let url = url::Url::parse(origin).map_err(err)?;
@@ -2455,6 +2462,45 @@ mod tests {
             duplicate.discovery.as_mut().unwrap().tags = pair.map(String::from).to_vec();
             assert!(duplicate.validate().is_err());
         }
+    }
+
+    #[test]
+    fn manifests_declare_up_to_eight_unreserved_relay_kinds() {
+        let with = |kinds: serde_json::Value| {
+            let manifest = serde_json::json!({
+                "id": "example.page", "name": "Example", "apiVersion": 1,
+                "host": { "relayKinds": kinds }
+            });
+            artifact_from_text(&manifest.to_string(), "export const x = 1".into())
+        };
+        let packed = with(serde_json::json!([47000, 47001])).unwrap();
+        let packed: crate::Artifact = serde_json::from_slice(&packed).unwrap();
+        assert_eq!(packed.manifest.host.unwrap().relay_kinds, [47000, 47001]);
+        assert!(with(serde_json::json!([1, 65535])).is_ok());
+        assert!(with(serde_json::json!([
+            47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007
+        ]))
+        .is_ok());
+        for invalid in [
+            serde_json::json!([47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007, 47008]),
+            serde_json::json!([0]),
+            serde_json::json!([65536]),
+            serde_json::json!([-1]),
+            serde_json::json!([47000.5]),
+            serde_json::json!(["47000"]),
+            serde_json::json!([47000, 47000]),
+            serde_json::json!([47000, 9000]),
+            serde_json::json!([1984]),
+            serde_json::json!([27235]),
+        ] {
+            assert!(with(invalid.clone()).is_err(), "{invalid}");
+        }
+        let old = artifact_from_text(
+            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"networkOrigins":[]}}"#,
+            "export const x = 1".into(),
+        )
+        .unwrap();
+        assert!(!String::from_utf8(old).unwrap().contains("relayKinds"));
     }
 
     #[test]
