@@ -84,13 +84,14 @@ export function mcpChoice(
   const choice = mcp.choice;
   if (choice === "none") return "none";
   return Object.fromEntries(
-    names.map((server) => [
-      server.name,
-      mcp.inspect
-        ? server.name === mcp.inspect
-        : Object.hasOwn(choice ?? {}, server.name)
-          ? (choice?.[server.name] ?? false)
-          : server.default,
+    Object.entries({
+      ...Object.fromEntries(
+        names.map((server) => [server.name, server.default]),
+      ),
+      ...choice,
+    }).map(([name, pick]) => [
+      name,
+      mcp.inspect ? name === mcp.inspect : (pick ?? false),
     ]),
   );
 }
@@ -98,9 +99,11 @@ export function mcpSettings(mcp: ClaudeMcp) {
   const choice = mcpChoice(mcp);
   return {
     deniedMcpServers: [
-      ...mcp.servers
-        .filter(({ name }) => choice === "none" || choice[name] === false)
-        .map(({ name }) => ({ serverName: name })),
+      ...(choice === "none"
+        ? mcp.servers.map(({ name }) => ({ serverName: name }))
+        : Object.entries(choice)
+            .filter(([, pick]) => pick === false)
+            .map(([name]) => ({ serverName: name }))),
       // Inspection installs no SDK server to shadow a native definition.
       ...(mcp.inspect ? [{ serverName: "buzz" }] : []),
     ],

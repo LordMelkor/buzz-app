@@ -279,7 +279,10 @@ function setup(
 
 it("reports no native MCP servers for a protected agent without spawning Goose", async () => {
   const wire = mcpTransport();
-  const f = setup({ mcpKit: provenanceKit(), wrap: wire.wrap });
+  const f = setup({
+    mcpKit: { choice: async () => ({ fixture: true }), started: () => {} },
+    wrap: wire.wrap,
+  });
   const agent = {
     ...f.agent,
     config: DEFAULT_CONFIG,

@@ -6,8 +6,6 @@ import {
   type AgentHookContext,
 } from "../features/agents/hooks";
 import { apply as claude } from "./claude-code";
-import { apply as goose } from "./goose";
-import { GooseRuntime } from "./goose/runtime";
 import { apply as codex } from "./codex";
 import { apply as pi } from "./pi";
 import { ClaudeRuntime } from "./claude-code/runtime";
@@ -29,27 +27,18 @@ vi.mock("./codex/runtime", async (original) => {
     CodexRuntime: vi.fn(class extends actual.CodexRuntime {}),
   };
 });
-vi.mock("./goose/runtime", async (original) => {
-  const actual = await original<typeof import("./goose/runtime")>();
-  return {
-    ...actual,
-    GooseRuntime: vi.fn(class extends actual.GooseRuntime {}),
-  };
-});
 vi.mock("./pi/runtime", async (original) => {
   const actual = await original<typeof import("./pi/runtime")>();
   return { ...actual, PiRuntime: vi.fn(class extends actual.PiRuntime {}) };
 });
 afterEach(() => vi.restoreAllMocks());
 
-it.each(["claude", "codex", "pi", "goose"] as const)(
+it.each(["claude", "codex", "pi"] as const)(
   "labels registered %s adapter hook output",
   async (name) => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux");
     let output: unknown =
-      name === "pi"
-        ? { block: "Wait" }
-        : { decision: name === "goose" ? "deny" : "block", reason: "Wait" };
+      name === "pi" ? { block: "Wait" } : { decision: "block", reason: "Wait" };
     const dispatchHook = vi.fn(
       (
         harness: string,
@@ -75,7 +64,7 @@ it.each(["claude", "codex", "pi", "goose"] as const)(
           options.compose,
         ),
     );
-    ({ claude, codex, pi, goose })[name]({
+    ({ claude, codex, pi })[name]({
       pluginOwner: { id: `buzz.${name}`, revision: "r1" },
       host: { request: vi.fn(), serveMcp: vi.fn() },
       agents: {
@@ -95,22 +84,13 @@ it.each(["claude", "codex", "pi", "goose"] as const)(
         ? vi.mocked(ClaudeRuntime).mock.calls.at(-1)?.[7]
         : name === "codex"
           ? vi.mocked(CodexRuntime).mock.calls.at(-1)?.[7]?.run
-          : name === "goose"
-            ? vi.mocked(GooseRuntime).mock.calls.at(-1)?.[9]
-            : vi.mocked(PiRuntime).mock.calls.at(-1)?.[6];
+          : vi.mocked(PiRuntime).mock.calls.at(-1)?.[6];
     expect(hook).toBeTypeOf("function");
-    expect(
-      await hook?.(
-        "a".repeat(64),
-        "session",
-        name === "goose" ? "PermissionRequest" : "PreToolUse",
-        {},
-      ),
-    ).toEqual(
+    expect(await hook?.("a".repeat(64), "session", "PreToolUse", {})).toEqual(
       name === "pi"
         ? { block: "[Buzz plugin: reply-first] Wait" }
         : {
-            decision: name === "goose" ? "deny" : "block",
+            decision: "block",
             reason: "[Buzz plugin: reply-first] Wait",
           },
     );

@@ -5,6 +5,7 @@ import type {
   HarnessMcpKit,
   HarnessMcpChoice,
   HarnessMcpLoaded,
+  HarnessMcpServer,
 } from "../../features/agents/harness-mcp";
 import type { AgentHandle } from "../../features/agents/service";
 import {
@@ -108,15 +109,17 @@ export class GooseMcp {
   }
   async report(p: AcpProcess) {
     const configured = await this.configured(p);
-    const servers = configured.map(({ name, enabled, unavailable }) => {
-      return {
-        name,
-        default: false,
-        ...(unavailable
-          ? { state: "failed" as const, reason: unavailable }
-          : !enabled && { state: "disabled" as const }),
-      };
-    });
+    const servers: HarnessMcpServer[] = configured.map(
+      ({ name, enabled, unavailable }) => {
+        return {
+          name,
+          default: false,
+          ...(unavailable
+            ? { state: "failed" as const, reason: unavailable }
+            : !enabled && { state: "disabled" as const }),
+        };
+      },
+    );
     return {
       tools: true,
       servers,

@@ -397,7 +397,7 @@ it("requires native project approval before inspection can start a process", asy
   }
 });
 
-it("keeps earlier inspected names when a later inspection lists only its selected server", async () => {
+it("isolates successive inspections without retaining their names in static reports", async () => {
   const names = ["alpha"];
   const context = [{ name: "mcp__alpha__read_echo", serverName: "alpha" }];
   const f = native(names, [], {}, context);
@@ -425,11 +425,17 @@ it("keeps earlier inspected names when a later inspection lists only its selecte
     names[0] = "beta";
     context[0] = { name: "mcp__beta__read_echo", serverName: "beta" };
     await runtime.inspectMcp(agent, "beta");
+    const nextArgs = f.processes[1]?.options.args ?? [];
+    expect(
+      JSON.parse(nextArgs[nextArgs.indexOf("--settings") + 1] ?? "{}"),
+    ).toMatchObject({
+      deniedMcpServers: [{ serverName: "alpha" }, { serverName: "buzz" }],
+    });
     definitions = { mcpServers: {} } as typeof definitions;
     expect(await runtime.harnessMcp(agent)).not.toHaveProperty("calls");
     expect(
       (await runtime.harnessMcp(agent))?.servers.map((server) => server.name),
-    ).toEqual(["alpha", "beta"]);
+    ).toEqual([]);
     expect(
       f.processes.every((process) => process.killed && !process.prompts.length),
     ).toBe(true);
@@ -755,4 +761,33 @@ it("replaces idle sessions when the MCP choice changes and never borrows the spa
   ).toEqual([["first"], ["second"]]);
   expect(f.processes[0]?.killed).toBe(true);
   await pool.shutdown();
+});
+
+it("applies explicit exclusions for native names absent from static discovery", async () => {
+  const f = native([], []);
+  const process = await ClaudeProcess.start(f.spawn, {
+    cwd: "/work",
+    systemPrompt: "",
+    mcp: {
+      choice: {
+        managed: false,
+        connector: {
+          off: ["write.marker"],
+          known: ["read_echo", "write.marker"],
+        },
+      },
+      servers: [],
+      started: vi.fn(),
+    },
+  });
+  try {
+    const args = f.processes[0]?.options.args ?? [];
+    expect(JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}")).toEqual({
+      deniedMcpServers: [{ serverName: "managed" }],
+      permissions: { deny: ["mcp__connector__write_marker"] },
+    });
+    expect(f.processes[0]?.prompts).toEqual([]);
+  } finally {
+    await process.kill();
+  }
 });
