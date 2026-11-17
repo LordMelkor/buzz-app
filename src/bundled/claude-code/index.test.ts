@@ -283,6 +283,7 @@ it("recommends a candidate only when Claude is signed in and lists its model and
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
     agents: {
+      harness,
       register: (registered: AgentType) => {
         type = registered;
       },
