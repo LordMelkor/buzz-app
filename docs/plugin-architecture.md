@@ -2398,7 +2398,12 @@ Desktop hosts provide two methods; on other hosts both reject.
 Both calls are frozen to the community, viewer and connection named by `scope`
 (`RelaySnapshot.scope`, `origin:viewer`) and optional `generation`. If another
 community or account is selected, or the connection is not live, they reject
-before sending anything. There is no broker or web route.
+before sending anything. There is no broker or web route. The page-side host
+checks the scope. Native code checks the grant, the reserved kinds and the
+signer, and takes the community from the page, as channel publishing does. Like
+the other declarations, the grant is a guardrail for trusted plugins, not a
+sandbox. The host adds no per-plugin rate limit; a relay's own limit answers as
+a `429` refusal.
 
 `host.upload` requires both `host.files` and the destination in `host.networkOrigins`.
 It sends a multipart archive to that origin and reads one absolute
