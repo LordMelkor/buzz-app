@@ -60,7 +60,13 @@ serveStdio(() => {
                     tool.name,
                     args,
                   )
-                : callTool(client, context, tool.name, args)),
+                : callTool(
+                    // Only people searches wait for the relay's key.
+                    { ...client, relayAuthority: relayAuthor },
+                    context,
+                    tool.name,
+                    args,
+                  )),
             ),
           };
         } catch (error) {
