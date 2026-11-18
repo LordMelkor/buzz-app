@@ -233,6 +233,13 @@ const publicRank = (name: string, needle: string, exact?: boolean) =>
     : matchRank(name, needle);
 /** How long a completed read answers a repeated trigger without asking again. */
 export const FRESH_FOR = 60_000;
+/** The most a channel's retained history holds. The store counts rows and bytes,
+ * not events. */
+export const CHANNEL_LIMITS = Object.freeze({
+  rows: 2400,
+  events: Number.POSITIVE_INFINITY,
+  bytes: 8 * 1024 * 1024,
+});
 /** Pages a reconnect catch-up reads back from the head before it gives up on
  * reaching the rows the reader kept across the disconnect. */
 const CATCH_UP_PAGES = 5;
@@ -332,8 +339,8 @@ export function createChannelStore(
     persistence,
     maxHeadBytes = 4 * 1024 * 1024,
     maxHeads = 64,
-    maxHistoryRows = 2400,
-    maxHistoryBytes = 8 * 1024 * 1024,
+    maxHistoryRows = CHANNEL_LIMITS.rows,
+    maxHistoryBytes = CHANNEL_LIMITS.bytes,
     maxPublicDirectory = PUBLIC_CHANNEL_DIRECTORY,
     publicDirectoryPage = PUBLIC_CHANNEL_PAGE,
     now = Date.now,
@@ -4221,8 +4228,10 @@ export function createChannelStore(
         void fetchProfiles(state.snapshot.rows.slice(-12));
     }
   });
-  /** Verified traffic shares the same fold as reads and local intent. Window bounds remain read-owned. */
-  function accept(events: readonly RelayEvent[]) {
+  /** Verified traffic shares the same fold as reads and local intent. Window bounds remain read-owned.
+   * A window's own catch-up pages pass `ownPages`: they move its floor
+   * themselves, so rows below the old floor are theirs to add. */
+  function accept(events: readonly RelayEvent[], ownPages = false) {
     if (disposed || !transport) return;
     const generation = epoch;
     const changedChannels = new Set(
@@ -4261,6 +4270,34 @@ export function createChannelStore(
       if (disposed || generation !== epoch) return;
       if (!authorized(state.channelId)) continue;
       const ids = new Set(state.events.map((event) => event.id));
+      // Rows below the floor wait for their page while history remains (the
+      // display rule in `setWindow`), and so do edits, reactions and
+      // deletions of only those rows: else the history budget would trim
+      // the window for a scan it never showed.
+      const below = new Set<string>();
+      const floor = state.floor;
+      if (!ownPages && state.snapshot.hasMore && floor !== undefined) {
+        for (const event of events)
+          if (
+            channelRowKind(event.kind) &&
+            event.created_at < floor &&
+            !ids.has(event.id) &&
+            event.tags.some(
+              ([name, id]) => name === "h" && id === state.channelId,
+            )
+          )
+            below.add(event.id);
+        for (let hop = 0; hop < 2 && below.size; hop++)
+          for (const event of events) {
+            if (channelRowKind(event.kind) || below.has(event.id)) continue;
+            const targets = event.tags.filter(([name]) => name === "e");
+            if (
+              targets.length &&
+              targets.every(([, id]) => below.has(id ?? ""))
+            )
+              below.add(event.id);
+          }
+      }
       const incomingIds = new Set(ids);
       const incoming: RelayEvent[] = [];
       let changed = true;
@@ -4269,6 +4306,7 @@ export function createChannelStore(
         for (const event of events) {
           if (
             incomingIds.has(event.id) ||
+            below.has(event.id) ||
             !(
               channelRowKind(event.kind) ||
               [40003, 5, 9005, 7, 39005].includes(event.kind)
@@ -4702,7 +4740,7 @@ export function createChannelStore(
           throw new DOMException("Stale live catch-up", "AbortError");
         retained.restored = false;
         retained.readAt = head.readAt;
-        accept(head.events);
+        accept(head.events, true);
         page = head;
         const reached = (last: Page) =>
           !last.hasMore ||
@@ -4723,7 +4761,7 @@ export function createChannelStore(
           ).page;
           if (!valid())
             throw new DOMException("Stale live catch-up", "AbortError");
-          accept(page.events);
+          accept(page.events, true);
           contiguous = reached(page);
         }
         if (!valid())

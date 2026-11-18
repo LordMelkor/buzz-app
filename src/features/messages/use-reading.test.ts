@@ -28,10 +28,18 @@ function setup({
   strict = false,
   latestMessageId = undefined as string | undefined,
   catchUpMessageId = undefined as string | undefined,
+  endMessageId = undefined as string | undefined,
+  partial = false,
   rootId = undefined as string | undefined,
   enabled = true,
   concealed = false,
-  focus = "element" as "element" | "composer" | "parent" | "outside" | "header",
+  focus = "element" as
+    | "element"
+    | "composer"
+    | "parent"
+    | "outside"
+    | "header"
+    | "bar",
 } = {}) {
   vi.useFakeTimers();
   vi.spyOn(document, "hasFocus").mockReturnValue(focused);
@@ -54,8 +62,10 @@ function setup({
   // The app's root, a direct body child as in production.
   const root = document.createElement("div");
   root.append(panel);
-  document.body.append(root, composer, parent, outside);
-  ({ element, composer, parent, outside, header })[focus].focus();
+  // The list's reader bar, beside it outside any reading surface.
+  const bar = document.createElement("button");
+  document.body.append(root, composer, parent, outside, bar);
+  ({ element, composer, parent, outside, header, bar })[focus].focus();
   vi.spyOn(element, "getClientRects").mockReturnValue([
     new DOMRect(0, 0, 500, 500),
   ] as unknown as DOMRectList);
@@ -68,6 +78,7 @@ function setup({
     row("clipped", 450, 550),
   );
   const scroller = { current: element };
+  const controls = { current: bar };
   const position = { current: settled };
   let mutation = () => {};
   let attributes: (records: { target: Node }[]) => void = () => {};
@@ -101,17 +112,19 @@ function setup({
   // The real lease fences on the manual-unread revision current at creation.
   let manual = 0;
   const leave = vi.fn();
-  const reading = vi.fn((_channel: string, _root?: string, _visit?: object) => {
-    const lease = {
-      manual,
-      view: vi.fn(),
-      observe: vi.fn(() => observe()),
-      catchUp: vi.fn(async () => {}),
-      dispose: vi.fn(),
-    };
-    leases.push(lease);
-    return lease;
-  });
+  const reading = vi.fn(
+    (_channel: string, _root?: string, _visit?: object, _partial?: boolean) => {
+      const lease = {
+        manual,
+        view: vi.fn(),
+        observe: vi.fn(() => observe()),
+        catchUp: vi.fn(async () => {}),
+        dispose: vi.fn(),
+      };
+      leases.push(lease);
+      return lease;
+    },
+  );
   const session = {
     unread: {
       sync: () => ({ capability: supported ? "frontier-sync" : "unsupported" }),
@@ -128,6 +141,9 @@ function setup({
       settled: position,
       latestMessageId,
       catchUpMessageId,
+      endMessageId,
+      partial,
+      controls,
       rootId,
       enabled,
     },
@@ -150,6 +166,7 @@ function setup({
     composer,
     parent,
     outside,
+    bar,
     session,
     reading,
     leases,
@@ -203,6 +220,9 @@ function setup({
         settled: position,
         latestMessageId,
         catchUpMessageId,
+        endMessageId,
+        partial,
+        controls,
         rootId,
         enabled,
       }),
@@ -214,6 +234,23 @@ function setup({
         settled: position,
         latestMessageId: id,
         catchUpMessageId,
+        endMessageId,
+        partial,
+        controls,
+        rootId,
+        enabled,
+      }),
+    setPartial: (next: boolean) =>
+      view.rerender({
+        session,
+        channelId: "room",
+        scroller,
+        settled: position,
+        latestMessageId,
+        catchUpMessageId,
+        endMessageId,
+        partial: next,
+        controls,
         rootId,
         enabled,
       }),
@@ -232,7 +269,12 @@ function row(id: string, top: number, bottom: number) {
 }
 it("reports only fully visible settled evidence after dwell, not mounted overscan", () => {
   const h = setup();
-  expect(h.reading).toHaveBeenCalledExactlyOnceWith("room", undefined, {});
+  expect(h.reading).toHaveBeenCalledExactlyOnceWith(
+    "room",
+    undefined,
+    {},
+    false,
+  );
   vi.advanceTimersByTime(299);
   expect(h.leases[0]?.observe).not.toHaveBeenCalled();
   vi.advanceTimersByTime(1);
@@ -612,10 +654,14 @@ it("releases the old channel and session on rerender and only observes the curre
   h.retarget("next-room");
   expect(h.leases[0]?.dispose).toHaveBeenCalledOnce();
   expect(oldValidity("visible", true)).toBe(false);
-  expect(h.reading).toHaveBeenLastCalledWith("next-room", undefined, {});
+  expect(h.reading).toHaveBeenLastCalledWith("next-room", undefined, {}, false);
   const nextReading = vi.fn(
-    (_channelId: string, _rootId?: string, _visit?: object) =>
-      h.reading("next-room"),
+    (
+      _channelId: string,
+      _rootId?: string,
+      _visit?: object,
+      _partial?: boolean,
+    ) => h.reading("next-room"),
   );
   h.retarget("next-room", {
     ...h.session,
@@ -626,6 +672,7 @@ it("releases the old channel and session on rerender and only observes the curre
     "next-room",
     undefined,
     {},
+    false,
   );
   vi.advanceTimersByTime(299);
   for (const lease of h.leases) expect(lease.observe).not.toHaveBeenCalled();
@@ -673,7 +720,7 @@ it("bottom dwell catches up through the newest row, including a tall clipped row
   );
   // Its leases name the thread, which bounds what a DM read may cover.
   for (const call of h.reading.mock.calls)
-    expect(call).toEqual(["room", "thread", {}]);
+    expect(call).toEqual(["room", "thread", {}, false]);
 });
 it("a broadcast reply as the bottom row earns dwell but catches up through the top-level post", async () => {
   const h = setup({ latestMessageId: "broadcast", catchUpMessageId: "top" });
@@ -752,6 +799,59 @@ it("a historical viewport or a bottom reached only at dwell end cannot catch up"
     "visible",
     undefined,
   );
+});
+
+it("an arranged list's end row at the bottom catches up through the newest row", async () => {
+  const h = setup({
+    latestMessageId: "newest",
+    endMessageId: "bottom",
+    rootId: "thread",
+  });
+  // The newest row is ranked above, out of view.
+  h.setRows([row("newest", -300, -200), row("bottom", 400, 500)]);
+  h.mutation();
+  vi.advanceTimersToNextFrame();
+  await vi.advanceTimersByTimeAsync(300);
+  expect(h.dwelled()?.catchUp).toHaveBeenCalledExactlyOnceWith(
+    "newest",
+    "thread",
+  );
+});
+it("a partial list takes partial leases, which read only the rows shown", async () => {
+  const h = setup({ latestMessageId: "visible", partial: true });
+  await vi.advanceTimersByTimeAsync(300);
+  expect(h.reading.mock.calls.length).toBeGreaterThan(0);
+  for (const call of h.reading.mock.calls)
+    expect(call).toEqual(["room", undefined, {}, true]);
+  expect(h.dwelled()?.observe).toHaveBeenCalledWith(["visible"]);
+});
+it("a list that turns partial mid-dwell drops its complete leases before they catch up", async () => {
+  const h = setup({ latestMessageId: "bottom", rootId: "thread" });
+  h.setRows([row("bottom", 100, 200)]);
+  h.mutation();
+  vi.advanceTimersToNextFrame();
+  await vi.advanceTimersByTimeAsync(150);
+  const complete = h.leases.length;
+  expect(complete).toBeGreaterThan(0);
+  h.setPartial(true);
+  for (const lease of h.leases.slice(0, complete))
+    expect(lease.dispose).toHaveBeenCalled();
+  h.mutation();
+  vi.advanceTimersToNextFrame();
+  await vi.advanceTimersByTimeAsync(300);
+  // Only partial leases reach the dwell's end, and those never catch up.
+  h.leases.forEach((lease, index) => {
+    if (lease.catchUp.mock.calls.length)
+      expect(h.reading.mock.calls[index]?.[3]).toBe(true);
+  });
+  for (const call of h.reading.mock.calls.slice(complete))
+    expect(call).toEqual(["room", "thread", {}, true]);
+  expect(h.dwelled()?.observe).toHaveBeenCalledWith(["bottom"]);
+});
+it("using the list's reader bar earns dwell", () => {
+  const h = setup({ focus: "bar" });
+  vi.advanceTimersByTime(300);
+  expect(h.dwelled()?.observe).toHaveBeenCalledWith(["visible"]);
 });
 
 it("settled notification starts dwell without changed rows, focus or geometry", () => {

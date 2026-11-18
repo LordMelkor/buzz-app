@@ -91,6 +91,7 @@ export function bounds(
   body: {
     has_more: boolean;
     next_cursor: { created_at: number; id: string } | null;
+    direction?: string;
   },
 ): RelayEvent {
   return signed(relay, {

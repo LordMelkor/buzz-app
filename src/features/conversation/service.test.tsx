@@ -479,6 +479,37 @@ it("owns accessories through disable, replacement and failed activation", async 
   expect(broken.service.accessories.snapshot()).toHaveLength(0);
 });
 
+it("accepts the reader accessory placement and refuses an unknown one", async () => {
+  let refused: unknown;
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      ctx.conversation.registerAccessory({
+        id: "bar",
+        title: "Bar",
+        placement: "reader",
+        component: Component,
+      });
+      try {
+        ctx.conversation.registerAccessory({
+          id: "bad",
+          title: "Bad",
+          placement: "sidebar" as "reader",
+          component: Component,
+        });
+      } catch (error) {
+        refused = error;
+      }
+    },
+  });
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() =>
+    expect(h.service.accessories.snapshot()).toHaveLength(1),
+  );
+  expect(h.service.accessories.snapshot()[0]?.placement).toBe("reader");
+  expect(String(refused)).toMatch(/Invalid accessory placement/);
+});
+
 it("retires plugin chat menu contributions when their plugin is disabled", async () => {
   const h = harness({
     inject: ["conversation"],

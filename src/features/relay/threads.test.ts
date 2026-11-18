@@ -1159,8 +1159,16 @@ it.each(["live", "read"])(
       expect(thread.events()).toContain(tombstone);
       expect(thread.events()).toHaveLength(1003);
 
-      // The cap still applies to messages, even after summary compaction.
+      // The cap still applies to messages, even after summary compaction,
+      // once a page is committed. With none, there is no window to overflow:
+      // the batch waits for the first page.
       thread.receive(overflow);
+      if (source === "live") {
+        expect(thread.view.snapshot()).toMatchObject({ error: undefined });
+        expect(thread.view.snapshot().replies).toHaveLength(999);
+        expect(thread.events()).toHaveLength(1003);
+        return;
+      }
       expect(thread.view.snapshot()).toMatchObject({
         status: "error",
         limited: true,

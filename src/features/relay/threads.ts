@@ -4,6 +4,7 @@ import { readSubthread, subthreadMessages } from "./subthread";
 import {
   canonicalChannel,
   MissingThreadBounds,
+  relayOrder,
   threadBounds,
   type ThreadCursor,
 } from "./thread-window";
@@ -21,16 +22,49 @@ import { compareMessages, MessageClock } from "./message-order";
 import { shareMessageRows } from "./row-identity";
 import { RESUME_READ_AGE } from "./live";
 
-const AUX = new Set([5, 7, 9005, 40003, 39005, 39006]);
+/** Kinds that change or answer a row (edits, reactions, deletions, summaries,
+ * bounds) and are never rows themselves. */
+export const AUX = new Set([5, 7, 9005, 40003, 39005, 39006]);
 const PAGE_SIZE = 50;
 const INITIAL_WINDOW_SIZE = 10;
 const MAX_PAGES = 10;
 const MAX_EVENTS = 2000;
 const MAX_BYTES = 4 * 1024 * 1024;
+/** The most a thread view holds, which is the most ThreadPanel shows at once:
+ * its first window plus the older pages it can load. */
+export const THREAD_LIMITS = Object.freeze({
+  rows: INITIAL_WINDOW_SIZE + (MAX_PAGES - 1) * PAGE_SIZE,
+  events: MAX_EVENTS,
+  bytes: MAX_BYTES,
+});
 /** The relay's `thread_window` row allowlist excludes legacy diffs (kind 40008). */
 const STRICT_WINDOW_KINDS = [9, 40002];
-const inChannel = (event: EventData, channelId: string) =>
+export const inChannel = (event: EventData, channelId: string) =>
   event.tags.some(([name, value]) => name === "h" && value === channelId);
+/** Adds to `result` the aux in `events` that reach it, or `known`, within two
+ * hops: a reaction, edit or deletion of a row, then a deletion of that. Never
+ * adds a row. Returns what it added. */
+export function growAux<T extends EventData>(
+  events: readonly T[],
+  result: Map<string, EventData>,
+  known: ReadonlySet<string> = new Set(),
+) {
+  const added: T[] = [];
+  for (let hop = 0; hop < 2; hop++)
+    for (const event of events)
+      if (
+        AUX.has(event.kind) &&
+        !result.has(event.id) &&
+        event.tags.some(
+          ([name, id]) =>
+            name === "e" && (result.has(id ?? "") || known.has(id ?? "")),
+        )
+      ) {
+        result.set(event.id, event);
+        added.push(event);
+      }
+  return added;
+}
 /** Relay thread-cursor order (seconds, id); rendered order is `compareMessages`. */
 const compare = (a: ThreadCursor, b: ThreadCursor) =>
   a.created_at - b.created_at || a.id.localeCompare(b.id);
@@ -219,6 +253,8 @@ export function createThreadView({
   let remote: readonly RelayEvent[] = [];
   let remoteIds = new Set<string>();
   let staged: readonly RelayEvent[] = [];
+  /** How far a running read has fetched; `null` once it read to the end. */
+  let reach: ThreadCursor | null | undefined;
   let selectionStaged: readonly RelayEvent[] = [];
   let selectionController: AbortController | undefined;
   let selectionRevision = 0;
@@ -314,19 +350,7 @@ export function createThreadView({
     ]);
     const result = new Map(rows.map((event) => [event.id, event]));
     // Aux closure includes deletion of an auxiliary, not just direct row overlays.
-    for (let hop = 0; hop < 2; hop++) {
-      for (const event of events) {
-        if (!AUX.has(event.kind) || result.has(event.id)) continue;
-        if (
-          event.tags.some(
-            ([name, value]) => name === "e" && ids.has(value ?? ""),
-          )
-        ) {
-          result.set(event.id, event);
-          ids.add(event.id);
-        }
-      }
-    }
+    growAux(events, result, ids);
     return [...result.values()];
   }
   function union(...batches: readonly (readonly RelayEvent[])[]) {
@@ -523,6 +547,7 @@ export function createThreadView({
       remote = [];
       remoteIds.clear();
       staged = [];
+      reach = undefined;
       rootId = undefined;
       cursor = undefined;
       pages = 0;
@@ -547,13 +572,42 @@ export function createThreadView({
     }
     return true;
   }
+  /** A reply past the committed cursor belongs to the next older page.
+   * Admission follows the view's window: unwindowed (no page yet) and
+   * complete (older, no cursor) admit every related row; windowed (older,
+   * cursor) admits rows up to the cursor (or a running read's reach), legacy
+   * diffs, which no strict page returns, and aux of held rows; legacy walks
+   * forward, so live rows are always inside it. */
+  const beyond = (event: RelayEvent) => {
+    if (
+      mode !== "older" ||
+      !cursor ||
+      !STRICT_WINDOW_KINDS.includes(event.kind) ||
+      !isReply(event)
+    )
+      return false;
+    // A run reading past the committed cursor admits up to its own reach.
+    const edge =
+      reach === null
+        ? undefined
+        : reach && relayOrder(reach, cursor) < 0
+          ? reach
+          : cursor;
+    return !!edge && relayOrder(event, edge) < 0;
+  };
   function receive(events: readonly RelayEvent[]) {
     if (disposed || !canAccess() || (!rootId && !exact)) return;
-    const fresh = events.filter((event) => !remoteIds.has(event.id));
+    const fresh = events.filter(
+      (event) => !remoteIds.has(event.id) && !beyond(event),
+    );
     if (!fresh.length) return;
     const incoming = related(fresh);
     if (!incoming.length) return;
-    if (retain(union(remote, incoming))) {
+    const next = union(remote, incoming);
+    // No page committed: no window to overflow; the first page decides.
+    if (!pages && (next.length > MAX_EVENTS || listByteSize(next) > MAX_BYTES))
+      return;
+    if (retain(next)) {
       publish();
       advance();
     }
@@ -619,6 +673,7 @@ export function createThreadView({
     older = false;
     failed = undefined;
     staged = [];
+    reach = undefined;
     shown = undefined;
     if (exact) targetStatus = "loading";
     if (clear || !canAccess()) {
@@ -1097,6 +1152,10 @@ export function createThreadView({
           retain(fetched);
           return;
         }
+        // Rows read past the committed cursor wait for the commit; until
+        // then a live edit, deletion or reply among them must still land.
+        staged = fetched;
+        reach = nextCursor ?? null;
         // Only strict bounds prove exhaustion. Legacy short pages may be filtered
         // after LIMIT, so an empty continuation means merely no more returned.
         more = bounds ? bounds.hasMore : replies.length > 0;
@@ -1203,6 +1262,7 @@ export function createThreadView({
       owned.abort();
       if (controller === owned) {
         staged = [];
+        reach = undefined;
         controller = undefined;
         if (again && !disposed) {
           const established = again === "established";

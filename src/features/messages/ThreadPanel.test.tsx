@@ -691,7 +691,7 @@ it("scopes its reading leases to its thread while the original is unavailable", 
   // In a DM, the thread it opened bounds what its reads may cover.
   expect(reading.mock.calls).not.toHaveLength(0);
   for (const call of reading.mock.calls)
-    expect(call).toEqual(["channel", row.id, {}]);
+    expect(call).toEqual(["channel", row.id, {}, false]);
 });
 it("leaves a sibling reply it hides unread while a DM reply's original is unavailable", async () => {
   // The real unread owner, so a dwell's DM read lands in its journal.

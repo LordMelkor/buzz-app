@@ -174,6 +174,9 @@ export interface ReadTransport {
   /** The relay advertises `buzz-search-sort`: bridge search accepts
    * `search_sort: "newest"`. Older relays silently rank by relevance. */
   readonly searchSort?: true;
+  /** The relay advertises `buzz-window-newer`: thread and channel windows
+   * accept `direction: "newer"` and thread pages accept `root_aux: false`. */
+  readonly windowNewer?: true;
   /** The relay advertises NIP-AR sync (`artifacts.sync.version` 1 in NIP-11):
    * a REQ with `"artifact": "current"` streams a complete set, then live heads. */
   readonly artifactSync?: true;
@@ -569,6 +572,7 @@ export async function connectBrokerTransport(
     channelIdentity?: boolean;
     soloMemberRoleUpdates?: boolean;
     searchSort?: boolean;
+    windowNewer?: boolean;
     artifactSync?: boolean;
     sidebarPreferenceWrites?: boolean;
     sidebarSectionRemoval?: boolean;
@@ -938,6 +942,7 @@ export async function connectBrokerTransport(
       ? { workspaceMigration: true as const }
       : {}),
     ...(session.searchSort === true ? { searchSort: true as const } : {}),
+    ...(session.windowNewer === true ? { windowNewer: true as const } : {}),
     ...(session.artifactSync === true ? { artifactSync: true as const } : {}),
     ...(session.channelKit
       ? {

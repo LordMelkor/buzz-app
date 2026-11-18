@@ -1715,6 +1715,108 @@ The persistent sidebar reads the same session activity snapshot for its quiet ma
 it owns presentation, not capture or an additional activity lease.
 This is a host-matched preview addition, not cross-version capability negotiation.
 
+### Arranging a reader
+
+An accessory with `placement: "reader"` mounts in the bar above a thread's or a
+channel's messages, outside their scroller, so an archived, guest or read-only
+conversation has it too. It gets the composer props, plus these. They are
+present for reader accessories only.
+
+- `present(presentation | null)` shows rows in place of the host's, or withdraws
+  them (`null` answers `shown`). `ids` are the rows in display order: replies in
+  a thread, top-level rows in a channel. `events` are proven events, usually from
+  `snapshotRead`; the reader keeps the rows `ids` names with their edits,
+  reactions and deletions, and adds live ones itself. Optional: `parents` (thread
+  only, display only: the earlier presented row each row nests under), `open`
+  (branches shown open), `complete` (`ids` hold every row, so reaching the end
+  reads it; otherwise only the rows viewed are marked read) and `place`
+  (`"keep"` by default, `"start"` or `{ id }`).
+- The result is `shown`, `held` (another accessory in order is showing; this one
+  waits and shows when that one leaves), `limit` (more than `limits`, or the
+  reader cannot hold it now; the previous presentation stays), `invalid`
+  (duplicate ids or a malformed field) or `retired`.
+- `presentation` is `none`, `shown`, `held` or `ended`. `ended` means live
+  growth passed `limits`; the reader never trims, because a trim could bring a
+  deleted row back.
+- `limits` are `{ rows, events, bytes }`: 460 rows, 2,000 events and 4 MiB in a
+  thread, and 2,400 rows and 8 MiB in a channel (no event count). `targetId` is
+  the message the reader was opened to, if any.
+
+The host owns everything else. While a presentation shows, the reader draws its
+rows with the ordinary message controls, keeps its own unread line, earlier-reply
+note, jump button and arrival count off, never pages its own history, and takes
+reading from the rows drawn: a list that is not `complete` reads only the rows
+viewed. A withdrawal, a removed or failing accessory, or an unmount returns the
+host's rows at the row the person was reading, or the nearest one still shown,
+with no host read. In a thread the root is always the reader's header, above the
+arranged replies: a plugin cannot hide or move it, and `ids` never includes it.
+A reply to a row nested under a display parent still answers its signed parent.
+The sort, filter, window size, layout and wording belong to the plugin.
+
+Three session capabilities serve a plugin that scans:
+
+- `session.snapshotRead(filters, { signal, priority })` is a fresh, verified read
+  that feeds no projection, cache, unread count or view. Use
+  `priority: "background"` so a long scan queues behind foreground reads.
+- `session.retain()` returns `{ set(events), dispose() }`: one hold of proven,
+  visible events, up to 8 MiB. A held event lets its live edits, reactions and
+  deletions reach `subscribeLive`, which a row from `snapshotRead` alone would
+  not. It grants no access and changes no cache, `recent` or unread. A hold is
+  one view slot of the 64 that `observe` and thread views share; a presenting
+  reader uses one and the plugin uses one.
+- `session.foldRows(channelId, events, rootId?)` folds proven events into rows:
+  stateless, with the viewer's own pending sends and their delivery state, and `[]`
+  for a denied channel or a closed session. With `rootId` it folds the root and
+  its replies; the plugin leaves the root out of `ids`.
+
+On a relay that advertises `buzz-window-newer` (`session.windowNewer`), a window
+read can also page oldest first with `direction: "newer"` and `after`/`after_id`
+from the previous page's cursor, and a thread read can pass `root_aux: false`,
+because the reader already shows the root and its reactions. Without it, read
+older pages only; the final rows are the same and the scan is slower.
+
+The scan pattern:
+
+1. Read with `snapshotRead`, `priority: "background"`, pages of 200. Never page
+   with `readPage`: it feeds the host's own views and unread counts, which are
+   bounded and are not a place to hold a scan.
+2. Keep what was read in one `retain()` hold and fold with `foldRows`. Rank from
+   the folded rows, such as the distinct accounts that reacted; the definition of
+   a score is the plugin's.
+3. Present a small first window (200 rows), and grow it on demand. A reader shows
+   one window of at most 460 rows (2,400 in a channel), so reach the rest by
+   presenting the next or previous slice of the ranked list with `place: "start"`.
+   Oldest first needs no full scan: the first window paints from the first pages,
+   and each "Next" reads on. Ranking and filtering need every row: finish the scan
+   first, or say it is still reading, so a result never depends on what happened
+   to load.
+4. Leave headroom under `limits` for live reactions, edits and deletions of the
+   rows shown (a few hundred events). A presentation that fits exactly ends on
+   its first reaction.
+5. Pin what the person must see (their own pending sends, `targetId`), and let
+   the rest follow the sort. Their rows fold from the outbox with delivery state.
+6. On `ended`, present a smaller slice, such as half as many rows, and say so.
+7. Changes made while the live connection is down (`session.live`) may never
+   arrive: a reaction to a row that is not shown, or a deletion of any age. Once
+   it drops, the result is no longer exact; say so. A relay restart reconnects
+   every viewer at once, so read again only while the window is visible, after a
+   random wait of up to 10 seconds, and do not retry a failed read on a timer.
+   The reader keeps the shown rows live until the new read presents.
+
+Known limits. A live, exact "Top" needs every reply's events held, which fits a
+few thousand replies in memory; a 50,000-reply thread is about 250 pages and 65 MB
+per viewer. Past the 8 MiB hold bound, a plugin can still rank exactly at scan time
+(`foldRows` is stateless), but live changes then reach only the rows it holds. The
+reference plugin below holds everything it reads, so past that bound it stops with
+an error instead. A true live "Top" at that size needs a
+relay-ranked query, which is a separate relay capability. A scan through
+`readPage` is trimmed: a thread view admits only rows inside its own verified
+window, so the view stays ready, but the rows past it are dropped, and unread
+keeps its own session-wide bound. The test plugin
+`tests/fixtures/conversation-arranger/plugin.ts` (not shipped) is a reference: a
+Top and Oldest arranger with a text filter and Next and Previous paging, tested
+over a 2,000-reply thread and a 5,000-row channel.
+
 ### Channel-header launchers
 
 A panel may additionally contribute `channelLauncher: ComponentType<ChannelLauncherProps>`.

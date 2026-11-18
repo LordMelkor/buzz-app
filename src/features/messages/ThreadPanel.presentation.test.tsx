@@ -1,0 +1,699 @@
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+import { StrictMode, useLayoutEffect } from "react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Contribution } from "../../plugins/contributions";
+import type {
+  ComposerAccessory,
+  ComposerAccessoryProps,
+  ConversationExtensions,
+  ConversationPresentation,
+  PresentResult,
+} from "../conversation/contracts";
+import type { ChannelMessage } from "../relay/contracts";
+import { eventDto, type EventData, type RelayEvent } from "../relay/events";
+import type { LiveCallbacks } from "../relay/live";
+import { createRelaySession, type RelaySession } from "../relay/session";
+import type { ThreadSnapshot, ThreadView } from "../relay/threads";
+import { keypair, message, roster, scriptedTransport } from "../relay/testing";
+import type { PageNavigation } from "../navigation/service";
+import type { MessageComposerProps } from "./MessageComposer";
+import type { MessageRowProps } from "./MessageRow";
+import { ThreadPanel, type ThreadPanelProps } from "./ThreadPanel";
+import type { Reading } from "./use-reading";
+
+type ReadingProps = Parameters<typeof Reading>[0];
+const readingProps: ReadingProps[] = [];
+vi.mock("./use-reading", () => ({
+  Reading: (props: ReadingProps) => {
+    readingProps.push(props);
+    return null;
+  },
+  readingPositioned: () => {},
+}));
+vi.mock("./TypingIndicator", () => ({
+  TypingIndicator: () => null,
+  useLiveConversationAgents: () => [],
+}));
+vi.mock("./MessageRow", () => ({
+  MessageRow: ({ row, onReply, day, stackPrevious }: MessageRowProps) => (
+    <article
+      data-message-id={row.id}
+      data-day={day || undefined}
+      data-stack-previous={stackPrevious || undefined}
+    >
+      <span>{row.content}</span>
+      <button type="button" onClick={() => onReply?.(row.id)}>
+        Reply to {row.content}
+      </button>
+    </article>
+  ),
+}));
+vi.mock("./MessageComposer", () => ({
+  MessageComposer: ({ replyParentId, replyContext }: MessageComposerProps) => (
+    <section aria-label="Composer" data-parent={replyParentId}>
+      {replyContext}
+    </section>
+  ),
+}));
+
+const viewer = keypair();
+const other = keypair();
+const relay = keypair();
+const T = 1_700_000_000;
+const DAY = 86_400;
+const proven = (event: RelayEvent): EventData => eventDto(event);
+const root = proven(message(other, "c", "root", T));
+const replyEvent = (name: string, at: number): EventData =>
+  proven(message(other, "c", name, at, [["e", root.id, "", "reply"]]));
+// The plugin's rows; the host's own view never loads them.
+const [a, b, c, d] = ["a", "b", "c", "d"].map((name, index) =>
+  replyEvent(name, T + 10 + index),
+) as [EventData, EventData, EventData, EventData];
+const named = new Map(
+  [root, a, b, c, d].map((event) => [event.id, event.content]),
+);
+
+const owners: ReturnType<typeof createRelaySession>[] = [];
+afterEach(() => {
+  cleanup();
+  for (const owner of owners.splice(0)) owner.dispose();
+  readingProps.length = 0;
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
+});
+
+/** Rows lay out 100px apart in the order drawn, the first at 100. */
+let scrolled = 0;
+beforeEach(() => {
+  scrolled = 0;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  HTMLElement.prototype.scrollTo = vi.fn();
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(4000);
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set(value: number) {
+      scrolled = Math.max(0, Math.min(value, 3400));
+    },
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      if (this.dataset.messageId === undefined)
+        return new DOMRect(0, 0, 500, 600);
+      const at = [
+        ...document.querySelectorAll("[data-thread-rows] ol [data-message-id]"),
+      ].indexOf(this);
+      return new DOMRect(0, (at < 0 ? 0 : 100 * (at + 1)) - scrolled, 500, 50);
+    },
+  );
+});
+
+const readerEntry = (
+  component: Contribution<ComposerAccessory>["component"],
+): Contribution<ComposerAccessory> => ({
+  id: "arranger",
+  key: "test:arranger",
+  pluginId: "test",
+  revision: "one",
+  title: "Arranger",
+  placement: "reader",
+  component,
+});
+
+function mount({
+  replies = [],
+  snapshot = {},
+  props = {},
+  strict = false,
+  onProps,
+  navigation,
+  unread = {},
+}: {
+  /** What the host's own view loaded. */
+  replies?: readonly EventData[];
+  snapshot?: Partial<ThreadSnapshot>;
+  props?: Partial<ThreadPanelProps>;
+  strict?: boolean;
+  /** Runs in the accessory's layout effect, as a plugin presenting at mount. */
+  onProps?: (props: ComposerAccessoryProps) => void;
+  navigation?: PageNavigation;
+  /** Replaces parts of the session's unread owner. */
+  unread?: Partial<Record<string, unknown>>;
+} = {}) {
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  let callbacks!: LiveCallbacks;
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      subscribe(next) {
+        callbacks = next;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    },
+    { outboxStorage: { load: () => [], save() {} } },
+  );
+  owners.push(owner);
+  owner.session.channels.ensure("c");
+  callbacks.receive([roster(relay, "c", [viewer.pubkey], T)]);
+  const rowsOf = (events: readonly EventData[]): readonly ChannelMessage[] =>
+    owner.session.foldRows("c", events, root.id);
+  const [rootRow] = rowsOf([root]) as [ChannelMessage];
+  let published: ThreadSnapshot = {
+    status: "ready",
+    root: rootRow,
+    replies: rowsOf([root, ...replies]).filter((row) => row.id !== root.id),
+    error: undefined,
+    canLoadMore: false,
+    limited: false,
+    direction: "older",
+    ...snapshot,
+  };
+  const listeners = new Set<() => void>();
+  const view = {
+    snapshot: () => published,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    refresh: vi.fn(async () => {}),
+    loadMore: vi.fn(async () => {}),
+    retarget: vi.fn(async () => "selected" as const),
+    dispose: vi.fn(),
+  } satisfies ThreadView;
+  const thread = vi.fn(() => view);
+  const session = {
+    ...owner.session,
+    thread,
+    unread: { ...owner.session.unread, ...unread },
+  } as RelaySession;
+  const latest: { current?: ComposerAccessoryProps } = {};
+  const registry = {
+    snapshot: () => entries,
+    subscribe: () => () => {},
+  };
+  const entries = [
+    readerEntry((accessory) => {
+      latest.current = accessory;
+      // Every commit, as a plugin reacting to whatever else changed.
+      useLayoutEffect(() => {
+        onProps?.(accessory);
+      });
+      return <span>bar</span>;
+    }),
+  ];
+  const element = (
+    <ThreadPanel
+      session={session}
+      scope="scope"
+      channelName="General"
+      channelId="c"
+      messageId={root.id}
+      close={() => {}}
+      active
+      onOpenLink={() => false}
+      extensions={
+        { accessories: registry } as unknown as ConversationExtensions
+      }
+      navigation={navigation}
+      {...props}
+    />
+  );
+  render(strict ? <StrictMode>{element}</StrictMode> : element);
+  return {
+    view,
+    thread,
+    session,
+    latest,
+    rowsOf,
+    /** The host's view publishes a new state. */
+    publish(next: Partial<ThreadSnapshot>) {
+      published = { ...published, ...next };
+      act(() => {
+        for (const listener of listeners) listener();
+      });
+    },
+    present(
+      presentation: Partial<ConversationPresentation> & {
+        ids: readonly string[];
+      },
+    ) {
+      let result: PresentResult | undefined;
+      act(() => {
+        result = latest.current?.present?.({
+          events: [a, b, c, d],
+          ...presentation,
+        });
+      });
+      return result;
+    },
+    withdraw() {
+      act(() => {
+        latest.current?.present?.(null);
+      });
+    },
+  };
+}
+/** The messages drawn, in order, root first. */
+const drawn = () =>
+  [...document.querySelectorAll<HTMLElement>("[data-thread-rows] article")].map(
+    (row) => named.get(row.dataset.messageId ?? "") ?? row.dataset.messageId,
+  );
+const scroller = () => screen.getByRole("region", { name: "Thread messages" });
+const lastReading = () => readingProps.at(-1) as ReadingProps;
+const navigationTo = (messageId: string) =>
+  ({
+    entryId: "visit",
+    target: {
+      version: 1,
+      kind: "conversation",
+      channelId: "c",
+      messageId,
+      threadRootId: root.id,
+      scope: {
+        viewer: viewer.pubkey,
+        communityOrigin: "https://fixture.invalid",
+      },
+    },
+    signal: new AbortController().signal,
+    complete: vi.fn<PageNavigation["complete"]>(() => true),
+    resolve: vi.fn(() => true),
+    forSession: vi.fn<PageNavigation["forSession"]>(),
+    position: vi.fn<PageNavigation["position"]>(),
+    savePosition: vi.fn<PageNavigation["savePosition"]>(),
+    passThrough: () => () => {},
+  }) as PageNavigation;
+
+it("mounts the reader bar outside the composer, so a read-only thread has it too", () => {
+  mount({ props: { soloConversation: true } });
+  expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+  const bar = screen.getByText("bar").parentElement as HTMLElement;
+  expect(lastReading().controls?.current).toBe(bar);
+  // Above the messages, outside their scroller.
+  expect(scroller().contains(bar)).toBe(false);
+  expect(
+    bar.compareDocumentPosition(scroller()) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+});
+
+it("draws the presented replies in ids order under the root, then the host's again", () => {
+  const h = mount({ replies: [d] });
+  expect(drawn()).toEqual(["root", "d"]);
+  expect(h.present({ ids: [c.id, a.id, b.id] })).toBe("shown");
+  expect(drawn()).toEqual(["root", "c", "a", "b"]);
+  expect(h.latest.current?.presentation).toBe("shown");
+  h.withdraw();
+  expect(drawn()).toEqual(["root", "d"]);
+});
+
+it("nests rows under their display parents, opening the branches it lists once each", () => {
+  const h = mount();
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [b.id]: a.id, [c.id]: b.id },
+  });
+  // Branches start closed.
+  expect(drawn()).toEqual(["root", "a"]);
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [b.id]: a.id, [c.id]: b.id },
+    open: [a.id],
+  });
+  expect(drawn()).toEqual(["root", "a", "b"]);
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [b.id]: a.id, [c.id]: b.id },
+    open: [a.id, b.id],
+  });
+  expect(drawn()).toEqual(["root", "a", "b", "c"]);
+  // The reader's own collapse stands when a presentation lists it again.
+  fireEvent.click(screen.getByRole("button", { name: /Collapse 2 replies/ }));
+  expect(drawn()).toEqual(["root", "a"]);
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [b.id]: a.id, [c.id]: b.id },
+    open: [a.id, b.id],
+  });
+  expect(drawn()).toEqual(["root", "a"]);
+  // Until it stops listing the branch and lists it anew.
+  h.present({ ids: [a.id, b.id, c.id], parents: { [b.id]: a.id } });
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [b.id]: a.id },
+    open: [a.id],
+  });
+  expect(drawn()).toEqual(["root", "a", "b", "c"]);
+});
+
+it("puts a row with an unknown or later parent at the top level", () => {
+  const h = mount();
+  h.present({
+    ids: [a.id, b.id, c.id],
+    parents: { [a.id]: b.id, [b.id]: "ghost" },
+  });
+  expect(drawn()).toEqual(["root", "a", "b", "c"]);
+});
+
+it("never loads more of the host's history while it presents", () => {
+  const unreadIds = new Set([d.id]);
+  const h = mount({
+    snapshot: { canLoadMore: true, readKind: "older" },
+    unread: {
+      attention: (_channel: string, id: string) => ({
+        unread: unreadIds.has(id),
+        forced: false,
+      }),
+      threadReadThrough: () => -1,
+    },
+  });
+  h.present({ ids: [a.id, b.id] });
+  // The older page lands. With unread known in the host's rows, the unread
+  // line would page back to find its place.
+  h.publish({ replies: h.rowsOf([root, d]).slice(1), readKind: undefined });
+  fireEvent.wheel(scroller(), { deltaY: -100 });
+  fireEvent.keyDown(scroller(), { key: "Home" });
+  expect(h.view.loadMore).not.toHaveBeenCalled();
+  // The decision is made without it, so the reader is not left waiting.
+  expect(scroller()).not.toHaveAttribute("data-positioning");
+  expect(drawn()).toEqual(["root", "a", "b"]);
+});
+
+it("pages the host's history as ever when nothing presents", () => {
+  const h = mount({
+    replies: [d],
+    snapshot: { canLoadMore: true },
+    unread: {
+      attention: () => ({ unread: true, forced: false }),
+      threadReadThrough: () => -1,
+    },
+  });
+  expect(h.view.loadMore).toHaveBeenCalled();
+});
+
+it("does not page a legacy traversal while it presents", () => {
+  const h = mount({ snapshot: { direction: "forward", canLoadMore: true } });
+  expect(h.view.loadMore).toHaveBeenCalled();
+  h.view.loadMore.mockClear();
+  h.present({ ids: [a.id] });
+  h.publish({ canLoadMore: true });
+  expect(h.view.loadMore).not.toHaveBeenCalled();
+});
+
+it("leaves out the unread line and the earlier-reply note while it presents", () => {
+  const orphan: EventData = proven(
+    message(other, "c", "orphan", T + 20, [
+      ["e", root.id, "", "root"],
+      ["e", "f".repeat(64), "", "reply"],
+    ]),
+  );
+  named.set(orphan.id, "orphan");
+  const h = mount({
+    replies: [orphan],
+    unread: {
+      attention: (_channel: string, id: string) => ({
+        unread: id === orphan.id,
+        forced: false,
+      }),
+    },
+  });
+  expect(
+    screen.getByText("Earlier reply unavailable in loaded history."),
+  ).toBeVisible();
+  expect(document.querySelector("[data-new-messages-boundary]")).not.toBeNull();
+  // The same row, shown by a plugin.
+  h.present({ ids: [orphan.id, a.id], events: [orphan, a] });
+  expect(drawn()).toEqual(["root", "orphan", "a"]);
+  expect(
+    screen.queryByText("Earlier reply unavailable in loaded history."),
+  ).toBeNull();
+  expect(document.querySelector("[data-new-messages-boundary]")).toBeNull();
+  h.withdraw();
+  expect(document.querySelector("[data-new-messages-boundary]")).not.toBeNull();
+});
+
+it("draws no day divider and merges no rows while it presents", () => {
+  const later = replyEvent("later", T + 2 * DAY);
+  const early = replyEvent("early", T + 60);
+  const soon = replyEvent("soon", T + 120);
+  named.set(later.id, "later");
+  named.set(early.id, "early");
+  named.set(soon.id, "soon");
+  const h = mount();
+  h.present({
+    ids: [later.id, early.id, soon.id],
+    events: [later, early, soon],
+  });
+  // The order is the plugin's: a divider would date the wrong rows, and
+  // "soon" would merge into "early" across whatever the plugin left out.
+  for (const name of ["later", "early", "soon"]) {
+    const row = screen.getByText(name).closest("article") as HTMLElement;
+    expect(row).not.toHaveAttribute("data-day");
+    expect(row).not.toHaveAttribute("data-stack-previous");
+  }
+});
+
+it("replies to a presented row the host never loaded", () => {
+  const h = mount();
+  h.present({ ids: [a.id] });
+  fireEvent.click(screen.getByRole("button", { name: "Reply to a" }));
+  expect(screen.getByRole("region", { name: "Composer" })).toHaveAttribute(
+    "data-parent",
+    a.id,
+  );
+  expect(screen.queryByText("Reply target is no longer available.")).toBeNull();
+  expect(screen.getByText(/Replying to/)).toBeVisible();
+  h.withdraw();
+  // Its row is gone with the presentation, as any vanished target is.
+  expect(
+    screen.getByText("Reply target is no longer available."),
+  ).toBeVisible();
+});
+
+it("hides the jump button and keeps the arrivals count off while it presents", () => {
+  const h = mount({ replies: [d] });
+  h.present({ ids: [a.id, b.id] });
+  act(() => {
+    scrolled = 1000;
+    fireEvent.scroll(scroller());
+  });
+  expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+  expect(scroller()).not.toHaveAttribute("data-jump-visible");
+  h.withdraw();
+  act(() => {
+    scrolled = 1000;
+    fireEvent.scroll(scroller());
+  });
+  expect(screen.getByRole("button", { name: /Jump to latest/ })).toBeVisible();
+});
+
+it("yields a target it does not show: the visit opens, reading starts and the plugin sees the id", () => {
+  const navigation = navigationTo(d.id);
+  const h = mount({
+    replies: [d],
+    navigation,
+    props: { messageId: d.id },
+    snapshot: { targetStatus: "loading" },
+  });
+  expect(h.latest.current?.targetId).toBe(d.id);
+  expect(navigation.complete).not.toHaveBeenCalled();
+  h.present({ ids: [a.id, b.id] });
+  expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+    status: "opened",
+  });
+  expect(lastReading().settled.current).toBe(true);
+  expect(drawn()).toEqual(["root", "a", "b"]);
+});
+
+it("shows activity rows as the plugin lists them, unfolded", () => {
+  const step = (name: string, at: number) => {
+    const event = proven(
+      message(other, "c", name, at, [
+        ["e", root.id, "", "reply"],
+        ["audience", "agents"],
+      ]),
+    );
+    named.set(event.id, name);
+    return event;
+  };
+  const [one, two] = [step("one", T + 30), step("two", T + 31)] as [
+    EventData,
+    EventData,
+  ];
+  const h = mount({ replies: [one, two] });
+  const folded = screen.queryAllByRole("button", { name: /activity history/i });
+  expect(folded).not.toHaveLength(0);
+  h.present({ ids: [two.id, one.id], events: [one, two] });
+  expect(drawn()).toEqual(["root", "two", "one"]);
+  expect(
+    screen.queryAllByRole("button", { name: /activity history/i }),
+  ).toHaveLength(0);
+});
+
+it("starts reading when an inline reveal's row is not shown", () => {
+  const h = mount({
+    replies: [d],
+    props: { messageId: d.id, revealSelected: true, revealRequest: 1 },
+    snapshot: { targetStatus: "loading" },
+  });
+  // Its reveal is still waiting for the row.
+  expect(lastReading().settled.current).toBe(false);
+  h.present({ ids: [a.id, b.id] });
+  expect(lastReading().settled.current).toBe(true);
+});
+
+it("wires a partial presentation's reading: its end row, its newest row, its bar", () => {
+  const h = mount({ replies: [d] });
+  expect(lastReading()).toMatchObject({
+    partial: false,
+    endMessageId: undefined,
+    latestMessageId: d.id,
+  });
+  // Rows out of time order: the end is the last drawn, the latest the newest.
+  h.present({
+    ids: [c.id, a.id, b.id],
+    parents: { [b.id]: a.id },
+    open: [a.id],
+  });
+  expect(lastReading()).toMatchObject({
+    partial: true,
+    endMessageId: b.id,
+    latestMessageId: c.id,
+  });
+  expect(lastReading().controls?.current).toBe(
+    screen.getByText("bar").parentElement,
+  );
+  // A branch closed by the reader is not the last row drawn.
+  fireEvent.click(screen.getByRole("button", { name: /Collapse 1 reply/ }));
+  expect(lastReading().endMessageId).toBe(a.id);
+  // A list that holds the whole thread reads it to the end.
+  h.present({ ids: [a.id, b.id, c.id, d.id], complete: true });
+  expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
+  h.withdraw();
+  expect(lastReading()).toMatchObject({
+    partial: false,
+    endMessageId: undefined,
+    latestMessageId: d.id,
+  });
+});
+
+it("places a presentation by its place intent", () => {
+  const h = mount({ replies: [a] });
+  scrolled = 1500;
+  h.present({ ids: [b.id, c.id], place: "start" });
+  expect(scrolled).toBe(0);
+  // A named row is brought to the top, opening the branch that holds it.
+  h.present({
+    ids: [b.id, c.id],
+    parents: { [c.id]: b.id },
+    place: { id: c.id },
+  });
+  expect(drawn()).toEqual(["root", "b", "c"]);
+  expect(scrolled).toBe(200);
+});
+
+it("holds a place named by a presentation made at mount until its rows are drawn", () => {
+  mount({
+    onProps(accessory) {
+      if (accessory.presentation === "none")
+        accessory.present?.({
+          ids: [b.id, a.id],
+          events: [a, b],
+          place: { id: a.id },
+        });
+    },
+  });
+  expect(drawn()).toEqual(["root", "b", "a"]);
+  expect(scrolled).toBe(200);
+});
+
+it("keeps the first visible row where it was, or the nearest one still shown", () => {
+  const h = mount({ replies: [a, b, c] });
+  // `b` is the first row in view, 50px down.
+  scrolled = 150;
+  h.present({ ids: [d.id, a.id, b.id, c.id] });
+  // It now sits 100px lower; keeping brings it back to 50px.
+  expect(scrolled).toBe(250);
+  // Without that row, the nearest one still shown takes its place.
+  h.present({ ids: [c.id, d.id] });
+  expect(scrolled).toBe(50);
+});
+
+it("returns the host's rows at the anchor with no host read", () => {
+  const h = mount({ replies: [a, b, c] });
+  const reads = () => [
+    h.thread.mock.calls.length,
+    h.view.refresh.mock.calls.length,
+    h.view.loadMore.mock.calls.length,
+  ];
+  const before = reads();
+  scrolled = 150;
+  h.present({ ids: [d.id, c.id, b.id] });
+  expect(scrolled).toBe(250);
+  h.withdraw();
+  expect(drawn()).toEqual(["root", "a", "b", "c"]);
+  expect(scrolled).toBe(150);
+  expect(reads()).toEqual(before);
+});
+
+it("holds a place until the presented rows commit, when a host update lands with the presentation", () => {
+  let present = false;
+  const h = mount({
+    replies: [a],
+    onProps(accessory) {
+      if (present && accessory.presentation === "none")
+        accessory.present?.({
+          ids: [b.id, a.id],
+          events: [a, b],
+          place: { id: b.id },
+        });
+    },
+  });
+  present = true;
+  h.publish({ replies: h.rowsOf([root, a, c]).slice(1) });
+  expect(drawn()).toEqual(["root", "b", "a"]);
+  expect(scrolled).toBe(100);
+});
+
+it("shows a presentation made at mount, once, under StrictMode", () => {
+  mount({
+    strict: true,
+    onProps(accessory) {
+      if (accessory.presentation === "none")
+        accessory.present?.({
+          ids: [b.id, a.id],
+          events: [a, b],
+          place: "start",
+        });
+    },
+  });
+  expect(drawn()).toEqual(["root", "b", "a"]);
+  expect(scrolled).toBe(0);
+});
+
+it("unmounts the reader and revokes its present when the view drops its root, as a cache clear does", () => {
+  const h = mount({ replies: [a] });
+  h.present({ ids: [b.id, a.id] });
+  const present = h.latest.current?.present;
+  expect(drawn()).toEqual(["root", "b", "a"]);
+  // A cache clear empties every hold; the view purges and loses its root, so no
+  // presenting reader is left without live evidence.
+  h.publish({ status: "idle", root: undefined, replies: [] });
+  expect(screen.queryByText("bar")).toBeNull();
+  expect(present?.({ ids: [a.id], events: [a] })).toBe("retired");
+});

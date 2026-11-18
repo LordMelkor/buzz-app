@@ -508,6 +508,9 @@ export async function connectNativeTransport(
   const searchSort =
     Array.isArray(info.supported_extensions) &&
     info.supported_extensions.includes("buzz-search-sort");
+  const windowNewer =
+    Array.isArray(info.supported_extensions) &&
+    info.supported_extensions.includes("buzz-window-newer");
   const artifacts = info.artifacts as
     | { sync?: { version?: unknown } }
     | undefined;
@@ -1070,6 +1073,7 @@ export async function connectNativeTransport(
       nativeAttachmentUpload(origin, file, signal, progress),
     ...(channelIdentity ? { channelIdentity: true as const } : {}),
     ...(searchSort ? { searchSort: true as const } : {}),
+    ...(windowNewer ? { windowNewer: true as const } : {}),
     ...(artifactSync ? { artifactSync: true as const } : {}),
     verifiedProfiles: verifiedProfileAuthority(info),
     async readVerifiedProfileAuthority(signal) {

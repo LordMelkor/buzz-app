@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { useLayoutEffect } from "react";
-import type { ComposerAccessoryProps, ComposerAccessory } from "./contracts";
+import { useLayoutEffect, useRef, useState } from "react";
+import type {
+  ComposerAccessoryProps,
+  ComposerAccessory,
+  ConversationPresentation,
+  PresentResult,
+} from "./contracts";
+import { createArrangement } from "../messages/arrangement";
 import type { Contribution } from "../../plugins/contributions";
 import { ComposerAccessories } from "./ComposerAccessories";
 import type { RelaySession } from "../relay/session";
@@ -210,4 +216,192 @@ it("gives only one decorator the host summary and restores the fallback on remov
   view.rerender(<ComposerAccessories {...props} />);
   expect(screen.getAllByRole("button", { name: "6 replies" })).toHaveLength(1);
   expect(screen.queryByText("Activity preview")).toBeNull();
+});
+
+const nothing: ConversationPresentation = { ids: [], events: [] };
+const fakeSession = () =>
+  ({
+    retain: () => ({ set() {}, dispose() {} }),
+    foldRows: () => [],
+    subscribeLive: () => () => {},
+    profiles: { subscribe: () => () => {} },
+  }) as unknown as RelaySession;
+const readerEntry = (
+  key: string,
+  component: Contribution<ComposerAccessory>["component"],
+  order?: number,
+): Contribution<ComposerAccessory> => ({
+  id: key,
+  key: `test:${key}`,
+  pluginId: "test",
+  revision: "one",
+  title: key,
+  placement: "reader",
+  ...(order === undefined ? {} : { order }),
+  component,
+});
+function readerHost() {
+  const session = fakeSession();
+  const arrangement = createArrangement({
+    session,
+    channelId: "channel",
+    limits: { rows: 10, events: 10, bytes: 1000 },
+  });
+  let entries: Contribution<ComposerAccessory>[] = [];
+  const listeners = new Set<() => void>();
+  const registry = {
+    snapshot: () => entries,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const props = {
+    registry,
+    placement: "reader" as const,
+    arrangement,
+    session,
+    scope: "scope",
+    channelId: "channel",
+    open: () => true,
+    canOpen: () => true,
+  };
+  return {
+    arrangement,
+    props,
+    session,
+    set(next: Contribution<ComposerAccessory>[]) {
+      entries = next;
+      act(() => {
+        for (const listener of listeners) listener();
+      });
+    },
+  };
+}
+
+it("gives a reader accessory present, its status and the limits, never the host, and revokes present", () => {
+  let latest!: ComposerAccessoryProps;
+  const entry = readerEntry("one", (props) => {
+    useLayoutEffect(() => {
+      latest = props;
+    });
+    return null;
+  });
+  const reader = readerHost();
+  reader.set([entry]);
+  const view = render(<ComposerAccessories {...reader.props} />);
+  expect("arrangement" in latest).toBe(false);
+  expect(latest.limits).toBe(reader.arrangement.limits);
+  expect(latest.presentation).toBe("none");
+  let result: PresentResult | undefined;
+  act(() => {
+    result = latest.present?.(nothing);
+  });
+  expect(result).toBe("shown");
+  expect(latest.presentation).toBe("shown");
+  const original = latest.present;
+  const replaced = fakeSession();
+  view.rerender(<ComposerAccessories {...reader.props} session={replaced} />);
+  expect(original?.(nothing)).toBe("retired");
+  expect(latest.present?.(nothing)).toBe("shown");
+  const current = latest.present;
+  reader.set([]);
+  expect(current?.(nothing)).toBe("retired");
+  expect(latest.present?.(nothing)).toBe("retired");
+});
+
+it("gives no present to a reader accessory without a host, or to other placements", () => {
+  let latest!: ComposerAccessoryProps;
+  const component = (props: ComposerAccessoryProps) => {
+    useLayoutEffect(() => {
+      latest = props;
+    });
+    return null;
+  };
+  const reader = readerHost();
+  reader.set([readerEntry("one", component)]);
+  const { arrangement: _, ...without } = reader.props;
+  render(<ComposerAccessories {...without} />);
+  expect(latest.present).toBeUndefined();
+  expect(latest.presentation).toBeUndefined();
+  cleanup();
+  reader.set([{ ...readerEntry("one", component), placement: "composer" }]);
+  render(<ComposerAccessories {...reader.props} placement="composer" />);
+  expect(latest.present).toBeUndefined();
+});
+
+it("withdraws a reader lane when its accessory unmounts", () => {
+  let present: ComposerAccessoryProps["present"];
+  const reader = readerHost();
+  reader.set([
+    readerEntry("a", (props) => {
+      present = props.present;
+      return null;
+    }),
+  ]);
+  const view = render(<ComposerAccessories {...reader.props} />);
+  act(() => {
+    present?.(nothing);
+  });
+  expect(reader.arrangement.snapshot()).toBeDefined();
+  view.unmount();
+  expect(reader.arrangement.snapshot()).toBeUndefined();
+});
+
+it.each([false, true])(
+  "withdraws a throwing reader lane, revokes its present and promotes the next (StrictMode %s)",
+  (reactStrictMode) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let bombPresent: ComposerAccessoryProps["present"];
+    let explode!: () => void;
+    function Bomb(props: ComposerAccessoryProps) {
+      const [broken, setBroken] = useState(false);
+      explode = () => setBroken(true);
+      if (broken) throw new Error("boom");
+      useLayoutEffect(() => {
+        bombPresent = props.present;
+      });
+      return <span>bomb</span>;
+    }
+    let sparePresent: ComposerAccessoryProps["present"];
+    const reader = readerHost();
+    const [bomb, spare] = [
+      readerEntry("a", Bomb, 0),
+      readerEntry("b", (props) => {
+        sparePresent = props.present;
+        return <span>{`spare:${props.presentation}`}</span>;
+      }),
+    ] as const;
+    reader.set([bomb, spare]);
+    render(<ComposerAccessories {...reader.props} />, { reactStrictMode });
+    act(() => {
+      bombPresent?.(nothing);
+      sparePresent?.(nothing);
+    });
+    expect(screen.getByText("spare:held")).toBeTruthy();
+    act(() => explode());
+    expect(screen.getByText("a unavailable")).toBeTruthy();
+    expect(screen.getByText("spare:shown")).toBeTruthy();
+    expect(reader.arrangement.status(bomb)).toBe("none");
+    expect(bombPresent?.(nothing)).toBe("retired");
+    expect(reader.arrangement.status(spare)).toBe("shown");
+    error.mockRestore();
+  },
+);
+
+it("keeps a reader lane presented once, in a layout effect, through a StrictMode replay", () => {
+  function Once(props: ComposerAccessoryProps) {
+    const done = useRef(false);
+    useLayoutEffect(() => {
+      if (done.current) return;
+      done.current = true;
+      props.present?.(nothing);
+    }, [props.present]);
+    return <span>{`once:${props.presentation}`}</span>;
+  }
+  const reader = readerHost();
+  reader.set([readerEntry("a", Once)]);
+  render(<ComposerAccessories {...reader.props} />, { reactStrictMode: true });
+  expect(screen.getByText("once:shown")).toBeTruthy();
+  expect(reader.arrangement.snapshot()).toBeDefined();
 });

@@ -1130,6 +1130,14 @@ Quitting Buzz also turns it off.
   header actions come from the plugin. Closing a side tab keeps the main view.
   Plugins can also make their panels available as conversation detail links.
   Back and Forward restore these visits. Close retires the closed panel's visits.
+- **Sorting a thread or channel**: a plugin can add a bar above the messages,
+  such as Top replies or From the start. While it shows rows, Buzz keeps its own
+  new-messages line, earlier-replies note, Jump button and arrival count off, and
+  marks as read only the rows you view, unless the plugin shows the whole
+  conversation. A thread's original message stays above the rows. Reactions and
+  deletions apply as they arrive. The plugin's own control, or removing the
+  plugin, returns Buzz's rows at the row you were reading. Replying to a row
+  still answers the message it was written to.
 - **Close tabs or the window (macOS)**: ⌘W closes the active tab. With no tab
   to close, it closes the window while Buzz and running agents stay open.
   Reopen Buzz from the Dock. ⌘⇧W clears the current channel's tabs without

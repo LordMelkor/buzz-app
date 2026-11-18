@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
-import { assert, afterEach, expect, it, vi } from "vitest";
+import { assert, afterEach, describe, expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
 import { connectBrokerTransport } from "./transport";
 import type { ReadFilter, RelayEvent } from "./events";
 import type { LiveCallbacks } from "./live";
 import { keypair, message, roster, signed } from "./testing";
-import { threadBinding, threadAuthority } from "./thread-window";
+import {
+  type ThreadCursor,
+  threadAuthority,
+  threadBinding,
+  verifyThreadWindows,
+} from "./thread-window";
 import { createThreadView, type ThreadResume } from "./threads";
 
 const channel = "00000000-0000-0000-0000-000000000000";
@@ -122,6 +127,192 @@ it("matches the Rust binding vector and normalized authority, including IPv6 and
     "relay.example.:8443",
   );
   expect(threadAuthority("http://[::1]:3000")).toBe("[::1]:3000");
+});
+it("keeps the older binding when direction and root aux are explicit defaults", async () => {
+  const filter: ReadFilter = {
+    thread_window: true,
+    "#h": [channel],
+    "#e": ["ab".repeat(32)],
+    kinds: [9],
+    limit: 50,
+  };
+  const binding = (patch: Partial<ReadFilter>) =>
+    threadBinding(
+      { ...filter, ...patch },
+      "https://relay.example",
+      "ab".repeat(32),
+    );
+  // buzz-core thread_window::tests::binding_normalizes_defaults_and_binds_every_argument
+  const expected =
+    "tw:1:5252322dfd797ddb1d5f1150acd4cf914b9fc09e39bcf3048d25aed514b3546d";
+  expect(await binding({ direction: "older", root_aux: true })).toBe(expected);
+  expect(await binding({ root_aux: false })).not.toBe(expected);
+  expect(await binding({ direction: "newer" })).not.toBe(expected);
+});
+it("binds a forward page that leaves root aux out as the relay's vector", async () => {
+  const filter: ReadFilter = {
+    thread_window: true,
+    "#h": [channel],
+    "#e": ["cd".repeat(32)],
+    kinds: [9],
+    limit: 50,
+    direction: "newer",
+    after: 5,
+    after_id: "ef".repeat(32),
+    root_aux: false,
+  };
+  // buzz-core thread_window::tests::binding_encodes_direction_cursor_and_root_aux_as_specified
+  // (relay 90c63a56b). The digest is sha256 of the vector's canonical array,
+  // computed outside this code base.
+  const canonical = `["tw",1,"newer","relay.example","${"ab".repeat(32)}","${channel}","${"cd".repeat(32)}",50,100,[9],[5,"${"ef".repeat(32)}"],false,"root_aux:false"]`;
+  expect(createHash("sha256").update(canonical).digest("hex")).toBe(
+    "a417629c808147bf1592cab56498fd1137bda02e04450ba5aa6fc15d39d63c73",
+  );
+  expect(
+    await threadBinding(filter, "https://relay.example", "ab".repeat(32)),
+  ).toBe(
+    "tw:1:a417629c808147bf1592cab56498fd1137bda02e04450ba5aa6fc15d39d63c73",
+  );
+});
+describe("forward thread pages", () => {
+  const at = { created_at: 10, id: "b".repeat(64) };
+  const forward: ReadFilter = {
+    thread_window: true,
+    "#h": [channel],
+    "#e": [root.id],
+    kinds: [9],
+    limit: 50,
+    direction: "newer",
+    after: at.created_at,
+    after_id: at.id,
+    root_aux: false,
+  };
+  // Independent encoder for a `newer` bound, as NIP-CW specifies it.
+  const newerBound = (filter: ReadFilter, content: Record<string, unknown>) => {
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "tw",
+          1,
+          "newer",
+          "relay.example:8443",
+          viewer.pubkey,
+          channel,
+          root.id,
+          filter.limit,
+          100,
+          [9],
+          filter.after === undefined ? null : [filter.after, filter.after_id],
+          false,
+          ...(filter.root_aux === false ? ["root_aux:false"] : []),
+        ]),
+      )
+      .digest("hex");
+    return signed(relay, {
+      kind: 39007,
+      tags: [
+        ["d", `tw:1:${digest}`],
+        ["h", channel],
+        ["e", root.id],
+      ],
+      content: JSON.stringify({ version: 1, ...content }),
+    });
+  };
+  const verify = (filter: ReadFilter, bound: RelayEvent) =>
+    verifyThreadWindows([filter], [bound], origin, viewer.pubkey, relay.pubkey);
+  it("accept a newer bound that moves forward in relay order", async () => {
+    for (const next of [
+      { created_at: 11, id: "f".repeat(64) },
+      { created_at: 10, id: "a".repeat(64) },
+      null,
+    ])
+      await expect(
+        verify(
+          forward,
+          newerBound(forward, {
+            direction: "newer",
+            has_more: next !== null,
+            next_cursor: next,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    const { after: _a, after_id: _b, ...head } = forward;
+    await expect(
+      verify(
+        head,
+        newerBound(head, {
+          direction: "newer",
+          has_more: true,
+          next_cursor: at,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+  it("reject a direction mismatch either way", async () => {
+    await expect(
+      verify(
+        forward,
+        newerBound(forward, {
+          direction: "older",
+          has_more: false,
+          next_cursor: null,
+        }),
+      ),
+    ).rejects.toThrow(/bounds are invalid/);
+    const older: ReadFilter = {
+      thread_window: true,
+      "#h": [channel],
+      "#e": [root.id],
+      kinds: [9],
+      limit: 50,
+    };
+    await expect(
+      verify(older, bounds(older, null, { direction: "newer" })),
+    ).rejects.toThrow(/bounds are invalid/);
+    // An older bound for a newer request misses its binding.
+    await expect(verify(forward, bounds(older))).rejects.toThrow(
+      /bounds are invalid/,
+    );
+  });
+  it.each([
+    { created_at: 9, id: "b".repeat(64) },
+    { created_at: 10, id: "b".repeat(64) },
+    { created_at: 10, id: "c".repeat(64) },
+  ])("reject a newer cursor that does not advance (%o)", async (next) => {
+    await expect(
+      verify(
+        forward,
+        newerBound(forward, {
+          direction: "newer",
+          has_more: true,
+          next_cursor: next,
+        }),
+      ),
+    ).rejects.toThrow(/bounds are invalid/);
+  });
+  it.each([
+    { next: { created_at: 11, id: "b".repeat(64) }, advances: false },
+    { next: { created_at: 10, id: "b".repeat(64) }, advances: false },
+    { next: { created_at: 10, id: "a".repeat(64) }, advances: false },
+    { next: { created_at: 10, id: "c".repeat(64) }, advances: true },
+    { next: { created_at: 9, id: "a".repeat(64) }, advances: true },
+  ])(
+    "keep the older advance check (next $next.created_at)",
+    async ({ next, advances }) => {
+      const older: ReadFilter = {
+        thread_window: true,
+        "#h": [channel],
+        "#e": [root.id],
+        kinds: [9],
+        limit: 50,
+        until: at.created_at,
+        before_id: at.id,
+      };
+      const result = verify(older, bounds(older, next));
+      if (advances) await expect(result).resolves.toBeUndefined();
+      else await expect(result).rejects.toThrow(/bounds are invalid/);
+    },
+  );
 });
 it("pages 303 tied replies newest-first, deduplicates live rows and repairs retained overlays", async () => {
   const rows = Array.from({ length: 303 }, (_, n) => reply(n));
@@ -1975,4 +2166,220 @@ it("settles session recovery when a read view with a quiet failure passes its me
     vi.restoreAllMocks();
     view.dispose();
   }
+});
+
+// A view's window is its committed pages, in the relay's full order. Rows
+// past its cursor belong to the next older page, whatever read carried them.
+const replyAt = (content: string, created_at: number) =>
+  message(author, channel, content, created_at, [["e", root.id, "", "reply"]]);
+const newestPage = Array.from({ length: 10 }, (_, n) =>
+  replyAt(`head ${n}`, 1000 + n),
+);
+// Signed once: 2,000 replies older than the newest page's cursor.
+const olderScan = Array.from({ length: 2000 }, (_, n) =>
+  replyAt(`older ${n}`, 2 + Math.floor(n / 4)),
+);
+const pageCursor = cursorOf(newestPage[0] as RelayEvent);
+const scanOrder = [...olderScan].sort(
+  (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+);
+const headOnly = (filter: ReadFilter) =>
+  filter.ids
+    ? [root]
+    : filter.thread_window
+      ? [...newestPage, bounds(filter, pageCursor)]
+      : scanOrder
+          .filter(
+            (e) =>
+              filter.until === undefined ||
+              e.created_at < filter.until ||
+              (e.created_at === filter.until &&
+                e.id > (filter.before_id ?? "")),
+          )
+          .slice(0, filter.limit);
+
+it.each(["live traffic", "a session readPage scan"])(
+  "keeps a view ready with the same rows when %s carries 2,000 replies older than its cursor",
+  async (source) => {
+    const h = await setup(headOnly);
+    await h.view.refresh();
+    const before = h.view.snapshot().replies;
+    expect(before).toHaveLength(10);
+    if (source === "live traffic") h.traffic.receive(olderScan);
+    // A plugin pages the scan; the relay serves at most 500 per read.
+    else
+      for (let cursor: ThreadCursor | undefined, n = 0; n < 4; n++) {
+        const { events } = await h.session.readPage([
+          {
+            kinds: [9],
+            "#h": [channel],
+            "#e": [root.id],
+            limit: 500,
+            ...(cursor
+              ? { until: cursor.created_at, before_id: cursor.id }
+              : {}),
+          },
+        ]);
+        cursor = events.at(-1);
+      }
+    expect(h.view.snapshot()).toMatchObject({
+      status: "ready",
+      error: undefined,
+      limited: false,
+    });
+    expect(h.view.snapshot().replies).toBe(before);
+    const live = replyAt("live", 2000);
+    const held = newestPage[3] as RelayEvent;
+    h.traffic.receive([live]);
+    h.traffic.receive([
+      signed(author, {
+        kind: 5,
+        content: "",
+        created_at: 2001,
+        tags: [["e", held.id]],
+      }),
+    ]);
+    const ids = h.view.snapshot().replies.map((row) => row.id);
+    expect(ids).toContain(live.id);
+    expect(ids).not.toContain(held.id);
+    expect(ids).toHaveLength(10);
+  },
+);
+
+it("admits a reply at the cursor's second only when its id is at or below the cursor's, and any legacy diff", async () => {
+  const tied = Array.from({ length: 3 }, (_, n) =>
+    replyAt(`tied ${n}`, 50),
+  ).sort((a, b) => a.id.localeCompare(b.id));
+  const [low, mid, high] = tied as [RelayEvent, RelayEvent, RelayEvent];
+  const newer = replyAt("newer", 60);
+  // Older pages run `created_at DESC, id ASC`: the cursor ends mid-second.
+  const h = await setup((filter) =>
+    filter.ids ? [root] : [newer, mid, bounds(filter, cursorOf(mid))],
+  );
+  await h.view.refresh();
+  // Strict pages never return a legacy diff, so one past the cursor stays.
+  const diff = signed(author, {
+    kind: 40008,
+    content: "diff",
+    created_at: 40,
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+    ],
+  });
+  h.traffic.receive([low, high, diff]);
+  expect(h.view.snapshot().replies.map((row) => row.id)).toEqual(
+    [diff, low, mid, newer].map((row) => row.id),
+  );
+});
+
+it("skips an oversized replay into a view with no page yet, then commits its first page", async () => {
+  const thread = createThreadView({
+    channelId: channel,
+    messageId: root.id,
+    relayAuthor: relay.pubkey,
+    reader: {
+      read: async ([filter]) => (filter ? headOnly(filter) : []),
+    },
+    seed: root,
+    local: undefined,
+    canAccess: () => true,
+    visible: (events) => events,
+    notify: (listener) => listener(),
+  });
+  try {
+    thread.receive([...olderScan, ...newestPage]);
+    expect(thread.view.snapshot()).toMatchObject({ error: undefined });
+    await thread.view.refresh();
+    expect(thread.view.snapshot()).toMatchObject({
+      status: "ready",
+      error: undefined,
+      canLoadMore: true,
+    });
+    expect(thread.view.snapshot().replies.map((row) => row.id)).toEqual(
+      newestPage.map((row) => row.id),
+    );
+  } finally {
+    thread.view.dispose();
+  }
+});
+
+it("admits a live reply inside the pages a refresh has read past the committed cursor", async () => {
+  const one = at(1),
+    two = at(2),
+    three = at(3),
+    four = at(4);
+  // Its timestamp places it between two pages the refresh has already read.
+  const late = message(author, channel, "late", 25, [
+    ["e", root.id, "", "reply"],
+  ]);
+  let reconnected = false;
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => (release = resolve));
+  let reading!: () => void;
+  const reached = new Promise<void>((resolve) => (reading = resolve));
+  const h = await setup(async (filter) => {
+    if (filter.ids) return [root];
+    if (!reconnected) return [three, bounds(filter, cursorOf(three))];
+    if (filter.until === undefined)
+      return [four, bounds(filter, cursorOf(four))];
+    if (filter.until === four.created_at)
+      return [two, bounds(filter, cursorOf(two))];
+    reading();
+    await paused;
+    return [one, bounds(filter)];
+  });
+  await h.view.refresh();
+  reconnected = true;
+  h.traffic.established(channel);
+  await reached;
+  h.traffic.receive([late]);
+  release();
+  await vi.waitFor(() => {
+    expect(h.view.snapshot()).toMatchObject({ status: "ready" });
+    expect(h.view.snapshot().replies.map((row) => row.id)).toContain(one.id);
+  });
+  expect(h.view.snapshot().replies.map((row) => row.id)).toContain(late.id);
+});
+it("keeps a live deletion of a row a refresh reads past the committed cursor", async () => {
+  // The held reply is gone after the drop, so the refresh pages past the
+  // window it had, to the end of the thread.
+  const one = at(1),
+    two = at(2),
+    three = at(3),
+    four = at(4);
+  let reconnected = false;
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => (release = resolve));
+  let reading!: () => void;
+  const reached = new Promise<void>((resolve) => (reading = resolve));
+  const h = await setup(async (filter) => {
+    if (filter.ids) return [root];
+    if (!reconnected) return [three, bounds(filter, cursorOf(three))];
+    if (filter.until === undefined)
+      return [four, bounds(filter, cursorOf(four))];
+    if (filter.until === four.created_at)
+      return [two, bounds(filter, cursorOf(two))];
+    reading();
+    await paused;
+    return [one, bounds(filter)];
+  });
+  await h.view.refresh();
+  reconnected = true;
+  h.traffic.established(channel);
+  await reached;
+  h.traffic.receive([
+    signed(author, {
+      kind: 5,
+      content: "",
+      created_at: 500,
+      tags: [["e", two.id]],
+    }),
+  ]);
+  release();
+  await vi.waitFor(() => {
+    expect(h.view.snapshot()).toMatchObject({ status: "ready" });
+    expect(h.view.snapshot().replies.map((row) => row.id)).toContain(one.id);
+  });
+  expect(h.view.snapshot().replies.map((row) => row.id)).not.toContain(two.id);
 });

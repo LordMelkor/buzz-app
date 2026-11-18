@@ -45,6 +45,13 @@ export type ReadFilter = Readonly<{
   feed_types?: readonly string[];
   thread_window?: boolean;
   depth_limit?: number;
+  /** NIP-CW windows, only for relays advertising `buzz-window-newer`:
+   * `newer` pages oldest first from `after`/`after_id`, and `root_aux: false`
+   * leaves the root's aux out of a thread page. */
+  direction?: "older" | "newer";
+  after?: number;
+  after_id?: string;
+  root_aux?: boolean;
   thread_cursor?: number;
   thread_cursor_id?: string;
 }>;

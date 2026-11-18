@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { Contribution } from "../../plugins/contributions";
+import type { Arrangement } from "../messages/arrangement";
 import type {
   ComposerAccessory,
   ComposerAccessoryProps,
@@ -14,13 +15,17 @@ import type {
 } from "./contracts";
 import { ContributionBoundary, contributionKey } from "./ContributionBoundary";
 
+const noSubscription = () => () => {};
 export function ComposerAccessories({
   registry,
   placement,
+  arrangement,
   ...props
 }: ComposerAccessoryProps & {
   registry: ContributionReader<ComposerAccessory>;
   placement?: ComposerAccessory["placement"];
+  /** Reader placement: the host the accessories present to. Never given to them. */
+  arrangement?: Arrangement | undefined;
 }) {
   const entries = useSyncExternalStore(
     registry.subscribe,
@@ -58,6 +63,7 @@ export function ComposerAccessories({
           <OwnedAccessory
             entry={entry}
             registry={registry}
+            arrangement={placement === "reader" ? arrangement : undefined}
             {...props}
             renderMessageSummary={
               entry === decorator ? props.renderMessageSummary : undefined
@@ -71,10 +77,12 @@ export function ComposerAccessories({
 const OwnedAccessory = memo(function OwnedAccessory({
   entry,
   registry,
+  arrangement,
   ...props
 }: ComposerAccessoryProps & {
   entry: Contribution<ComposerAccessory>;
   registry: ContributionReader<ComposerAccessory>;
+  arrangement: Arrangement | undefined;
 }) {
   const current = useRef(props);
   useLayoutEffect(() => {
@@ -83,8 +91,22 @@ const OwnedAccessory = memo(function OwnedAccessory({
   const canOpenThread = !!props.openThread;
   const [commands, setCommands] =
     useState<
-      Pick<ComposerAccessoryProps, "open" | "openThread" | "onFocusedRemoval">
+      Pick<
+        ComposerAccessoryProps,
+        "open" | "openThread" | "onFocusedRemoval" | "present"
+      >
     >();
+  const presentation = useSyncExternalStore(
+    arrangement?.subscribe ?? noSubscription,
+    () => arrangement?.status(entry),
+  );
+  // An unmounted accessory shows nothing.
+  useLayoutEffect(
+    () => () => {
+      arrangement?.present(entry, null);
+    },
+    [arrangement, entry],
+  );
   useLayoutEffect(() => {
     let live = true;
     const session = props.session;
@@ -100,11 +122,15 @@ const OwnedAccessory = memo(function OwnedAccessory({
       openThread: canOpenThread
         ? () => active() && (current.current.openThread?.() ?? false)
         : undefined,
+      present: arrangement
+        ? (presented) =>
+            active() ? arrangement.present(entry, presented) : "retired"
+        : undefined,
     });
     return () => {
       live = false;
     };
-  }, [entry, registry, props.session, canOpenThread]);
+  }, [entry, registry, props.session, canOpenThread, arrangement]);
   // Availability is read during render, so it follows this render's host;
   // dispatch goes through the committed one. Both end when this mount retires.
   const retired = useRef(false);
@@ -124,7 +150,14 @@ const OwnedAccessory = memo(function OwnedAccessory({
   );
   const Accessory = entry.component;
   return commands ? (
-    <Accessory {...props} {...commands} canOpen={canOpen} />
+    <Accessory
+      {...props}
+      {...commands}
+      canOpen={canOpen}
+      {...(arrangement
+        ? { presentation, limits: arrangement.limits }
+        : undefined)}
+    />
   ) : (
     (props.renderMessageSummary?.() ?? null)
   );

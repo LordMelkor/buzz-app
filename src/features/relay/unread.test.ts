@@ -6726,6 +6726,22 @@ it("catch-up in a DM reads the whole DM, so its channel mark replaces message ma
   expect(h.session.unread.attention("room", bottom.id).unread).toBe(false);
 });
 
+it("a partial reader in a DM reads only the messages it observes and never catches up", async () => {
+  const h = setup();
+  h.grant("room");
+  h.emit([channelMetadata(h, "dm")]);
+  const shown = message(h.alice, "room", "shown", 11);
+  const hidden = message(h.alice, "room", "hidden", 13);
+  h.emit([shown, hidden]);
+  const lease = h.session.unread.reading("room", undefined, undefined, true);
+  await lease.observe([shown.id]);
+  await lease.catchUp(hidden.id);
+  lease.dispose();
+  expect(h.session.unread.attention("room", shown.id).unread).toBe(false);
+  expect(h.session.unread.attention("room", hidden.id).unread).toBe(true);
+  expect(h.journal()?.state.frontiers).toEqual({ [`msg:${shown.id}`]: 11 });
+});
+
 it("catch-up writes only the channel frontier while the channel type is unknown", async () => {
   const h = setup();
   // The roster lists the channel before its metadata says it is a DM.
@@ -8545,4 +8561,29 @@ it("an advance's projected clear keeps a reminder another window marked again me
   } finally {
     a.unread.dispose();
   }
+});
+
+it("reads and marks unread a held-only message, never counting or caching it", async () => {
+  const h = setup();
+  h.grant("room");
+  await h.session.unread.ensure();
+  const counted = h.snapshot().observedCount;
+  const held = eventDto(message(h.alice, "room", "held", 12));
+  const handle = h.session.unread.reading("room");
+  await expect(handle.observe([held.id])).rejects.toThrow(/evidence/);
+  await expect(
+    h.session.unread.markMessageUnread("room", held.id),
+  ).rejects.toThrow(/evidence/);
+  h.session.retain().set([held]);
+  await handle.observe([held.id]);
+  expect(h.journal()?.state.frontiers).toEqual({ [`msg:${held.id}`]: 12 });
+  await h.session.unread.markMessageUnread("room", held.id);
+  await h.session.unread.markMessageRead("room", held.id);
+  // The hold is evidence only: nothing counted, nothing cached for views.
+  expect(h.snapshot().observedCount).toBe(counted);
+  expect(
+    h.session.observe([{ kinds: [9], "#h": ["room"], limit: 10 }]).snapshot()
+      .events,
+  ).toEqual([]);
+  handle.dispose();
 });

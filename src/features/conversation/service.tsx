@@ -403,7 +403,7 @@ export class ConversationService extends Service implements Conversation {
     validate(value);
     if (
       value.placement !== undefined &&
-      !["composer", "message", "response"].includes(value.placement)
+      !["composer", "message", "response", "reader"].includes(value.placement)
     )
       throw new Error("Invalid accessory placement");
     this.accessoryEntries.register(this.ctx, value);

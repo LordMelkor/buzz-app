@@ -3,6 +3,7 @@ import type { ComponentType, ReactElement, ReactNode, Ref } from "react";
 import type { Contribution, MatchOrder } from "../../plugins/contributions";
 import type { VoiceRecording } from "../relay/voice-media";
 import type { Attachment, ChannelMessage } from "../relay/contracts";
+import type { EventData } from "../relay/events";
 import type { RelaySession } from "../relay/session";
 import type { ComposerSession } from "../messages/composer-session";
 
@@ -196,6 +197,39 @@ export type MessageSummaryActivity = Readonly<{
   label: string;
   ref: Ref<HTMLButtonElement>;
 }>;
+/** Rows a reader shows from a plugin at once: a memory and DOM bound, not a policy. */
+export type PresentationLimits = Readonly<{
+  rows: number;
+  /** Events held for the rows: their edits, reactions and deletions too.
+   * Infinity where the reader has no event count bound (a channel). */
+  events: number;
+  bytes: number;
+}>;
+/** What a plugin asks a reader to show in place of the host's rows. */
+export type ConversationPresentation = Readonly<{
+  /** Rows in display order: replies in a thread (the root stays the reader's
+   * header), top-level rows in a channel. Ids that do not fold are skipped;
+   * own pending sends need no events. */
+  ids: readonly string[];
+  /** Proven events (e.g. from `snapshotRead`); the reader keeps the rows named by
+   * `ids` and their edits, reactions and deletions, and adds live ones itself. */
+  events: readonly EventData[];
+  /** Thread only, display only: the earlier presented row each row nests under.
+   * Unknown, later or cyclic parents put the row at the top level. Absent: Buzz's branches. */
+  parents?: Readonly<Record<string, string>>;
+  /** Branches shown open; the reader keeps the user's later toggles. */
+  open?: readonly string[];
+  /** `ids` hold every row of the conversation: reaching the end reads it.
+   * Otherwise only the rows viewed are read. */
+  complete?: boolean;
+  /** Default "keep": the first visible row stays where it was. */
+  place?: "keep" | "start" | Readonly<{ id: string }>;
+}>;
+/** `shown` or `held`: accepted (`null`, a withdrawal, answers `shown`); only
+ * the first accessory in order shows. `limit`: more than the reader's limits, or
+ * the reader cannot hold it now; the previous presentation stays. `invalid`:
+ * duplicate ids. `retired`: the reader, or this accessory, is gone. */
+export type PresentResult = "shown" | "held" | "limit" | "invalid" | "retired";
 export type ComposerAccessoryProps = Readonly<{
   session: RelaySession;
   scope: string;
@@ -223,6 +257,18 @@ export type ComposerAccessoryProps = Readonly<{
   openThread?: (() => boolean) | undefined;
   /** Return keyboard focus to a stable host control when a focused accessory retires. */
   onFocusedRemoval?: (() => void) | undefined;
+  /** Reader placement only: shows these rows in place of the host's, or `null`
+   * withdraws them. Absent where the reader shows no presentation. */
+  present?:
+    | ((presentation: ConversationPresentation | null) => PresentResult)
+    | undefined;
+  /** Reader placement only: this accessory's presentation, `ended` once live
+   * growth passed `limits`, until it presents again. */
+  presentation?: "none" | "shown" | "held" | "ended" | undefined;
+  /** Reader placement only. */
+  limits?: PresentationLimits | undefined;
+  /** Reader placement only: the message this reader was opened to show, if any. */
+  targetId?: string | undefined;
   /** Presentation only; the host re-resolves targets. No editor or access grant. */
   canOpen(target: string): boolean;
   /** False after contribution removal or the originating composer retires.
@@ -232,8 +278,9 @@ export type ComposerAccessoryProps = Readonly<{
 }>;
 export type ComposerAccessory = Readonly<{
   /** Defaults to the composer. Message accessories sit beside reactions;
-   * response accessories occupy an incoming row after the triggering message. */
-  placement?: "composer" | "message" | "response";
+   * response accessories occupy an incoming row after the triggering message;
+   * reader accessories sit in the reader's bar and may present its rows. */
+  placement?: "composer" | "message" | "response" | "reader";
   /** Opt into decorating the message summary; only the first ordered owner wins. */
   decoratesMessageSummary?: boolean;
   id: string;

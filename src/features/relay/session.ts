@@ -90,6 +90,7 @@ import { objectBody } from "./body";
 import { agentAudience } from "./audience";
 import type {
   ChannelList,
+  ChannelMessage,
   ChannelReadOptions,
   ChannelSummary,
 } from "./contracts";
@@ -123,6 +124,7 @@ import { attemptEnded } from "./withdraw";
 import type { ReadTransport } from "./transport";
 import type { LiveGlobal, LiveSnapshot, LiveSubscription } from "./live";
 import {
+  hasEventProof,
   hasTag,
   type ReadFilter,
   type RelayEvent,
@@ -145,9 +147,10 @@ import {
 } from "./thread-follows";
 import { createMessages, replyInvocationIntents } from "./messages";
 import { retryRead } from "./read-retry";
-import { messageAuthor } from "./fold";
+import { foldMessages, messageAuthor } from "./fold";
+import { threadReference } from "./thread-reference";
 import { createThreadView, resumeAfter, type ThreadResume } from "./threads";
-import { ByteLru } from "./budget";
+import { ByteLru, listByteSize } from "./budget";
 import { createRelayProfiler } from "./profiling";
 import { liveRecoveryStatus } from "./live-recovery";
 import {
@@ -187,6 +190,10 @@ export const ROSTER_BACKSTOP_INTERVAL = 15 * 60_000;
  * carries every unread change; this read only backs up what it can lose with
  * no signal: a channel the relay pruned from a batch, or a dropped fan-out. */
 export const UNREAD_BACKSTOP_INTERVAL = 15 * 60_000;
+
+/** The most one `retain` handle holds, in serialized event bytes: the bound
+ * of the shared cache and of a channel's retained window. */
+const RETAIN_MAX_BYTES = 8 * 1024 * 1024;
 
 /** A read of named authors' profiles, or the general statuses read with them.
  * The relay stores both per user, not per channel, so no channel access change,
@@ -350,6 +357,9 @@ export function createRelaySession(
   const pendingConfirmation = new Set<string>();
   const refreshers = new Set<() => Promise<void>>();
   const views = new Map<() => void, (clear?: boolean) => void>();
+  /** Each `retain` handle's events: evidence for visibility and lookups, never
+   * counted, cached or shown. A handle is one view slot. */
+  const holds = new Set<Map<string, RelayEvent>>();
   const threads = new Set<ReturnType<typeof createThreadView>>();
   /** Recently closed threads, so reopening one shows it at once. Memory only;
    * dropped with any access change. */
@@ -448,8 +458,14 @@ export function createRelaySession(
       canAccess(thread.channelId) ? thread.events() : [],
     );
   }
+  function heldEvent(id: string) {
+    for (const held of holds) {
+      const event = held.get(id);
+      if (event) return event;
+    }
+  }
   function retainedEvent(id: string) {
-    return retainedThreadEvent(id) ?? retainedChannelEvent(id);
+    return retainedThreadEvent(id) ?? retainedChannelEvent(id) ?? heldEvent(id);
   }
   const canReadRemote = (id: string) =>
     !options.cachedOnly && canAccess(id) && !channels.queries.get?.(id)?.cached;
@@ -1391,6 +1407,7 @@ export function createRelaySession(
     profiles: profiles.queries,
     reads,
     channels: channels.queries,
+    evidence: heldEvent,
     // Repair owns evidence only, not timeline/history ingestion. The shared
     // scheduler and verified transport stay shared; unread fences access epochs.
     reader: requests.reader,
@@ -2761,13 +2778,15 @@ export function createRelaySession(
     relayAuthor: transport?.relayAuthor,
     /** NIP-AP config artifacts: the relay's own verified answer, never merged
      * with live or local outgoing events or fed to any projection, and a
-     * kind-45010 writer when the host has one. Each read starts fresh. */
+     * kind-45010 writer when the host has one. Each read starts fresh. With
+     * `priority: "background"` a long scan queues behind foreground reads. */
     snapshotRead: transport
-      ? (((filters, { signal }) =>
-          relayRead(
-            filters,
-            signal ? { signal, fresh: true } : { fresh: true },
-          )) satisfies SnapshotRead)
+      ? (((filters, { signal, priority }) =>
+          relayRead(filters, {
+            fresh: true,
+            ...(signal ? { signal } : {}),
+            ...(priority ? { priority } : {}),
+          })) satisfies SnapshotRead)
       : undefined,
     configArtifactWriter: transport?.configArtifacts,
     workflowAuthority: transport?.archiveAuthority,
@@ -3366,6 +3385,9 @@ export function createRelaySession(
     },
     /** Whether read() search filters may ask for `search_sort: "newest"`. */
     searchSort: transport?.searchSort === true,
+    /** Whether thread and channel windows may ask for `direction: "newer"`
+     * and thread pages for `root_aux: false` (`buzz-window-newer`). */
+    windowNewer: transport?.windowNewer === true,
     /** NIP-AR sync: an exact, kept-current set of current artifacts for a
      * filter that names its channels with `#h`. Status `unsupported` means
      * this relay has no sync; use read() with `artifact: "current"` instead.
@@ -3455,6 +3477,117 @@ export function createRelaySession(
           updateInterests();
         };
       },
+    },
+    /** The rows Buzz's readers fold from these events: proven events plus this
+     * device's own intent in the conversation (with delivery state), visible ones
+     * only, with edits, reactions and deletions applied, in the readers' order.
+     * With `rootId`, the thread fold: the root and its replies. Stateless: it
+     * reads no relay and keeps no cache or view. Denied or closed: `[]`. */
+    foldRows(
+      channelId: string,
+      events: readonly EventData[],
+      rootId?: string,
+    ): readonly ChannelMessage[] {
+      if (closed || !canAccess(channelId)) return [];
+      // Failed edits, reactions and deletions never changed the content; a
+      // failed message stays, for same-event retry.
+      const own = rawLocal().filter(
+        ({ event, delivery }) =>
+          event.kind !== PRODUCT_FEEDBACK_KIND &&
+          event.tags.some(([name, id]) => name === "h" && id === channelId) &&
+          (delivery !== "failed" || [9, 40002, 40008].includes(event.kind)),
+      );
+      const inputs = new Map<string, EventData>();
+      for (const event of events)
+        if (hasEventProof(event)) inputs.set(event.id, event);
+      for (const { event } of own) inputs.set(event.id, event);
+      const all = [...inputs.values()];
+      const delivered = new Map(own.map((item) => [item.event.id, item]));
+      return foldMessages(
+        channelId,
+        transport?.relayAuthor ?? "",
+        all.filter(visibility(all)),
+        {
+          includeReplies: rootId !== undefined,
+          signingAuthority: transport?.archiveAuthority,
+          agentOwner: profiles.queries.owner,
+          // As a channel view counts them: own replies the relay has not yet.
+          pendingReplies:
+            rootId === undefined
+              ? new Set(
+                  own
+                    .filter(
+                      ({ event, delivery }) =>
+                        (delivery === "sending" || delivery === "failed") &&
+                        threadReference(event)?.rootId,
+                    )
+                    .map(({ event }) => event.id),
+                )
+              : undefined,
+        },
+      )
+        .filter(
+          (row) =>
+            rootId === undefined ||
+            row.id === rootId ||
+            row.threadRootId === rootId,
+        )
+        .map((row) => {
+          const item = delivered.get(row.id);
+          return item
+            ? Object.freeze({
+                ...row,
+                delivery: item.delivery,
+                deliveryError: item.error,
+              })
+            : row;
+        });
+    },
+    /** One holder's evidence hold: `set` replaces the events held. A held event
+     * lets its live edits, reactions and deletions pass visibility (so they reach
+     * `observe` views and `subscribeLive`), and edit, react and read marking find
+     * it, though nothing else retains it (a `snapshotRead` row, say). Only proven,
+     * visible events are held. It grants no access: every reference is still
+     * checked, on `set` and on each access change. It never takes part in
+     * `accept`, so it changes no cache, unread count or other view.
+     *
+     * One handle is one view slot of the 64 `observe` and thread views share;
+     * this throws as `observe` does when none is free. `set` throws past
+     * `RETAIN_MAX_BYTES` and keeps the previous events. A cache clear empties the
+     * hold (the handle stays valid); `dispose`, and closing the session, end it. */
+    retain() {
+      if (closed || views.size >= 64)
+        throw new Error("Relay view capacity unavailable");
+      const held = new Map<string, RelayEvent>();
+      holds.add(held);
+      const dispose = () => {
+        holds.delete(held);
+        held.clear();
+        views.delete(dispose);
+      };
+      views.set(dispose, (clear = false) => {
+        if (clear) held.clear();
+        else {
+          const visible = visibility([...held.values()]);
+          for (const event of [...held.values()])
+            if (!visible(event)) held.delete(event.id);
+        }
+      });
+      return Object.freeze({
+        set(events: readonly EventData[]) {
+          if (!holds.has(held)) return;
+          const proven = events.filter(hasEventProof) as RelayEvent[];
+          const visible = visibility(proven);
+          const next = new Map(
+            proven.filter(visible).map((event) => [event.id, event]),
+          );
+          if (listByteSize([...next.values()]) > RETAIN_MAX_BYTES)
+            throw new RangeError("Relay hold byte bound exceeded");
+          held.clear();
+          for (const [id, event] of next) held.set(id, event);
+        },
+        dispose,
+      });
     },
     /** An owned retained event view, not a replacement query snapshot. Limits bound
      * requests, not retained results. Ranked search/feed filters require read().

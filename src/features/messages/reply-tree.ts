@@ -4,8 +4,16 @@ import type { ChannelMessage } from "../relay/contracts";
  * A forest of the available history, never a claim that all parents were loaded.
  * Branches are one level deep: a reply to a nested reply joins its branch, in
  * order, so continuing a conversation never drifts further in.
+ *
+ * `displayParent` replaces those branches with given parents, to any depth:
+ * a row nests under its parent only when the parent is an earlier row, so an
+ * unknown, later, self or cyclic parent puts it at the top level.
  */
-export function replyTree(rows: readonly ChannelMessage[], rootId?: string) {
+export function replyTree(
+  rows: readonly ChannelMessage[],
+  rootId?: string,
+  displayParent?: (id: string) => string | undefined,
+) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const parentOf = (row: ChannelMessage | undefined) => {
     const parent = row?.replyParentId;
@@ -23,7 +31,21 @@ export function replyTree(rows: readonly ChannelMessage[], rootId?: string) {
   };
   const parents = new Map<string, string>();
   const children = new Map<string | undefined, ChannelMessage[]>();
-  for (const row of rows) {
+  const place = (row: ChannelMessage, parent: string | undefined) => {
+    if (parent) parents.set(row.id, parent);
+    const siblings = children.get(parent) ?? [];
+    siblings.push(row);
+    children.set(parent, siblings);
+  };
+  const index = new Map(
+    displayParent ? rows.map((row, at) => [row.id, at]) : [],
+  );
+  for (const [at, row] of rows.entries()) {
+    if (displayParent) {
+      const parent = displayParent(row.id);
+      place(row, (index.get(parent ?? "") ?? at) < at ? parent : undefined);
+      continue;
+    }
     let parent = parentOf(row);
     if (parent === rootId || !parent || !byId.has(parent)) parent = undefined;
     // Malformed ancestry must not hide rows or recurse forever.
@@ -43,10 +65,7 @@ export function replyTree(rows: readonly ChannelMessage[], rootId?: string) {
       if (!next || next === rootId || !byId.has(next)) break;
       parent = next;
     }
-    if (parent) parents.set(row.id, parent);
-    const siblings = children.get(parent) ?? [];
-    siblings.push(row);
-    children.set(parent, siblings);
+    place(row, parent);
   }
   return {
     children,

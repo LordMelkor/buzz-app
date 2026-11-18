@@ -129,3 +129,48 @@ it("preserves normal nesting for edited failure messages and messages with attac
   const tree = replyTree([request, edited, attachment], "root");
   expect(tree.children.get(request.id)).toEqual([edited, attachment]);
 });
+
+it("nests given display parents to any depth, over signed ancestry", () => {
+  const rows = ["a", "b", "c", "d", "e"].map((id) => row(id, "root"));
+  const display: Record<string, string> = { b: "a", c: "b", d: "c", e: "d" };
+  const tree = replyTree(rows, "root", (id) => display[id]);
+  expect(tree.children.get(undefined)?.map(({ id }) => id)).toEqual(["a"]);
+  expect(tree.children.get("d")?.map(({ id }) => id)).toEqual(["e"]);
+  expect(tree.ancestors("e")).toEqual(["d", "c", "b", "a"]);
+});
+it("lifts unknown, later, self and root display parents, so a cycle breaks at its later row", () => {
+  const rows = ["a", "b", "c", "d", "e", "f"].map((id) =>
+    row(id, id === "a" ? "root" : "a"),
+  );
+  const display: Record<string, string> = {
+    b: "missing",
+    c: "f", // later
+    d: "d",
+    e: "root",
+    f: "c", // with c -> f, a cycle; f nests under the earlier c
+  };
+  const tree = replyTree(rows, "root", (id) => display[id]);
+  expect(tree.children.get(undefined)?.map(({ id }) => id)).toEqual([
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+  ]);
+  expect(tree.children.get("c")?.map(({ id }) => id)).toEqual(["f"]);
+  expect(tree.ancestors("f")).toEqual(["c"]);
+  expect(tree.ancestors("c")).toEqual([]);
+  // Signed ancestry is not used: no row nests under "a".
+  expect(tree.children.get("a")).toBeUndefined();
+});
+it("keeps execution-failure captions where display parents put them", () => {
+  const request = row("request", "root");
+  const notice: ChannelMessage = {
+    ...row("failure", request.id),
+    notice: "execution-failure",
+  };
+  const tree = replyTree([request, notice], "root", (id) =>
+    id === notice.id ? request.id : undefined,
+  );
+  expect(tree.children.get(request.id)).toEqual([notice]);
+});

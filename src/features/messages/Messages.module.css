@@ -18,6 +18,8 @@
   position: relative;
   container-type: inline-size;
   container-name: messages;
+  /* The reader bar aligns with the thread's narrower message inset. */
+  --reader-bar-inset: var(--space-4);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -31,6 +33,27 @@
   border-radius: 0;
   box-shadow: none;
   background: transparent;
+}
+/* Plugin controls above a reader's messages, outside their scroller, inset as
+   the messages are. */
+.readerBar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--reader-bar-inset, var(--space-panel-inset));
+}
+.readerBar:empty {
+  display: none;
+}
+/* A channel timeline with its reader bar above the scroller. */
+.timelineColumn {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 .feed {
   --message-hover-inset: var(--space-panel-inset);

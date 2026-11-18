@@ -185,8 +185,16 @@ export interface UnreadCapability {
   /** `rootId` names the thread a reader shows, which bounds its DM reads.
    * `visit` is one reader's stay in this conversation, across its leases:
    * a message marked unread while that visit shows it stays unread until
-   * the visit measures it away or `leave`s. Without it, the lease is the visit. */
-  reading(channelId: string, rootId?: string, visit?: object): ReadingHandle;
+   * the visit measures it away or `leave`s. Without it, the lease is the visit.
+   * A `partial` reader leaves unread rows out of what it shows: it reads
+   * only the rows it observes, never a DM through its newest message, and
+   * never catches up. */
+  reading(
+    channelId: string,
+    rootId?: string,
+    visit?: object,
+    partial?: boolean,
+  ): ReadingHandle;
   /** `visit` presents this thread in a pane, whether or not any row counts as
    * shown: the thread marked unread during it stays marked through its
    * catch-ups until `leave`. Presence reads nothing. */
@@ -394,6 +402,7 @@ export function createUnread({
   signingAuthority,
   workflowAuthority,
   profiles,
+  evidence,
   notify = (listener) => listener(),
   follows = memoryThreadFollows(),
 }: {
@@ -405,6 +414,9 @@ export function createUnread({
   signingAuthority?: string;
   workflowAuthority?: string | undefined;
   profiles?: ProfileQueries;
+  /** Events held elsewhere (the session's `retain` holds). They let a read or
+   * unread mark name a message this unread never counted, and are never counted. */
+  evidence?: (id: string) => RelayEvent | undefined;
   notify?: (listener: () => void) => void;
   follows?: ThreadFollowStorage;
 }) {
@@ -421,6 +433,8 @@ export function createUnread({
   let refresh: Promise<void> | undefined;
   const lifetime = new AbortController();
   const events = new Map<string, RelayEvent>();
+  /** Counted evidence, else a held event that is never counted. */
+  const knownEvent = (id: string) => events.get(id) ?? evidence?.(id);
   // Per repair batch (its channel IDs): the newest created_at a complete read of
   // it returned. `events` only grows until a reset below, so a later repair needs
   // just what is newer; every path that empties or shrinks `events` clears this,
@@ -619,7 +633,7 @@ export function createUnread({
   const keyFor = (target: ReadTarget) =>
     `${target.channelId}:${targetKey(target)}`;
   /** Counted evidence, or a fetched parent/root kept only for structure. */
-  const structural = (id: string) => events.get(id) ?? lookupEvents.get(id);
+  const structural = (id: string) => knownEvent(id) ?? lookupEvents.get(id);
   function root(event: RelayEvent): string | undefined {
     const channel = channelOf(event);
     let current = event;
@@ -2797,7 +2811,7 @@ export function createUnread({
   }
   function requireMessage(target: ReadTarget, id: string) {
     targetKey(target);
-    const event = events.get(id);
+    const event = knownEvent(id);
     if (
       closed ||
       !allowed(target.channelId) ||
@@ -2823,7 +2837,7 @@ export function createUnread({
   /** Coordination between agents has no unread state, so no unread intent
    * may be saved for it. */
   function refuseAgentCoordination(messageId: string) {
-    const event = events.get(messageId);
+    const event = knownEvent(messageId);
     if (event && agentAudience(event))
       throw new Error("Messages between agents cannot be marked unread");
   }
@@ -2853,7 +2867,7 @@ export function createUnread({
       }
     }
     return [...ids].flatMap((id) => {
-      const event = events.get(id);
+      const event = knownEvent(id);
       return event ? [event] : [];
     });
   }
@@ -3064,7 +3078,7 @@ export function createUnread({
       presenting.set(visit, targetKey({ kind: "thread", channelId, rootId }));
     },
     leave,
-    reading(channelId, rootId, visit) {
+    reading(channelId, rootId, visit, partial = false) {
       if (closed || !allowed(channelId) || handles.size >= 64)
         throw new Error("Reading handle unavailable");
       let active = true;
@@ -3101,12 +3115,13 @@ export function createUnread({
       // is no backlog to keep. A thread reader stops before unread messages it
       // does not show (`dmCut`). One lease is one earned dwell, so its catchUp
       // and observe share the first cutoff: a message arriving between them
-      // waits for the next dwell. Returns undefined outside DMs.
+      // waits for the next dwell. Returns undefined outside DMs and for a
+      // partial reader.
       let dmRead: Promise<unknown> | undefined;
       const readDm = (
         witnesses: readonly Readonly<{ target: ReadTarget; id: string }>[],
       ) => {
-        if (!isDm(channelId)) return undefined;
+        if (partial || !isDm(channelId)) return undefined;
         if (dmRead) return dmRead;
         for (const { target, id } of witnesses) {
           let event: RelayEvent;
@@ -3161,7 +3176,7 @@ export function createUnread({
               markedWhileShown.delete(id);
         },
         async catchUp(id: string, rootId?: string) {
-          if (!valid()) return;
+          if (partial || !valid()) return;
           const target = rootId
             ? { kind: "thread" as const, channelId, rootId }
             : { kind: "channel" as const, channelId };
@@ -3420,7 +3435,7 @@ export function createUnread({
         generation === epoch &&
         (visits.get(channelId) ?? 0) === visit &&
         allowed(channelId) &&
-        rows.every((row) => events.get(row.id) === row && !deleted(row));
+        rows.every((row) => knownEvent(row.id) === row && !deleted(row));
       const finishPending = trackPendingForcedMessages(
         channelId,
         rows.map((row) => row.id),
@@ -3459,7 +3474,7 @@ export function createUnread({
           generation === epoch &&
           (visits.get(channelId) ?? 0) === visit &&
           allowed(channelId) &&
-          rows.every((row) => events.get(row.id) === row && !deleted(row));
+          rows.every((row) => knownEvent(row.id) === row && !deleted(row));
         if (!valid()) throw new Error("Unread channel visit expired");
         const forced = forcedMessages.get(channelId);
         const ids = new Set(rows.map((row) => row.id));

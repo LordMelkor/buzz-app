@@ -1,6 +1,7 @@
 import { isSidebarPreferencesBatch } from "./sidebar-preferences";
 import { isWorkflowDefinitionBatch } from "../workflows/queries";
 import { verifyThreadWindows } from "./thread-window";
+import { verifyChannelWindows } from "./window";
 import { yieldToHost } from "./yield";
 import { createRelayProfiler, type RelayProfiler } from "./profiling";
 import type { ReadFilter, RelayEvent } from "./events";
@@ -220,6 +221,7 @@ export function createRelayReader(
               transport.viewer,
               transport.relayAuthor,
             );
+            verifyChannelWindows(job.filters, events, transport.relayAuthor);
             finish(job, Object.freeze([...events]));
           })
           .catch((error) => failed(job, error));

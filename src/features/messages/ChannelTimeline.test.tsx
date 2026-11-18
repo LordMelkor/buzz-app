@@ -104,6 +104,7 @@ vi.mock("react", async (original) => ({
   },
   useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) =>
     snapshot(),
+  useEffectEvent: (callback: unknown) => callback,
   // Rendered outside a provider, as the timeline's direct calls are.
   useContext: () => undefined,
 }));

@@ -19,6 +19,11 @@ import { readView, writeView } from "../../shared/view-state";
 import { MessageManagement } from "./MessageManagement";
 import type { PageNavigation } from "../navigation/service";
 import type { JsonValue } from "../navigation/targets";
+import type {
+  ComposerAccessoryProps,
+  ConversationExtensions,
+} from "../conversation/contracts";
+import { eventDto } from "../relay/events";
 
 // Real React lifecycle; only the virtualizer's imperative layout boundary is
 // modeled here. Browser journeys retain the actual same-message/4px contract.
@@ -466,6 +471,7 @@ function boundaryFixture({ reading = false } = {}) {
     presented = true,
     // What the store reports instead of a ready, verified page.
     state: Partial<ChannelWindow> = {},
+    extensions?: ConversationExtensions,
   ) {
     const window: ChannelWindow = {
       channelId,
@@ -492,6 +498,7 @@ function boundaryFixture({ reading = false } = {}) {
             viewer={viewer.pubkey}
             queries={session}
             window={window}
+            extensions={extensions}
             onOpenLink={() => false}
           />
         ) : (
@@ -671,6 +678,59 @@ it("waits for entry and unread evidence before selecting a verified entry bounda
     separator.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).not.toBe(0);
   expect(screen.queryByText("Own message", { exact: true })).not.toBeNull();
+});
+
+it("draws no unread line while a presentation shows other rows, and draws it again after", async () => {
+  const h = boundaryFixture();
+  const events = ["Read", "First unread", "Later unread"].map((text, index) =>
+    message(h.peer, "c", text, index + 1),
+  );
+  const [read, first, later] = events.map((event) => h.row(event)) as [
+    ChannelMessage,
+    ChannelMessage,
+    ChannelMessage,
+  ];
+  h.unreadIds.add(first.id);
+  h.unreadIds.add(later.id);
+  h.completeReadStateSnapshot();
+  h.publish();
+  let accessory: ComposerAccessoryProps | undefined;
+  const reader = (entries: readonly unknown[]) => ({
+    snapshot: () => entries,
+    subscribe: () => () => {},
+  });
+  const extensions = {
+    inline: reader([]),
+    tools: reader([]),
+    accessories: reader([
+      {
+        id: "arranger",
+        key: "test:arranger",
+        pluginId: "test",
+        revision: "one",
+        title: "Arranger",
+        placement: "reader",
+        component: (props: ComposerAccessoryProps) => {
+          accessory = props;
+          return null;
+        },
+      },
+    ]),
+  } as unknown as ConversationExtensions;
+  render(h.tree("c", [read, first, later], false, true, true, {}, extensions));
+  await h.completeEntry();
+  expect(divider()).toBeTruthy();
+  act(() => {
+    accessory?.present?.({
+      ids: [later.id, first.id, read.id],
+      events: events.map(eventDto),
+    });
+  });
+  expect(screen.queryByRole("separator", { name: "New messages" })).toBeNull();
+  act(() => {
+    accessory?.present?.(null);
+  });
+  expect(divider()).toBeTruthy();
 });
 
 const divider = () => screen.getByRole("separator", { name: "New messages" });
