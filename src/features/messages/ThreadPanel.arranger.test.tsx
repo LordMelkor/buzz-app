@@ -2,7 +2,6 @@
 import "@testing-library/jest-dom/vitest";
 import { Context } from "@deepseek-ai/cordis";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -28,7 +27,6 @@ import { ConversationService } from "../conversation/service";
 import type { RelayEvent } from "../relay/events";
 import type { MessageComposerProps } from "./MessageComposer";
 import type { MessageRowProps } from "./MessageRow";
-import { nearestShown } from "./arrangement";
 import { ThreadPanel } from "./ThreadPanel";
 import type { Reading } from "./use-reading";
 
@@ -176,14 +174,15 @@ const barStatus = () =>
   screen
     .getByRole("toolbar", { name: "Arrange rows" })
     .querySelector("[role=status]")?.textContent;
-/** The host's own rows, once its reads have stopped. */
-const hostRows = async (relay: { reads: readonly unknown[] }) => {
-  await waitFor(() => expect(rowIds().length).toBeGreaterThan(0));
-  for (let before = -1; before !== relay.reads.length; ) {
-    before = relay.reads.length;
-    await act(() => new Promise((done) => setTimeout(done, 300)));
-  }
-};
+/** The host's own rows, once the panel has placed them. */
+const hostRows = () =>
+  waitFor(() => {
+    expect(rowIds().length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Thread messages")).toHaveAttribute(
+      "aria-busy",
+      "false",
+    );
+  });
 /** Top's 200 rows and the one row the reader was opened to. */
 const shownTop = () =>
   waitFor(() => expect(barStatus()).toBe("Replies 1–200 of 1,899"), {
@@ -193,8 +192,8 @@ const shownTop = () =>
 it("opens a thread at a row the host never loaded, ranks by Top, and leaves the row first with the reader on it", async () => {
   const { root, groups } = thread;
   const target = (groups.one ?? [])[0] as string;
-  const { relay } = await mount(target);
-  await hostRows(relay);
+  await mount(target);
+  await hostRows();
   // Not one of the host's rows, nor will Top rank it among the first 200.
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await shownTop();
@@ -214,13 +213,12 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
   const { root, groups } = thread;
   const target = (groups.one ?? [])[0] as string;
   const { relay } = await mount(target);
-  await hostRows(relay);
+  await hostRows();
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await shownTop();
   // Reading the first row of the list, 20px below the top edge.
   scrolled = 80;
   const order = rowIds();
-  const anchor = { id: order[0] as string, top: 20, order };
   const reads = relay.reads.length;
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
   expect(barStatus()).toBe("");
@@ -240,12 +238,11 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
   expect(drawn()[0]).toBe(root.id);
   expect(host).not.toContain(order.at(-1));
   expect(relay.reads).toHaveLength(reads);
-  // The row it was reading if the host shows it, else the nearest that it shows,
-  // else the end.
-  const near = nearestShown(anchor, (id) => host.includes(id));
-  expect(scrolled).toBe(
-    near === undefined ? 39_400 : 100 * (host.indexOf(near) + 1) - 20,
-  );
+  // The host does not show the row it was reading, the list's first, so it
+  // keeps the first row below it that the host shows, still 20px down.
+  expect(host).not.toContain(order[0]);
+  const near = order.find((id) => host.includes(id)) as string;
+  expect(scrolled).toBe(100 * (host.indexOf(near) + 1) - 20);
   expect(lastReading()).toMatchObject({
     partial: false,
     endMessageId: undefined,
@@ -253,8 +250,8 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
 }, 30_000);
 
 it("reads a thread it shows whole through to its last row", async () => {
-  const { relay } = await mount(small.root.id, small);
-  await hostRows(relay);
+  await mount(small.root.id, small);
+  await hostRows();
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await waitFor(() => expect(barStatus()).toMatch(/^Replies 1–\d+ of \d+$/), {
     timeout: 30_000,
