@@ -5,6 +5,7 @@ import type { VoiceRecording } from "../relay/voice-media";
 import type { Attachment, ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import type { ComposerSession } from "../messages/composer-session";
+import type { OutgoingMessage } from "../messages/outgoing-message";
 
 /**
  * Opens a target, such as a plugin panel URL, where the conversation host
@@ -306,7 +307,28 @@ export type ConversationExtensions = Readonly<{
   linkPreviews?: ContributionReader<LinkPreviewRenderer>;
   codeBlocks?: ContributionReader<CodeBlockRenderer>;
   annotators?: ContributionReader<ComposerAnnotator>;
+  sendGates?: ContributionReader<SendGate>;
 }>;
+/** Decides whether a message a conversation composer is about to publish
+ * goes out now. The host asks gates in contribution-key order, after the
+ * composer's own prompts and uploads; the first gate that answers true or
+ * `{ refuse }` with a non-blank reason decides. `hold` must answer at once:
+ * true keeps the message, so the host clears the draft as sent and forgets
+ * the message (save it first, then publish it later with `publish`).
+ * `{ refuse }` sends nothing: the draft stays as it is and the composer shows
+ * `refuse` as its send error. Any other answer, such as false, a blank
+ * reason, a promise or a throw, passes to the next gate, and the host
+ * publishes the message now when no gate decides. A message with a pasted
+ * forward is never offered to gates: it publishes at once, and can't be
+ * refused. */
+export type SendGate = Readonly<{
+  id: string;
+  hold(
+    message: OutgoingMessage,
+    session: RelaySession,
+  ): boolean | Readonly<{ refuse: string }>;
+}>;
+export type { OutgoingMessage };
 
 /** One document revision of the draft an annotator may mark: the projected text
  * completion providers observe, without the selection. `prose` lists its

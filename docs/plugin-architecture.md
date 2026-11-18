@@ -1692,8 +1692,10 @@ Builderlab.
 
 `ctx.conversation.registerAccessory({ id, title, order?, component })` contributes
 read-only contextual UI above the shared composer. The host passes
-`{ session, scope, channelId, threadRootId?, canOpen, open }`: no editor commands,
-new socket, or implied access grant. Channels supplies target resolution and panel
+`{ session, scope, channelId, threadRootId?, canOpen, open, onFocusedRemoval? }`:
+no editor commands, new socket, or implied access grant. A conversation composer
+passes `onFocusedRemoval()`, which returns focus to its editor when a focused
+accessory control goes away. Channels supplies target resolution and panel
 placement; other composer consumers can omit navigation and return unavailable.
 The shared renderer owns deterministic order, error isolation and command
 revocation on removal/unmount. Composer destination keys fence session/channel/
@@ -2227,7 +2229,8 @@ renderer reads the preference and passes it to native code, which checks the
 `files` grant before any filesystem work. The app's own `!` folder chips use
 the same listing through a command for the trusted app renderer. A sent
 message carries its chips in one `buzz-tokens-v1` tag that only the app's
-composers sign; trust a chip only as far as you trust the message's author.
+composers and `ctx.conversation.publish` sign; trust a chip only as far as you
+trust the message's author.
 
 Bundled host grants use the effective compiled manifest at revision `bundled` and
 require the plugin to be enabled in the native catalog. External grants require the
@@ -3608,6 +3611,52 @@ The jsdom suites cover the contract with an annotator registered through the
 real runtime. Native WebKit right-click selection and context-menu behavior,
 screen reader announcement of `aria-invalid`, and IME composition in the
 desktop app are not exercised there.
+
+### Send gates
+
+`ctx.conversation.registerSendGate({ id, hold })` lets a plugin take a
+message that a conversation composer is about to publish, for example to hold it
+until an agent is free. The host asks gates after its prompts, uploads and
+Solo's own queue, and only for a message it would otherwise publish now. Only a
+main-window composer with a full relay session asks gates; a detached composer,
+such as the Huddle pop-out, publishes at once. A message with a pasted forward is
+never offered to gates either: it publishes at once, and `{ refuse }` doesn't
+apply to it. `hold` gets the `OutgoingMessage` (channel, thread, text,
+recipients as sent, references, uploaded attachments, model picks and chips) and
+the session, and answers at once:
+
+- `true` keeps the message. The host clears the draft as sent and forgets the
+  message. Save it before you return `true`: the plugin owns it from then on.
+- `{ refuse: reason }`, with a non-blank `reason`, sends nothing. The draft
+  stays as it is, and the composer shows `reason` where it shows a send error.
+  A message whose attachments were uploading in the background comes back to
+  the composer with `reason` in its failure notice.
+- Any other answer, such as `false`, a blank `reason`, a promise from an
+  `async` `hold`, or a throw, leaves the message to the next gate. When no gate
+  keeps or refuses it, the host publishes it now as before.
+
+Gates are asked in contribution-key order; the first `true` or `{ refuse }`
+decides. A disabled or reloaded plugin's gate stops being asked, and the host
+never publishes or drops what a gate kept. Decide what a held message does after
+a reload yourself, for example by showing it paused until the user sends it.
+
+`ctx.conversation.publish(session, message)` publishes a kept message as the
+same event the composer would have sent, chips included, and resolves to its
+event id. It signs the chips it is given, so publish only a message your gate
+kept. It doesn't repeat the composer's checks, such as agent compaction,
+membership and channel availability; make those yourself before you call it. It
+holds no state: call it when your rule says the message should go.
+
+```ts
+import type { Context } from "@buzz/author";
+export const inject = ["conversation"];
+export function apply(ctx: Context) {
+  ctx.conversation.registerSendGate({
+    id: "example",
+    hold: () => false,
+  });
+}
+```
 
 ## Desktop browser
 

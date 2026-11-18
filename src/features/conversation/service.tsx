@@ -37,8 +37,13 @@ import type {
   ContributionReader,
   PageTabsProps,
   ConversationWorkspaceProps,
+  SendGate,
 } from "./contracts";
 import { PluginMarkdown, type MarkdownProps } from "../messages/PluginMarkdown";
+import {
+  publishOutgoing,
+  type OutgoingMessage,
+} from "../messages/outgoing-message";
 import type { RelaySession } from "../relay/session";
 import {
   ChannelMembersDialog,
@@ -103,6 +108,12 @@ export type Conversation = {
   registerMessageAction(action: MessageAction): void;
   identityMarks: ContributionReader<IdentityMark>;
   registerIdentityMark(mark: IdentityMark): void;
+  /** Lets a plugin keep messages a composer is about to publish; see `SendGate`. */
+  registerSendGate(gate: SendGate): void;
+  /** Publishes a message a send gate kept, as the same event the composer
+   * would have sent, and resolves to its event id. It doesn't repeat the
+   * composer's checks. Rejects when the session can't send it. */
+  publish(session: RelaySession, message: OutgoingMessage): Promise<string>;
   ui: {
     /** Host member picker, with optional plugin-owned actions, settings and link. */
     MembersDialog: ComponentType<ChannelMembersDialogProps>;
@@ -209,6 +220,8 @@ export class ConversationService extends Service implements Conversation {
   private readonly actionEntries;
   readonly identityMarks;
   private readonly identityMarkEntries;
+  readonly sendGates;
+  private readonly sendGateEntries;
   private readonly tabEntries;
   private readonly workspaceEntries;
   readonly chatMenus;
@@ -277,6 +290,12 @@ export class ConversationService extends Service implements Conversation {
     this.identityMarks = {
       snapshot: identityMarks.snapshot,
       subscribe: identityMarks.subscribe,
+    };
+    const sendGates = createContributions<SendGate>(ctx);
+    this.sendGateEntries = sendGates;
+    this.sendGates = {
+      snapshot: sendGates.snapshot,
+      subscribe: sendGates.subscribe,
     };
     const tabs = createContributions<{
       id: string;
@@ -373,6 +392,18 @@ export class ConversationService extends Service implements Conversation {
   registerIdentityMark(value: IdentityMark) {
     validate(value);
     this.identityMarkEntries.register(this.ctx, value);
+  }
+  registerSendGate(value: SendGate) {
+    if (
+      !value ||
+      !/^[a-z0-9][a-z0-9._-]*$/.test(value.id) ||
+      typeof value.hold !== "function"
+    )
+      throw new Error("A send gate needs an id and hold function");
+    this.sendGateEntries.register(this.ctx, value);
+  }
+  publish(session: RelaySession, message: OutgoingMessage) {
+    return publishOutgoing(session, message);
   }
   registerAttachment(value: AttachmentRenderer) {
     validate(value);

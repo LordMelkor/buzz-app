@@ -204,6 +204,7 @@ import { avatarMedia } from "../../shared/avatar-source";
 import { followUpBehaviorPreference } from "./follow-up-preference";
 import { followUpQueue } from "./follow-up-queue";
 import { followUpMessage } from "./follow-up-message";
+import { heldBySendGate } from "./outgoing-message";
 import { QueuedFollowUps } from "./QueuedFollowUps";
 
 const noChannels: ReturnType<ComposerSession["channels"]["list"]> = {
@@ -3494,8 +3495,34 @@ function Composer({
             profiles,
             knownAgentPubkeys(profiles, session.agentChoices.snapshot()),
           )
-        )
+        ) {
+          const gate =
+            host &&
+            !captured.forward &&
+            heldBySendGate(
+              extensions?.sendGates,
+              {
+                channelId,
+                ...(threadRootId ? { threadRootId } : {}),
+                ...(threadRootId && replyParentId
+                  ? { parentId: replyParentId }
+                  : {}),
+                text: content,
+                recipients,
+                references,
+                attachments: uploaded,
+                picks: sentPicks,
+                ...(threadRootId && mediaTargetUrl
+                  ? { mediaTarget: mediaTargetUrl }
+                  : {}),
+                ...(tokens.length ? { tokens } : {}),
+              },
+              host,
+            );
+          if (gate === true) return undefined;
+          if (gate) throw new Error(gate.refuse);
           return publishNow(uploaded, session);
+        }
         const message = {
           channelId,
           ...(captured.forward ? { forward: captured.forward } : {}),
@@ -3783,6 +3810,7 @@ function Composer({
           threadRootId={threadRootId}
           canOpen={canOpenLink ?? cannotOpen}
           open={accessoryCommands.open}
+          onFocusedRemoval={() => input.current?.focus()}
         />
       )}
     </div>
