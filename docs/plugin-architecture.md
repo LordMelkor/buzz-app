@@ -924,8 +924,8 @@ ctx.reflect.get("sidebarRows")?.register({
 its current `unread` snapshot. Unknown unread counts remain `null`; activity
 fields retain their existing units and unknown values. This is the host's
 currently authorized roster, not a channel discovery API.
-For Solo, `sectionKey` is the workspace id, or `""` for unfiled chats. Only
-`render` applies to Solo; contributed sort modes remain Team-only.
+For Solo, `sectionKey` is the workspace id, or `""` for unfiled chats. `render`
+and `menuItems` apply to Solo; contributed sort modes remain Team-only.
 
 `Default` is a React element, not a component constructor: return it, wrap it,
 or return a replacement element. Returning `null` intentionally hides the row;
@@ -971,6 +971,37 @@ ctx.reflect.get("sidebarRows")?.register({
       (a.channel.lastActivityAt ?? 0) -
       (b.channel.lastActivityAt ?? 0) || a.id.localeCompare(b.id),
   }],
+});
+```
+
+An optional `menuItems(row)` adds actions to a row's menu, after **Mute**, in
+both the sidebar and the channel header. It is asked for Solo rows too. It
+returns items shaped like a
+sidebar section's actions, `{ id, label, icon, onSelect }`, where `icon` is a
+React element. It is asked each time the menu renders, so a label can reflect
+current state; check `row.kind` to choose rows. Items are disabled while the
+row's read change is saving, as Mute is. A throwing callback or an invalid
+item adds nothing; ids use sidebar id characters, and a repeated id keeps only
+its first item. Here `row.channel` is the sidebar's roster summary: its activity
+fields (`preview`, `lastActivityAt`, `activityKnown`) can lag the live list, so a
+plugin that needs live activity reads it from `session.channels` through
+`ctx.relay`.
+
+```ts
+ctx.reflect.get("sidebarRows")?.register({
+  version: 1,
+  id: "follow",
+  menuItems: (row) =>
+    row.kind === "team"
+      ? [
+          {
+            id: "follow",
+            label: "Follow",
+            icon: <StarFilledIcon size={14} />,
+            onSelect: () => follow(row.id),
+          },
+        ]
+      : [],
 });
 ```
 
@@ -1400,13 +1431,23 @@ while that page is selected, so everything in it must stay reachable from the
 page itself. A preview that throws renders nothing and leaves navigation usable.
 
 `notifications.register({ id, label })` adds a category with its own switch in
-Settings and returns `submit({ sourceKey, target, title?, body? })`. Submissions
+Settings and returns `submit({ sourceKey, target, title?, body?, eligible? })`. Submissions
 share the host's permission, preference, duplicate and click handling. The host
 owns display text: `title` and `body` are flattened to plain text and bounded the
 same way message alerts are (`title` to 128 characters; `body` as Markdown prose
 to 200), so a plugin cannot send raw markup or unlimited text to the OS. Without
 them the banner reads `Buzz` / `New <label>`. The host applies no age limit to
 plugin submissions; the plugin decides what is still worth announcing.
+
+An optional `eligible()` is asked again at each host re-check until delivery:
+`true` delivers, `"wait"` holds the alert, for at most two minutes, and
+anything else (`false`, another value or a throw) drops it. The host re-checks
+when an alert is submitted, when permission, a notification setting or a gate
+changes, and when the selected community's read state, channel list or Mute
+changes. A plugin can't ask for a re-check, so a `"wait"` must end on one of
+those. `notifyWhileViewing()` returns
+the owner's **Notify while viewing** choice, for a check about a conversation
+the owner may have on screen.
 
 `notifications.gate({ id, allows(target) })` narrows which targets may alert.
 While any gate is registered, a banner, its sound and the Dock unread dot need

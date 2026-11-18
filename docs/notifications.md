@@ -47,7 +47,16 @@ export function apply(ctx) {
 ```
 
 Categories use existing installation ownership. Disabled/replaced plugins cannot
-submit new alerts. A notification click belongs to the host; opening never enables
+submit new alerts. An optional `eligible()` on the input is asked again at each
+host re-check until delivery, as for built-in alerts: `true` delivers, `"wait"`
+holds the alert, for at most two minutes, and anything else (or a throw) drops
+it. The host re-checks when an alert is submitted, when permission, a
+notification setting or a gate changes, and when the selected community's read
+state, channel list or Mute changes; a plugin can't ask for a re-check. Use it
+when an alert depends on facts that can change before the banner, such as
+channel Mute or read state.
+`notifyWhileViewing()` gives such a check the owner's **Notify while viewing**
+choice. A notification click belongs to the host; opening never enables
 a missing destination plugin. `submit()` means a candidate was accepted for policy
 checks, not that an OS banner was displayed or read.
 

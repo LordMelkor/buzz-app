@@ -4573,3 +4573,186 @@ it("keeps a chat whose menu is open listed when a newer chat passes it", async (
   expect(sectionRows("solo")).toContain(last);
   expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
 });
+
+it("adds a plugin's row menu items after Mute, with their icons, waiting while the row's read change saves, and drops them with the plugin", async () => {
+  const root = new Context();
+  const selected = vi.fn();
+  let watching = false;
+  let saved: (() => void) | undefined;
+  const runtime = new PluginRuntime(root, async (plugin) => ({
+    apply(ctx) {
+      if (plugin.manifest.id === "broken.rows")
+        ctx.reflect.get("sidebarRows")?.register({
+          version: 1,
+          id: "broken",
+          menuItems: () => {
+            throw new Error("plugin bug");
+          },
+        });
+      else
+        ctx.reflect.get("sidebarRows")?.register({
+          version: 1,
+          id: "watch",
+          menuItems: (row: SidebarRow) => [
+            {
+              id: "watch",
+              label: `${watching ? "Unwatch" : "Watch"} ${row.label}`,
+              icon: <svg data-testid="watch-icon" />,
+              onSelect: () => {
+                watching = !watching;
+                selected(row.id);
+              },
+            },
+            {
+              id: "plain",
+              label: "Plain icon",
+              icon: "★" as never,
+              onSelect: () => {},
+            },
+            {
+              id: "watch",
+              label: "Repeated id",
+              icon: <svg />,
+              onSelect: () => {},
+            },
+          ],
+        });
+    },
+  }));
+  const registry = new SidebarRowsService(root);
+  const prefs = createSidebarPreferencesStore({
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+    }),
+    available: true,
+    writeMute: vi.fn(async () => []),
+  });
+  const plugin = (id: string) => ({
+    manifest: { id, name: id, apiVersion: 1 as const },
+    source: "external" as const,
+    revision: "one",
+    enabled: true,
+    previous: null,
+    reloadable: true,
+    error: null,
+  });
+  const user = userEvent.setup();
+  try {
+    await prefs.queries.ensure();
+    await act(async () => {
+      runtime.reconcile([plugin("watch.rows"), plugin("broken.rows")]);
+    });
+    await vi.waitFor(() => expect(registry.snapshot()).toHaveLength(2));
+    const h = fixture(prefs.queries, "ready", undefined, undefined, registry);
+    const sync = {
+      capability: "frontier-sync",
+      status: "reconciled",
+      completeness: "snapshot",
+    } as const;
+    const snapshots = new Map<string, UnreadSnapshot>();
+    h.session.unread = {
+      ...h.session.unread,
+      sync: () => sync,
+      snapshot: (target) => {
+        const key = JSON.stringify(target);
+        const snapshot = snapshots.get(key) ?? {
+          target,
+          observedCount: 0,
+          attentionCount: 0,
+          manual: "none",
+          coverage: "observed",
+          freshness: "observed",
+        };
+        snapshots.set(key, snapshot);
+        return snapshot;
+      },
+      subscribe: () => () => {},
+      markUnreadLocal: () =>
+        new Promise((resolve) => {
+          saved = () =>
+            resolve({
+              operationId: "held",
+              durability: "saved",
+              sync: "local-only",
+            });
+        }),
+    };
+    render(h.view("alpha"));
+    fireEvent.keyDown(await screen.findByRole("button", { name: "alpha" }), {
+      key: "ContextMenu",
+    });
+    const items = (await screen.findAllByRole("menuitem")).map(
+      (item) => item.textContent,
+    );
+    expect(items.indexOf("Watch alpha")).toBe(items.indexOf("Mute") + 1);
+    expect(items).not.toContain("Plain icon");
+    expect(items).not.toContain("Repeated id");
+    expect(
+      screen.getByRole("menuitem", { name: "Watch alpha" }),
+    ).toContainElement(screen.getByTestId("watch-icon"));
+    await user.click(screen.getByRole("menuitem", { name: "Watch alpha" }));
+    expect(selected).toHaveBeenCalledExactlyOnceWith("alpha");
+    fireEvent.keyDown(screen.getByRole("button", { name: "alpha" }), {
+      key: "ContextMenu",
+    });
+    expect(
+      await screen.findByRole("menuitem", { name: "Unwatch alpha" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "Unwatch alpha" }),
+    ).not.toHaveAttribute("aria-disabled", "true");
+    await user.click(screen.getByRole("menuitem", { name: "Mark as unread" }));
+    await waitFor(() => expect(saved).toBeTypeOf("function"));
+    for (const name of ["Mute", "Unwatch alpha"])
+      expect(screen.getByRole("menuitem", { name })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+    await act(async () => saved?.());
+    await user.keyboard("{Escape}");
+
+    await act(async () => {
+      runtime.reconcile([plugin("broken.rows")]);
+    });
+    fireEvent.keyDown(screen.getByRole("button", { name: "alpha" }), {
+      key: "ContextMenu",
+    });
+    await screen.findByRole("menuitem", { name: "Mute" });
+    expect(screen.queryByRole("menuitem", { name: /watch/i })).toBeNull();
+  } finally {
+    cleanup();
+    prefs.dispose();
+    await runtime.dispose();
+    await root.fiber.dispose();
+  }
+});
+
+it("gives a Solo row's plugin menu items the same section key as its render", async () => {
+  const keys = vi.fn();
+  const h = fixture(
+    undefined,
+    "ready",
+    [...soloChats(1), { id: "gamma", name: "gamma", channelType: "stream" }],
+    undefined,
+    rowRegistry({
+      version: 1,
+      id: "keys",
+      menuItems: (row) => {
+        keys(row.id, row.sectionKey);
+        return [];
+      },
+    }),
+  );
+  render(h.view("gamma"));
+  fireEvent.keyDown(await screen.findByRole("button", { name: "Chat 0" }), {
+    key: "ContextMenu",
+  });
+  expect(
+    await screen.findByRole("menuitem", { name: "Copy link" }),
+  ).toBeVisible();
+  expect(keys).toHaveBeenCalledWith("chat-0", "");
+  expect(keys).not.toHaveBeenCalledWith("chat-0", "solo");
+});
