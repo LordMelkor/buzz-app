@@ -702,6 +702,25 @@ it("writes no saved place while it presents, and the host's place after it", () 
   expect(saved.anchor.id).toBe(h3.id);
 });
 
+it("saves no Back/Forward place for a link's visit left while it presents", () => {
+  // Control: leaving the revealed visit saves where the reader was.
+  const shown = navigationTo(h1.id);
+  const control = mount({ props: { navigation: shown } });
+  for (let pass = 0; pass < 4; pass++) frame();
+  expect(shown.complete).toHaveBeenCalledWith({ status: "opened" });
+  control.unmount();
+  expect(shown.savePosition).toHaveBeenCalled();
+  const navigation = navigationTo(h1.id);
+  const h = mount({ props: { navigation } });
+  for (let pass = 0; pass < 4; pass++) frame();
+  h.present({ ids: [p0.id, p1.id, p2.id] });
+  frame();
+  fireEvent.scroll(scroller());
+  h.unmount();
+  // A presented row is not a place in the host's rows.
+  expect(navigation.savePosition).not.toHaveBeenCalled();
+});
+
 it("saves the geometry of the rows shown, never filed as the host's, when it unmounts presenting", () => {
   const first = mount();
   frame();

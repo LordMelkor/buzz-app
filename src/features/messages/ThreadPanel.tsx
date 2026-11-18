@@ -1317,6 +1317,9 @@ function ThreadMessages({
   // reading first, so an offset the browser dropped meanwhile is never saved.
   const leftTree = useRef(tree);
   leftTree.current = tree;
+  // A presentation's rows are not the reader's place.
+  const presentedNow = useRef(presented);
+  presentedNow.current = presented;
   const withdrawn = useRef<() => void>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: hiding or showing the reader again records its place too.
   useLayoutEffect(() => {
@@ -1330,7 +1333,7 @@ function ThreadMessages({
       if (!presented) return;
       const record = () => {
         const reading = resizePosition.current;
-        if (!reading) return;
+        if (!reading || presentedNow.current) return;
         const id = reading.anchor?.element.dataset.messageId;
         navigation.savePosition(
           THREAD_PLACE,

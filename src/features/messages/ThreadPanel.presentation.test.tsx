@@ -235,8 +235,11 @@ function mount({
       {...props}
     />
   );
-  render(strict ? <StrictMode>{element}</StrictMode> : element);
+  const rendered = render(
+    strict ? <StrictMode>{element}</StrictMode> : element,
+  );
   return {
+    unmount: () => rendered.unmount(),
     view,
     thread,
     session,
@@ -518,6 +521,22 @@ it("yields a target it does not show: the visit opens, reading starts and the pl
   });
   expect(lastReading().settled.current).toBe(true);
   expect(drawn()).toEqual(["root", "a", "b"]);
+});
+
+it("records no Back/Forward place for a visit left while it presents", () => {
+  // Control: leaving the opened thread records where the reader was.
+  const shown = navigationTo(root.id);
+  const control = mount({ replies: [a, b], navigation: shown });
+  fireEvent.scroll(scroller());
+  control.unmount();
+  expect(shown.savePosition).toHaveBeenCalled();
+  const navigation = navigationTo(root.id);
+  const h = mount({ replies: [a, b], navigation });
+  h.present({ ids: [b.id, a.id] });
+  fireEvent.scroll(scroller());
+  h.unmount();
+  // A presented row is not a place in the host's rows.
+  expect(navigation.savePosition).not.toHaveBeenCalled();
 });
 
 it("shows activity rows as the plugin lists them, unfolded", () => {

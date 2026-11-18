@@ -8574,11 +8574,36 @@ it("reads and marks unread a held-only message, never counting or caching it", a
   await expect(
     h.session.unread.markMessageUnread("room", held.id),
   ).rejects.toThrow(/evidence/);
-  h.session.retain().set([held]);
+  const hold = h.session.retain();
+  hold.set([held]);
   await handle.observe([held.id]);
   expect(h.journal()?.state.frontiers).toEqual({ [`msg:${held.id}`]: 12 });
   await h.session.unread.markMessageUnread("room", held.id);
   await h.session.unread.markMessageRead("room", held.id);
+  // A captured read, a thread mark and a thread read find a held-only
+  // reply under a held-only root.
+  const root = eventDto(message(h.alice, "room", "root", 20));
+  const reply = eventDto(
+    message(h.alice, "room", "reply", 21, [["e", root.id, "", "reply"]]),
+  );
+  hold.set([held, root, reply]);
+  await requireCapturedRead(h.session.unread, [reply.id]);
+  await h.session.unread.markThrough(
+    { kind: "thread", channelId: "room", rootId: root.id },
+    reply.id,
+  );
+  expect(h.journal()?.state.frontiers).toMatchObject({
+    [`msg:${reply.id}`]: 21,
+    [`thread:${root.id}`]: 21,
+  });
+  await h.session.unread.prepareThreadRead("room", root.id)();
+  // Viewing a held reply that the thread mark already covers writes nothing.
+  const covered = eventDto(
+    message(h.alice, "room", "covered", 21, [["e", root.id, "", "reply"]]),
+  );
+  hold.set([held, root, reply, covered]);
+  await handle.observe([covered.id]);
+  expect(h.journal()?.state.frontiers).not.toHaveProperty(`msg:${covered.id}`);
   // The hold is evidence only: nothing counted, nothing cached for views.
   expect(h.snapshot().observedCount).toBe(counted);
   expect(
@@ -8586,4 +8611,23 @@ it("reads and marks unread a held-only message, never counting or caching it", a
       .events,
   ).toEqual([]);
   handle.dispose();
+});
+
+it("a hold gives a counted reply no conversation: its root is still fetched", async () => {
+  const h = setup();
+  h.grant("room");
+  const root = eventDto(message(h.viewer, "room", "mine", 11));
+  const reply = message(h.alice, "room", "reply", 12, [
+    ["e", root.id, "", "reply"],
+  ]);
+  h.session.retain().set([root]);
+  h.emit([reply]);
+  h.session.unread.attention("room", reply.id);
+  await vi.waitFor(() =>
+    expect(
+      h.query.mock.calls.flatMap(([filters]) =>
+        filters.flatMap((filter) => filter.ids ?? []),
+      ),
+    ).toContain(root.id),
+  );
 });
