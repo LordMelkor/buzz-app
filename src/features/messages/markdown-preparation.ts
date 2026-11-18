@@ -95,9 +95,7 @@ export const isPlainProse = (content: string) =>
     content,
   );
 
-/** The tree micromark builds for `isPlainProse` content. A block whose text is
- * its source unchanged also gets micromark's source position; one trimmed of
- * indent or trailing space keeps none, as its text no longer matches a span. */
+/** The tree micromark builds for `isPlainProse` content. */
 export const plainProseTree = (content: string) => {
   const blocks: { source: string; start: number }[] = [];
   let start = 0;
@@ -114,6 +112,8 @@ export const plainProseTree = (content: string) => {
         // The lookbehind starts the tail match only at a run's start, so a long
         // mid-line space run is scanned once, not once per space.
         .replace(/^(?:\r\n?|\n)+|(?<![\r\n ])[\r\n ]+$/g, "");
+      const lead = source.search(/[^\r\n ]/);
+      const span = source.slice(lead).replace(/(?<![\r\n ])[\r\n ]+$/, "");
       return value
         ? [
             {
@@ -122,14 +122,10 @@ export const plainProseTree = (content: string) => {
                 {
                   type: "text",
                   value,
-                  ...(value === source
-                    ? {
-                        position: {
-                          start: { offset: start },
-                          end: { offset: start + value.length },
-                        },
-                      }
-                    : {}),
+                  position: {
+                    start: { offset: start + lead },
+                    end: { offset: start + lead + span.length },
+                  },
                 },
               ],
             },

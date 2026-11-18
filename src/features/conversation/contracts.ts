@@ -132,8 +132,8 @@ export type InlineContent = Readonly<{
    * as it appears, `message.content.slice(start, end) === text`. Where Markdown
    * rewrote it (an escape, entity or line indent), the range is that whole
    * piece of source and may be longer than `text`. Absent when the host cannot
-   * place the segment exactly, for example text inside a spoiler or beside a
-   * bare link, or in a reaction. */
+   * place the segment exactly, for example text inside a spoiler or in a
+   * reaction. */
   source?: InlineRange | undefined;
 }>;
 export type InlineRange = Readonly<{ start: number; end: number }>;

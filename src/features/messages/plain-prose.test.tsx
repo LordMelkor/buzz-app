@@ -135,12 +135,10 @@ const expectMicromarkTree = (content: string, tree = gfmTree(content)) => {
   );
   fast.children.forEach((paragraph, index) => {
     const position = paragraph.children[0]?.position;
-    if (position) {
-      const expected = (tree.children[index] as MdastParent).children[0]
-        ?.position;
-      expect(position.start.offset).toBe(expected?.start.offset);
-      expect(position.end.offset).toBe(expected?.end.offset);
-    }
+    const expected = (tree.children[index] as MdastParent).children[0]
+      ?.position;
+    expect(position?.start.offset).toBe(expected?.start.offset);
+    expect(position?.end.offset).toBe(expected?.end.offset);
   });
 };
 type MdastParent = {

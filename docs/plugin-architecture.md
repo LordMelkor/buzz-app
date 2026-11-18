@@ -3180,9 +3180,9 @@ equals `text`, and the range of a match within it is `source.start + start`. Whe
 rewrote the text (an escape, entity or indent), `source` is the whole piece of source the
 segment came from and may be longer than `text`. It is given for a rewritten segment only
 when that piece of source yields just one segment. It is absent when the host cannot place a
-segment exactly: inside a spoiler, beside a bare link, on a later line of a paragraph whose
-quote markers or indent Markdown removed, in a message that begins with a byte order mark,
-and in reactions. The host never gives a range that is not the segment. `message` is the message
+segment exactly: inside a spoiler, in a paragraph whose later lines had quote markers or
+indent that Markdown removed, in a message that begins with a byte order mark, and in
+reactions. The host never gives a range that is not the segment. `message` is the message
 as the host renders it: a message whose wrapped links were repaired for display has those
 links rewritten in `message.content`, and `source` indexes that text.
 
