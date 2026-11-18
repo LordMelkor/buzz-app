@@ -106,9 +106,9 @@ beforeEach(() => {
 
 const rowIds = () =>
   [
-    ...document.querySelectorAll<HTMLElement>(
-      "[data-thread-rows] ol [data-message-id]",
-    ),
+    ...(document
+      .querySelector("[data-thread-rows] ol")
+      ?.getElementsByTagName("article") ?? []),
   ].map((row) => row.dataset.messageId ?? "");
 const drawn = () =>
   [...document.querySelectorAll<HTMLElement>("[data-thread-rows] article")].map(
