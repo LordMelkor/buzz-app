@@ -433,7 +433,6 @@ export function createUnread({
   let refresh: Promise<void> | undefined;
   const lifetime = new AbortController();
   const events = new Map<string, RelayEvent>();
-  /** Counted evidence, else a held event that is never counted. */
   const knownEvent = (id: string) => events.get(id) ?? evidence?.(id);
   // Per repair batch (its channel IDs): the newest created_at a complete read of
   // it returned. `events` only grows until a reset below, so a later repair needs
@@ -634,7 +633,6 @@ export function createUnread({
     `${target.channelId}:${targetKey(target)}`;
   /** Counted evidence, or a fetched parent/root kept only for structure. */
   const structural = (id: string) => events.get(id) ?? lookupEvents.get(id);
-  /** Also a held event, only to place a message a read or unread mark names. */
   const placing = (id: string) => structural(id) ?? evidence?.(id);
   function root(event: RelayEvent, lookup = structural): string | undefined {
     const channel = channelOf(event);

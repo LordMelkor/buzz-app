@@ -144,10 +144,10 @@ it("lifts unknown, later, self and root display parents, so a cycle breaks at it
   );
   const display: Record<string, string> = {
     b: "missing",
-    c: "f", // later
+    c: "f",
     d: "d",
     e: "root",
-    f: "c", // with c -> f, a cycle; f nests under the earlier c
+    f: "c",
   };
   const tree = replyTree(rows, "root", (id) => display[id]);
   expect(tree.children.get(undefined)?.map(({ id }) => id)).toEqual([
@@ -160,7 +160,6 @@ it("lifts unknown, later, self and root display parents, so a cycle breaks at it
   expect(tree.children.get("c")?.map(({ id }) => id)).toEqual(["f"]);
   expect(tree.ancestors("f")).toEqual(["c"]);
   expect(tree.ancestors("c")).toEqual([]);
-  // Signed ancestry is not used: no row nests under "a".
   expect(tree.children.get("a")).toBeUndefined();
 });
 it("keeps execution-failure captions where display parents put them", () => {

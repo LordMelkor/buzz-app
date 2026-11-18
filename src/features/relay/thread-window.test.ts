@@ -142,7 +142,6 @@ it("keeps the older binding when direction and root aux are explicit defaults", 
       "https://relay.example",
       "ab".repeat(32),
     );
-  // buzz-core thread_window::tests::binding_normalizes_defaults_and_binds_every_argument
   const expected =
     "tw:1:5252322dfd797ddb1d5f1150acd4cf914b9fc09e39bcf3048d25aed514b3546d";
   expect(await binding({ direction: "older", root_aux: true })).toBe(expected);
@@ -161,9 +160,6 @@ it("binds a forward page that leaves root aux out as the relay's vector", async 
     after_id: "ef".repeat(32),
     root_aux: false,
   };
-  // buzz-core thread_window::tests::binding_encodes_direction_cursor_and_root_aux_as_specified
-  // (relay 90c63a56b). The digest is sha256 of the vector's canonical array,
-  // computed outside this code base.
   const canonical = `["tw",1,"newer","relay.example","${"ab".repeat(32)}","${channel}","${"cd".repeat(32)}",50,100,[9],[5,"${"ef".repeat(32)}"],false,"root_aux:false"]`;
   expect(createHash("sha256").update(canonical).digest("hex")).toBe(
     "a417629c808147bf1592cab56498fd1137bda02e04450ba5aa6fc15d39d63c73",
@@ -187,7 +183,6 @@ describe("forward thread pages", () => {
     after_id: at.id,
     root_aux: false,
   };
-  // Independent encoder for a `newer` bound, as NIP-CW specifies it.
   const newerBound = (filter: ReadFilter, content: Record<string, unknown>) => {
     const digest = createHash("sha256")
       .update(
@@ -269,7 +264,6 @@ describe("forward thread pages", () => {
     await expect(
       verify(older, bounds(older, null, { direction: "newer" })),
     ).rejects.toThrow(/bounds are invalid/);
-    // An older bound for a newer request misses its binding.
     await expect(verify(forward, bounds(older))).rejects.toThrow(
       /bounds are invalid/,
     );
@@ -2168,14 +2162,11 @@ it("settles session recovery when a read view with a quiet failure passes its me
   }
 });
 
-// A view's window is its committed pages, in the relay's full order. Rows
-// past its cursor belong to the next older page, whatever read carried them.
 const replyAt = (content: string, created_at: number) =>
   message(author, channel, content, created_at, [["e", root.id, "", "reply"]]);
 const newestPage = Array.from({ length: 10 }, (_, n) =>
   replyAt(`head ${n}`, 1000 + n),
 );
-// Signed once: 2,000 replies older than the newest page's cursor.
 const olderScan = Array.from({ length: 2000 }, (_, n) =>
   replyAt(`older ${n}`, 2 + Math.floor(n / 4)),
 );
@@ -2206,7 +2197,6 @@ it.each(["live traffic", "a session readPage scan"])(
     const before = h.view.snapshot().replies;
     expect(before).toHaveLength(10);
     if (source === "live traffic") h.traffic.receive(olderScan);
-    // A plugin pages the scan; the relay serves at most 500 per read.
     else
       for (let cursor: ThreadCursor | undefined, n = 0; n < 4; n++) {
         const { events } = await h.session.readPage([
@@ -2252,12 +2242,10 @@ it("admits a reply at the cursor's second only when its id is at or below the cu
   ).sort((a, b) => a.id.localeCompare(b.id));
   const [low, mid, high] = tied as [RelayEvent, RelayEvent, RelayEvent];
   const newer = replyAt("newer", 60);
-  // Older pages run `created_at DESC, id ASC`: the cursor ends mid-second.
   const h = await setup((filter) =>
     filter.ids ? [root] : [newer, mid, bounds(filter, cursorOf(mid))],
   );
   await h.view.refresh();
-  // Strict pages never return a legacy diff, so one past the cursor stays.
   const diff = signed(author, {
     kind: 40008,
     content: "diff",
@@ -2304,8 +2292,6 @@ it("skips an oversized replay into a view with no page yet, then commits its fir
   }
 });
 
-/** After a reconnect, a refresh pages past the committed cursor (the reply at
- * 3) to the end of the thread; `during` runs while its last page is held. */
 async function refreshPastCursor(
   during: (h: Awaited<ReturnType<typeof setup>>) => void,
 ) {
@@ -2343,7 +2329,6 @@ async function refreshPastCursor(
 }
 
 it("admits a live reply inside the pages a refresh has read past the committed cursor", async () => {
-  // Its timestamp places it between two pages the refresh has already read.
   const late = message(author, channel, "late", 25, [
     ["e", root.id, "", "reply"],
   ]);
@@ -2352,8 +2337,6 @@ it("admits a live reply inside the pages a refresh has read past the committed c
   );
 });
 it("keeps a live deletion of a row a refresh reads past the committed cursor", async () => {
-  // The held reply is gone after the drop, so the refresh pages past the
-  // window it had, to the end of the thread.
   const two = at(2);
   const deletion = signed(author, {
     kind: 5,

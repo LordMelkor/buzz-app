@@ -4270,10 +4270,6 @@ export function createChannelStore(
       if (disposed || generation !== epoch) return;
       if (!authorized(state.channelId)) continue;
       const ids = new Set(state.events.map((event) => event.id));
-      // Rows below the floor wait for their page while history remains (the
-      // display rule in `setWindow`), and so do edits, reactions and
-      // deletions of only those rows: else the history budget would trim
-      // the window for a scan it never showed.
       const below = new Set<string>();
       const floor = state.floor;
       if (!ownPages && state.snapshot.hasMore && floor !== undefined) {

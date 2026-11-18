@@ -247,8 +247,6 @@ type ThreadPlace = {
   anchor?: { id: string; top: number; ancestors: readonly string[] };
 };
 const THREAD_PLACE = "thread";
-/** The first reply in view, its offset from the scroller's top, and the replies
- * drawn, in order: what a place intent keeps when the rows change owner. */
 function anchorAt(element: HTMLElement | null) {
   if (!element) return undefined;
   const top = element.getBoundingClientRect().top;
@@ -700,16 +698,12 @@ function ThreadMessages({
     const current = view.snapshot();
     return current.status === "ready" ? current.root : undefined;
   }, [view]);
-  // A plugin's rows replace the host's while it presents. What reads the host's
-  // own history (its unread line, arrivals, paging) keeps the host's rows.
   const [arrangement, display] = useArrangement({
     session,
     channelId,
     rootId: resolvedRoot,
     limits: THREAD_LIMITS,
   });
-  // A presentation's order is its own, so no row merges into another's bubble
-  // or sits under a day divider; each row's header carries its date.
   const presented = !!display;
   const shownReplies = display?.rows ?? snapshot.replies;
   const hostTree = useMemo(
@@ -782,8 +776,6 @@ function ThreadMessages({
   }, [messageId, navigation?.signal, revealRequest, snapshot.replies, tree]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [replyParent, setReplyParent] = useState<string>();
-  // A presentation opens the branches it lists, once each: the reader's later
-  // toggles stand until a presentation lists a branch it had not listed before.
   const listedOpen = useRef<ReadonlySet<string>>(new Set());
   const open = display?.open;
   useLayoutEffect(() => {
@@ -791,7 +783,6 @@ function ThreadMessages({
     listedOpen.current = new Set(open);
     if (fresh.length) setExpanded((current) => new Set([...current, ...fresh]));
   }, [open]);
-  // The last row drawn, pre-order through the branches shown open.
   const endRow = useMemo(() => {
     let end: string | undefined;
     for (let level = tree.children.get(undefined); level?.length; ) {
@@ -1277,8 +1268,6 @@ function ThreadMessages({
     setInlineReveal(request.signal);
     return () => request.abort();
   }, [revealSelected, revealRequest]);
-  // A presentation may leave the opened message out: its reveal has nothing to
-  // show, so it yields (completing as opened) and the plugin sees `targetId`.
   const targetHidden =
     !!display &&
     messageId !== resolvedRoot &&
@@ -1317,7 +1306,6 @@ function ThreadMessages({
   // reading first, so an offset the browser dropped meanwhile is never saved.
   const leftTree = useRef(tree);
   leftTree.current = tree;
-  // A presentation's rows are not the reader's place.
   const presentedNow = useRef(presented);
   presentedNow.current = presented;
   const withdrawn = useRef<() => void>(undefined);
@@ -1915,13 +1903,11 @@ function ThreadMessages({
   const place = usePlace(arrangement, () => anchorAt(scroller.current));
   useLayoutEffect(() => {
     const element = scroller.current;
-    // A presentation made in this commit's layout effects reaches its rows in the next.
     if (arrangement?.snapshot() !== display) return;
     const shown = new Set(shownReplies.map((reply) => reply.id));
     const at = place.take((id) => shown.has(id), display ? "start" : "end");
     if (!element || !at) return;
     if (typeof at === "object") {
-      // A row inside a closed branch opens it first; one never drawn is dropped.
       const closed = tree.ancestors(at.id).filter((id) => !expanded.has(id));
       if (closed.length) {
         setExpanded((current) => new Set([...current, ...closed]));
@@ -2000,7 +1986,6 @@ function ThreadMessages({
     );
     if (parent === undefined && snapshot.root)
       requestRows.set(snapshot.root.id, snapshot.root);
-    // Activity folding reads list order as time: off while a presentation shows.
     const presentation = activityPresentation(
       presented ? [] : chronologicalSiblings,
       activitySnapshot,
@@ -2380,13 +2365,10 @@ function ThreadMessages({
               )?.id
             : undefined
         }
-        // A presentation's list order is its own: the last row rendered is the
-        // end a dwell catches up at, and rows it leaves out stay unread.
         endMessageId={presented ? endRow : undefined}
         partial={!!display && !display.complete}
         controls={readerBar}
       />
-      {/* Outside the composer, so every viewer sees the bar the composer hides from. */}
       {arrangement && extensions?.accessories && (
         <div ref={readerBar} className={styles.readerBar}>
           <ComposerAccessories

@@ -8,7 +8,6 @@ import {
 import type {
   ConversationPresentation,
   PresentationLimits,
-  PresentResult,
 } from "../conversation/contracts";
 import { listByteSize } from "../relay/budget";
 import type { ChannelMessage } from "../relay/contracts";
@@ -18,26 +17,6 @@ import { shareMessageRows } from "../relay/row-identity";
 import type { RelaySession } from "../relay/session";
 import { AUX, growAux, inChannel } from "../relay/threads";
 
-/**
- * Core-internal host that shows a plugin's rows in a reader (never exported to
- * plugins). One host per reader mount, keyed by session, channel and thread.
- *
- * Four state machines, each a union below:
- * - SM1, the host: `live -> leaving -> retired`. `retire` only starts `leaving`,
- *   which a StrictMode replay's `attach` cancels in the same commit; the
- *   microtask after it tears down. `retired` is final and answers `retired`.
- * - SM2, a lane (one reader accessory): none, `shown`, `held` or `ended`. One
- *   lane is shown at a time, the first to present within limits; nothing else
- *   is stored. `present(P)` while another is shown -> `held`, which turns to
- *   none when that one leaves, so the lane presents again. `present(null)` or
- *   unmount -> none; live growth past the limits -> `ended` (until it presents
- *   again). A boundary error unmounts the accessory, which withdraws it and
- *   revokes its `present`, so a failed lane needs no state of its own.
- * - SM3, the display: host rows (no lane shown) or the shown lane's rows with
- *   its evidence. Live evidence grows in place; growth past the limits ends
- *   the lane and is never trimmed (a trim could bring a deleted row back).
- * - SM4, the place intent, below: at most one pending.
- */
 /** A reader accessory, by identity. */
 export type ArrangementLane = object;
 /** The rows a reader shows in place of the host's, while a lane is shown. */
@@ -54,12 +33,10 @@ export type Display = Readonly<{
   revision: number;
 }>;
 type Hold = ReturnType<RelaySession["retain"]>;
-/** The shown lane's evidence: what the hold keeps and what the fold reads. */
 type Evidence = {
   readonly hold: Hold;
   readonly ids: readonly string[];
   readonly events: Map<string, EventData>;
-  /** Live aux seen, kept for ids that stay presented. */
   readonly live: Map<string, RelayEvent>;
   rows: readonly ChannelMessage[];
 };
@@ -83,7 +60,6 @@ export function createArrangement({
   limits: PresentationLimits;
 }>) {
   let phase: "live" | "leaving" | "retired" = "live";
-  /** Lanes not shown that are waiting (`held`) or `ended`. */
   const lanes = new Map<ArrangementLane, "held" | "ended">();
   let shown: ArrangementLane | undefined;
   let evidence: Evidence | undefined;
@@ -95,14 +71,12 @@ export function createArrangement({
   const emit = () => {
     for (const listener of [...listeners]) listener();
   };
-  /** The ids' rows and their aux from `live` and the plugin's events, or why not. */
   function select(
     presentation: ConversationPresentation,
     live: Iterable<EventData>,
   ) {
     if (!isObject(presentation)) return "invalid";
     const { ids, events, parents, open, complete, place } = presentation;
-    // Everything `show` reads is checked here, so a bad one changes nothing.
     if (
       !Array.isArray(ids) ||
       !Array.isArray(events) ||
@@ -120,8 +94,6 @@ export function createArrangement({
     if (ids.length > limits.rows) return "limit";
     const wanted = new Set(ids);
     const pool = new Map<string, EventData>();
-    // Rows need this channel's tag; aux joins by reference, as the readers
-    // admit it (a NIP-09 deletion may carry no `h`).
     for (const event of [...events, ...live])
       if (AUX.has(event.kind) || inChannel(event, channelId))
         pool.set(event.id, event);
@@ -130,8 +102,6 @@ export function createArrangement({
       if (wanted.has(event.id) && !AUX.has(event.kind) && event.kind !== 39007)
         held.set(event.id, event);
     growAux([...pool.values()], held);
-    // The root, when given, stays beside its replies as the reader's header,
-    // which shows its reactions: they do not count against the limits.
     const root = pool.get(rootId ?? "");
     if (root) held.set(root.id, root);
     return exceeds(held, limits) ? "limit" : { events: held };
@@ -142,7 +112,6 @@ export function createArrangement({
         .foldRows(channelId, [...current.events.values()], rootId)
         .map((row) => [row.id, row]),
     );
-    // The root stays the reader's header, never a presented row.
     const rows = current.ids.flatMap((id) =>
       id === rootId ? [] : (folded.get(id) ?? []),
     );
@@ -159,7 +128,6 @@ export function createArrangement({
       for (const stop of stops) stop?.();
     };
   }
-  /** Stops showing: the display is the host's, and nothing is held or watched. */
   function release() {
     evidence?.hold.dispose();
     evidence = undefined;
@@ -170,8 +138,6 @@ export function createArrangement({
     cancelFrame?.();
     cancelFrame = undefined;
   }
-  /** Shows `lane`'s presentation: select, hold (one swap, so evidence never has a
-   * gap), fold. A reason leaves everything as it was; otherwise the selection. */
   function show(lane: ArrangementLane, presentation: ConversationPresentation) {
     const picked = select(presentation, evidence?.live.values() ?? []);
     if (typeof picked === "string") return picked;
@@ -180,7 +146,6 @@ export function createArrangement({
       hold ??= session.retain();
       hold.set([...picked.events.values()]);
     } catch {
-      // No free view slot, or past the byte bound: it does not fit.
       if (!evidence) hold?.dispose();
       return "limit";
     }
@@ -195,7 +160,6 @@ export function createArrangement({
       rows: evidence?.rows ?? [],
     };
     evidence.rows = fold(evidence);
-    // This fold is current, so a frame asked for by the old evidence is moot.
     cancelFrame?.();
     cancelFrame = undefined;
     shown = lane;
@@ -217,8 +181,6 @@ export function createArrangement({
     watch();
     return picked;
   }
-  /** The shown lane left (`ended`, if it ended): the host's rows again, and
-   * every held lane may present. */
   function free(ended?: ArrangementLane) {
     for (const [lane, state] of lanes) if (state === "held") lanes.delete(lane);
     if (ended) lanes.set(ended, "ended");
@@ -229,7 +191,6 @@ export function createArrangement({
   function onLive({ events }: LiveBatch) {
     const current = evidence;
     if (!current) return;
-    // growAux adds only aux that reaches a held event, never a row.
     const added = growAux(events, current.events);
     if (!added.length) return;
     for (const event of added) current.live.set(event.id, event);
@@ -241,7 +202,6 @@ export function createArrangement({
     }
     refold();
   }
-  /** A fold at most once per frame, from live aux, the outbox or profiles. */
   function refold() {
     const current = evidence;
     if (!current || cancelFrame) return;
@@ -257,11 +217,10 @@ export function createArrangement({
   }
   return {
     limits,
-    /** `lane` shows `presentation`, or withdraws with `null` (answering `shown`). */
     present(
       lane: ArrangementLane,
       presentation: ConversationPresentation | null,
-    ): PresentResult {
+    ) {
       if (phase === "retired") return "retired";
       if (presentation === null) {
         lanes.delete(lane);
@@ -269,7 +228,6 @@ export function createArrangement({
         else emit();
         return "shown";
       }
-      // Checked either way, so a held lane learns now that it would not fit.
       const held = shown !== undefined && shown !== lane;
       const picked = held
         ? select(presentation, evidence?.live.values() ?? [])
@@ -280,22 +238,18 @@ export function createArrangement({
       emit();
       return held ? "held" : "shown";
     },
-    status: (lane: ArrangementLane): "none" | "shown" | "held" | "ended" =>
+    status: (lane: ArrangementLane) =>
       shown === lane ? "shown" : (lanes.get(lane) ?? "none"),
-    /** The shown presentation, or `undefined` for the host's rows. */
-    snapshot: (): Display | undefined => display,
+    snapshot: () => display,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
     },
-    /** A mount, or its StrictMode replay: cancels a pending retire. */
     attach() {
       if (phase === "leaving") phase = "live";
     },
-    /** An unmount, or the first half of a StrictMode replay: tears down after
-     * the commit unless `attach` follows. */
     retire() {
       if (phase !== "live") return;
       phase = "leaving";
@@ -402,12 +356,7 @@ export function createPlace() {
       pending = undefined;
       held = undefined;
     },
-    /** The placement to apply now, if any. `keep` goes to the nearest shown row,
-     * else `fallback`. A `reveal` of a row not shown places nothing. */
-    take(
-      shown: (id: string) => boolean,
-      fallback: "start" | "end" = "start",
-    ): Placement | undefined {
+    take(shown: (id: string) => boolean, fallback: "start" | "end" = "start") {
       const intent = pending;
       pending = undefined;
       if (!intent) return held;
@@ -420,7 +369,6 @@ export function createPlace() {
       }
       return held;
     },
-    /** The held placement was applied, or can never be. */
     done() {
       held = undefined;
     },
@@ -447,7 +395,6 @@ export function usePlace(
         next || at ? placeIntent(next?.place ?? "keep", at) : { kind: "end" },
       );
     };
-    // Presenting already, from before this reader could watch: no old rows.
     capture(undefined);
     return arrangement.subscribe(() => capture(read()));
   }, [arrangement, place]);

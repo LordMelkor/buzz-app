@@ -706,8 +706,6 @@ it("persists queued intent even if the session closes before asynchronous storag
   expect(sign).not.toHaveBeenCalled();
 });
 
-// A window holds rows from its floor up while older history remains; rows
-// below wait for their page, whatever read or traffic carried them.
 const windowHistory = () =>
   Array.from({ length: 40 }, (_, n) =>
     message(other, "c", `row ${n}`, 100 + n),
@@ -736,8 +734,6 @@ it("keeps a channel scan below the window's floor from limiting its history, and
   expect(window().historyLimited).toBeFalsy();
   const before = window().rows.map((row) => row.id);
   expect(before).toHaveLength(20);
-  // Rows and large reactions on them, all below the floor, beside a
-  // reaction on a held row.
   const scanned = history.slice(0, 20);
   h.transport.query = async () => [
     ...scanned,
@@ -770,8 +766,6 @@ it("shows catch-up rows below the window's floor once the catch-up moves it", as
   await h.open();
   const window = () => h.session.channels.window("c");
   expect(window().rows.map((row) => row.createdAt)[0]).toBe(120);
-  // The newest rows are gone after the drop: the head page reaches below
-  // the floor the window had.
   history.splice(25);
   h.reestablish("c");
   for (let i = 0; i < 10; i++) await flush();

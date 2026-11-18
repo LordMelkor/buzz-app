@@ -46,12 +46,9 @@ vi.mock("./TypingIndicator", () => ({
 const viewport = vi.hoisted(() => ({
   caches: [] as unknown[],
   shifts: [] as unknown[],
-  /** The index of the first row in view. */
   first: 0,
   scrollToIndex: vi.fn(),
 }));
-// The virtualizer's public contract, as in the viewport suite: the timeline
-// owns its refs, render and effect order.
 vi.mock("virtua", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
   return {
@@ -102,11 +99,9 @@ const DAY = 86_400;
 const proven = (event: RelayEvent): EventData => eventDto(event);
 const post = (name: string, at: number) =>
   proven(message(other, "c", name, at));
-/** Six rows the host's window holds, a minute apart. */
 const hostEvents = ["h0", "h1", "h2", "h3", "h4", "h5"].map((name, index) =>
   post(name, T + 60 * index),
 );
-/** Rows the host never loaded. */
 const [p0, p1, p2] = ["p0", "p1", "p2"].map((name, index) =>
   post(name, T + 1000 + 60 * index),
 ) as [EventData, EventData, EventData];
@@ -159,7 +154,6 @@ beforeEach(() => {
       scrolled = Math.max(0, Math.min(value, 3400));
     },
   });
-  /** Rows lie 100px apart in the order drawn; the edge above them is 40px. */
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       if (this.dataset.messageId !== undefined)
@@ -189,7 +183,7 @@ afterEach(() => {
 
 const readerEntry = (
   component: Contribution<ComposerAccessory>["component"],
-): Contribution<ComposerAccessory> => ({
+) => ({
   id: "arranger",
   key: "test:arranger",
   pluginId: "test",
@@ -225,13 +219,9 @@ function mount({
   window?: Partial<ChannelWindow>;
   props?: Partial<ChannelTimelineProps>;
   strict?: boolean;
-  /** Runs in the accessory's layout effect, as a plugin presenting at mount. */
   onProps?: (props: ComposerAccessoryProps) => void;
-  /** Replaces the session's fold, for rows events cannot make. */
   fold?: RelaySession["foldRows"];
-  /** The host window's rows; default the six host events. */
   rows?: readonly ChannelMessage[];
-  /** Mounts on the session of an earlier mount, as a return to the channel. */
   again?: { session: RelaySession };
 } = {}) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
@@ -249,7 +239,7 @@ function mount({
   owners.push(owner);
   owner.session.channels.ensure("c");
   callbacks.receive([roster(relay, "c", [viewer.pubkey], T)]);
-  const rowsOf = (events: readonly EventData[]): readonly ChannelMessage[] =>
+  const rowsOf = (events: readonly EventData[]) =>
     owner.session.foldRows("c", events);
   let current = hostWindow(rows ?? rowsOf(hostEvents), windowExtra);
   const loadOlder = vi.fn();
@@ -312,7 +302,6 @@ function mount({
     retained,
     latest,
     rowsOf,
-    /** The host's window changes. */
     setWindow(next: Partial<ChannelWindow>) {
       current = { ...current, ...next };
       view.rerender(tree());
@@ -338,7 +327,6 @@ function mount({
     },
   };
 }
-/** Runs the animation frames queued so far, as the browser would next. */
 const frame = () =>
   act(() => {
     for (const [id, callback] of [...frames]) {
@@ -346,7 +334,6 @@ const frame = () =>
       callback(0);
     }
   });
-/** The messages drawn, in order. */
 const drawn = () =>
   [...document.querySelectorAll<HTMLElement>("li[data-message-id]")].map(
     (row) => named.get(row.dataset.messageId ?? "") ?? row.dataset.messageId,
@@ -477,7 +464,6 @@ it("shows the channel intro under a presentation only when it is complete", () =
   expect(screen.queryByText("Start of the channel")).toBeNull();
   h.present({ ids: [p0.id], complete: true });
   expect(screen.getByText("Start of the channel")).toBeVisible();
-  // Not shown while the host's window has more above it either.
   h.setWindow({ hasMore: true });
   expect(screen.getByText("Start of the channel")).toBeVisible();
   h.withdraw();
@@ -507,8 +493,6 @@ it("draws no day divider and merges no rows while it presents, and the host's ag
     events: [late, early, earlyNext, earlyLast],
   });
   expect(drawn()).toEqual(["late", "early", "earlyNext", "earlyLast"]);
-  // The order is the plugin's: a divider would date the wrong rows, and
-  // "earlyNext" would merge into "early" across whatever the plugin left out.
   const marks = () =>
     [...document.querySelectorAll<HTMLElement>("li[data-message-id]")].map(
       ({ dataset }) =>
@@ -516,7 +500,6 @@ it("draws no day divider and merges no rows while it presents, and the host's ag
     );
   expect(marks()).toEqual(["- - -", "- - -", "- - -", "- - -"]);
   h.withdraw();
-  // The host's six rows, one author a minute apart: one day, one bubble.
   expect(marks()).toEqual([
     "true - true",
     "- true true",
@@ -527,7 +510,6 @@ it("draws no day divider and merges no rows while it presents, and the host's ag
   ]);
 });
 
-/** The nine updates one agent posted, as the chat folds them when it is the host's. */
 const updates = (count: number): ChannelMessage[] =>
   Array.from({ length: count }, (_, index) => ({
     id: `activity-${index}`,
@@ -564,7 +546,6 @@ it("folds no agent activity under a presentation, and folds the host's again aft
 it("draws no unread line, Jump or arrival count under a presentation, and counts none when it ends", () => {
   const h = mount();
   frame();
-  // Reading above the bottom: the Jump button shows.
   scrolled = 0;
   fireEvent.scroll(scroller());
   expect(scroller()).toHaveAttribute("data-jump-visible", "true");
@@ -572,7 +553,6 @@ it("draws no unread line, Jump or arrival count under a presentation, and counts
   frame();
   expect(scroller()).not.toHaveAttribute("data-jump-visible");
   expect(screen.getByText("Jump to latest").closest("[inert]")).not.toBeNull();
-  // A live arrival while presented counts for no one.
   h.withdraw();
   frame();
   expect(screen.getByText("Jump to latest")).toBeVisible();
@@ -582,20 +562,18 @@ it("draws no unread line, Jump or arrival count under a presentation, and counts
 it("holds the anchor row where it was when a presentation shows it", () => {
   const h = mount();
   frame();
-  scrolled = 250; // h2 is the first row in view, 50px above the edge.
+  scrolled = 250;
   h.present({ ids: [h5.id, h4.id, h3.id, h2.id, h1.id, h0.id] });
   expect(placed()).toEqual([3, { align: "start", offset: 50 }]);
   h.withdraw();
-  // Back in the host's order, the row at the top of the presented list.
   expect(placed()?.[1]).toEqual({ align: "start", offset: expect.any(Number) });
 });
 
 it("hands the place to the nearest row still shown when a filter hides the anchor", () => {
   const h = mount();
   frame();
-  scrolled = 250; // The anchor is h2.
+  scrolled = 250;
   h.present({ ids: [h0.id, h1.id, h3.id, h4.id] });
-  // h3 takes h2's place, 50px above the edge.
   expect(placed()).toEqual([2, { align: "start", offset: 50 }]);
   expect(row(h3)).not.toBeNull();
 });
@@ -614,7 +592,6 @@ it("places a named row at the top of the view", () => {
   h.present({ ids: [p0.id, p1.id, p2.id], place: { id: p1.id } });
   const [index, options] = placed() as [number, { offset: number }];
   expect(index).toBe(1);
-  // No -0: the row sits exactly at the top.
   expect(options.offset + 0).toBe(0);
 });
 
@@ -632,9 +609,8 @@ it("returns the host's rows at the anchor on a withdraw, reading nothing from th
   frame();
   h.present({ ids: [h5.id, h4.id, h3.id, h2.id, h1.id, h0.id] });
   frame();
-  scrolled = 250; // In the presented list: h3 is first in view.
+  scrolled = 250;
   h.withdraw();
-  // h3 is the host's fourth row; it keeps its 50px.
   expect(placed()).toEqual([3, { align: "start", offset: 50 }]);
   expect(h.loadOlder).not.toHaveBeenCalled();
 });
@@ -645,7 +621,6 @@ it.each([false, true])(
     const h = mount();
     frame();
     viewport.scrollToIndex.mockClear();
-    // The presentation is made, and the reader acts before it commits.
     act(() => {
       h.latest.current?.present?.({
         events: [p0, p1],
@@ -662,7 +637,7 @@ it.each([false, true])(
 it("draws a presentation's rows without shifting the reader when it ends where the host's rows do", () => {
   const h = mount();
   frame();
-  scrolled = 400; // Only the host's last two rows are in view.
+  scrolled = 400;
   viewport.first = 4;
   h.present({ ids: [p0.id, h4.id, h5.id] });
   expect(viewport.shifts).not.toContain(true);
@@ -697,13 +672,11 @@ it("writes no saved place while it presents, and the host's place after it", () 
   again.withdraw();
   frame();
   again.unmount();
-  // The place names a row of the host's, never a presented one.
   const saved = JSON.parse(localStorage.getItem(key) ?? "null");
   expect(saved.anchor.id).toBe(h3.id);
 });
 
 it("saves no Back/Forward place for a link's visit left while it presents", () => {
-  // Control: leaving the revealed visit saves where the reader was.
   const shown = navigationTo(h1.id);
   const control = mount({ props: { navigation: shown } });
   for (let pass = 0; pass < 4; pass++) frame();
@@ -717,7 +690,6 @@ it("saves no Back/Forward place for a link's visit left while it presents", () =
   frame();
   fireEvent.scroll(scroller());
   h.unmount();
-  // A presented row is not a place in the host's rows.
   expect(navigation.savePosition).not.toHaveBeenCalled();
 });
 
@@ -725,12 +697,10 @@ it("saves the geometry of the rows shown, never filed as the host's, when it unm
   const first = mount();
   frame();
   first.unmount();
-  // Control: a return with the same rows takes the saved sizes.
   const second = mount({ again: first });
   expect(viewport.caches.at(-1)).toEqual([[], 40]);
   second.present({ ids: [p0.id, p1.id] });
   second.unmount();
-  // Sizes measured for the presented rows are wrong for the host's.
   viewport.caches.length = 0;
   mount({ again: first });
   expect(viewport.caches.at(-1)).toBeUndefined();
@@ -758,7 +728,6 @@ it("reads only the rows shown while it is partial, and catches up at its end row
   expect(lastReading().partial).toBe(false);
   expect(lastReading().endMessageId).toBeUndefined();
   expect(lastReading().latestMessageId).toBe(h5.id);
-  // Newest by time, last by position: the end the dwell catches up at.
   h.present({ ids: [p2.id, p0.id, p1.id] });
   expect(lastReading().partial).toBe(true);
   expect(lastReading().latestMessageId).toBe(p2.id);

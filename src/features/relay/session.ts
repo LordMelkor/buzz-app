@@ -191,8 +191,6 @@ export const ROSTER_BACKSTOP_INTERVAL = 15 * 60_000;
  * no signal: a channel the relay pruned from a batch, or a dropped fan-out. */
 export const UNREAD_BACKSTOP_INTERVAL = 15 * 60_000;
 
-/** The most one `retain` handle holds, in serialized event bytes: the bound
- * of the shared cache and of a channel's retained window. */
 const RETAIN_MAX_BYTES = 8 * 1024 * 1024;
 
 /** A read of named authors' profiles, or the general statuses read with them.
@@ -357,8 +355,6 @@ export function createRelaySession(
   const pendingConfirmation = new Set<string>();
   const refreshers = new Set<() => Promise<void>>();
   const views = new Map<() => void, (clear?: boolean) => void>();
-  /** Each `retain` handle's events: evidence for visibility and lookups, never
-   * counted, cached or shown. A handle is one view slot. */
   const holds = new Set<Map<string, RelayEvent>>();
   const threads = new Set<ReturnType<typeof createThreadView>>();
   /** Recently closed threads, so reopening one shows it at once. Memory only;
@@ -3385,8 +3381,6 @@ export function createRelaySession(
     },
     /** Whether read() search filters may ask for `search_sort: "newest"`. */
     searchSort: transport?.searchSort === true,
-    /** Whether thread and channel windows may ask for `direction: "newer"`
-     * and thread pages for `root_aux: false` (`buzz-window-newer`). */
     windowNewer: transport?.windowNewer === true,
     /** NIP-AR sync: an exact, kept-current set of current artifacts for a
      * filter that names its channels with `#h`. Status `unsupported` means
@@ -3478,19 +3472,12 @@ export function createRelaySession(
         };
       },
     },
-    /** The rows Buzz's readers fold from these events: proven events plus this
-     * device's own intent in the conversation (with delivery state), visible ones
-     * only, with edits, reactions and deletions applied, in the readers' order.
-     * With `rootId`, the thread fold: the root and its replies. Stateless: it
-     * reads no relay and keeps no cache or view. Denied or closed: `[]`. */
     foldRows(
       channelId: string,
       events: readonly EventData[],
       rootId?: string,
     ): readonly ChannelMessage[] {
       if (closed || !canAccess(channelId)) return [];
-      // Failed edits, reactions and deletions never changed the content; a
-      // failed message stays, for same-event retry.
       const own = rawLocal().filter(
         ({ event, delivery }) =>
           event.kind !== PRODUCT_FEEDBACK_KIND &&
@@ -3511,7 +3498,6 @@ export function createRelaySession(
           includeReplies: rootId !== undefined,
           signingAuthority: transport?.archiveAuthority,
           agentOwner: profiles.queries.owner,
-          // As a channel view counts them: own replies the relay has not yet.
           pendingReplies:
             rootId === undefined
               ? new Set(
@@ -3543,18 +3529,6 @@ export function createRelaySession(
             : row;
         });
     },
-    /** One holder's evidence hold: `set` replaces the events held. A held event
-     * lets its live edits, reactions and deletions pass visibility (so they reach
-     * `observe` views and `subscribeLive`), and edit, react and read marking find
-     * it, though nothing else retains it (a `snapshotRead` row, say). Only proven,
-     * visible events are held. It grants no access: every reference is still
-     * checked, on `set` and on each access change. It never takes part in
-     * `accept`, so it changes no cache, unread count or other view.
-     *
-     * One handle is one view slot of the 64 `observe` and thread views share;
-     * this throws as `observe` does when none is free. `set` throws past
-     * `RETAIN_MAX_BYTES` and keeps the previous events. A cache clear empties the
-     * hold (the handle stays valid); `dispose`, and closing the session, end it. */
     retain() {
       if (closed || views.size >= 64)
         throw new Error("Relay view capacity unavailable");

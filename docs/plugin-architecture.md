@@ -1764,7 +1764,10 @@ Three session capabilities serve a plugin that scans:
   deletions reach `subscribeLive`, which a row from `snapshotRead` alone would
   not. It grants no access and changes no cache, `recent` or unread. A hold is
   one view slot of the 64 that `observe` and thread views share; a presenting
-  reader uses one and the plugin uses one.
+  reader uses one and the plugin uses one. `retain()` throws when no slot is
+  free, and `set` throws past the bound and keeps the previous events. A cache
+  clear empties the hold; the handle stays valid until `dispose()` or the
+  session closes.
 - `session.foldRows(channelId, events, rootId?)` folds proven events into rows:
   stateless, with the viewer's own pending sends and their delivery state, and `[]`
   for a denied channel or a closed session. With `rootId` it folds the root and

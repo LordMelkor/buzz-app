@@ -44,12 +44,6 @@ import type { RelaySession } from "../relay/session";
 import { THREAD_LIMITS } from "../relay/threads";
 import { createArrangement } from "./arrangement";
 
-// The test plugin stands in for an installed one: it is loaded through the
-// plugin runtime, mounted in the reader slot of a real arrangement host over a
-// real relay session, and reads a fixture relay through the real reader. What
-// it shows is checked against an oracle built from the raw events, not from
-// `foldRows`.
-
 let thread: Fixture & { root: RelayEvent };
 let channel: Fixture;
 beforeAll(async () => {
@@ -77,8 +71,6 @@ const PLUGIN = {
 
 const marked = (event: EventData, name: string) =>
   event.tags.flatMap(([tag, id]) => (tag === name && id ? [id] : []));
-/** What the rows should be, counted from the raw events by hand: deletions by
- * the author of their target, reactions counted per account. */
 function oracle(events: readonly EventData[], rootId?: string) {
   const byId = new Map(events.map((event) => [event.id, event]));
   const deleted = new Set<string>();
@@ -106,7 +98,6 @@ function oracle(events: readonly EventData[], rootId?: string) {
         if (reactions.has(id)) reactions.set(id, (reactions.get(id) ?? 0) + 1);
       }
   const score = (id: string) => reactors.get(id)?.size ?? 0;
-  // The latest edit by a row's own author replaces its text.
   const edits = new Map<string, EventData>();
   for (const event of events)
     if (event.kind === EDIT && !deleted.has(event.id))
@@ -118,14 +109,12 @@ function oracle(events: readonly EventData[], rootId?: string) {
         )
           edits.set(id, event);
       }
-  /** The rows of `order` whose text, as edited, contains `needle` in any case. */
   const matching = (order: readonly EventData[], needle: string) =>
     order.filter((row) =>
       (edits.get(row.id) ?? row).content
         .toLowerCase()
         .includes(needle.toLowerCase()),
     );
-  /** The relay's `newer` order: created_at ascending, id descending. */
   const oldest = [...rows].sort(
     (a, b) => a.created_at - b.created_at || (a.id < b.id ? 1 : -1),
   );
@@ -135,7 +124,6 @@ function oracle(events: readonly EventData[], rootId?: string) {
   return { rows, score, reactions, oldest, top, deleted, matching };
 }
 const count = new Intl.NumberFormat("en-US").format;
-/** The arranger's position text; a `+` after the total marks rows still unread. */
 const replies = (from: number, to: number, total: number, noun = "Replies") =>
   `${noun} ${count(from)}–${count(to)} of ${count(total)}`;
 const idsOf = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
@@ -165,10 +153,8 @@ const reactionTo = async (
 
 type Mount = {
   fixture: Fixture;
-  /** A thread (its root and replies) or the channel's top level. */
   rootId?: string | undefined;
   windowNewer?: boolean;
-  /** A second reader accessory, ordered first, for presenting by hand. */
   probe?: boolean;
   targetId?: string;
 };
@@ -273,10 +259,8 @@ async function mount({ fixture, rootId, windowNewer, probe, targetId }: Mount) {
     click: (name: string) =>
       fireEvent.click(screen.getByRole("button", { name })),
     status: () => screen.getByRole("status").textContent,
-    /** What the reader shows now, by id. */
     shown: () => idsOf(arrangement.snapshot()?.rows ?? []),
     heard: (...events: RelayEvent[]) => act(() => relay.hear(...events)),
-    /** The refold a live change waits for, once per frame. */
     flush: () =>
       act(() => {
         for (const [id, run] of [...frames]) {
@@ -284,7 +268,6 @@ async function mount({ fixture, rootId, windowNewer, probe, targetId }: Mount) {
           run();
         }
       }),
-    /** What the host's own history holds: nothing a scan reads is in it. */
     recent() {
       const recent = relay.session.observe([
         { "#h": [CHANNEL], kinds: [9, 7, 5, 40003], limit: 10_000 },
@@ -295,9 +278,7 @@ async function mount({ fixture, rootId, windowNewer, probe, targetId }: Mount) {
     },
     unread: () => relay.session.unread.snapshot(unreadTarget),
     unreadTarget,
-    /** The reads the scan made, apart from the host view's own. */
     scanReads: (since: number) => relay.reads.slice(since),
-    /** Evidence holds the plugin has taken. */
     holds: () => holds,
   };
 }
@@ -311,7 +292,6 @@ const ready = (h: Harness) =>
     },
     { timeout: 30_000 },
   );
-/** The host's own reader: the thread view the panel runs beside the plugin. */
 async function hostView(h: Harness, rootId: string) {
   const view = h.owner.session.thread(CHANNEL, rootId);
   cleanups.push(() => view.dispose());
@@ -339,7 +319,6 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
   await waitFor(() =>
     expect(h.session.channels.window(CHANNEL).status).toBe("ready"),
   );
-  // One reply arrives live and is marked unread: something for a scan to wipe.
   const [fresh] = await prove([
     mint(thread.authors[0] as never, {
       kind: 9,
@@ -369,7 +348,6 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
   await ready(h);
 
   const reads = h.scanReads(before);
-  // Six rounds of both ends at once, after the root: seven reads.
   expect(reads).toHaveLength(7);
   expect(reads.every(({ priority }) => priority === "background")).toBe(true);
   const windows = reads
@@ -380,26 +358,21 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
   expect(windows.filter((filter) => filter.direction === "newer")).toHaveLength(
     6,
   );
-  // Every page arrived through the reader's verification, bounds included.
   const pages = h.answers.filter((page) => page.some((e) => e.kind === 39007));
   expect(pages).toHaveLength(6);
   expect(h.answers.flat().every(hasEventProof)).toBe(true);
-  // The header's reactions are the reader's to show: no page carried them.
   expect(
     h.answers
       .flat()
       .some((e) => e.kind === REACTION && marked(e, "e").includes(root.id)),
   ).toBe(false);
 
-  // The ranking is the oracle's: 10 rows of 20 accounts, 50 of 5, then ties by id.
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
   expect(want.score(h.shown()[0] as string)).toBe(20);
   expect(h.arrangement.snapshot()?.place).toBe("start");
   expect(h.arrangement.snapshot()?.complete).toBe(false);
-  // The oracle's rows, and the reply that arrived live before the scan.
   expect(h.status()).toBe(replies(1, 200, want.rows.length + 1));
 
-  // The host reads as it did: same view, same recent events, same unread, same window.
   expect(hostState(view)).toEqual(host);
   expect(h.recent()).toEqual(recent);
   expect(h.unread()).toEqual(unread);
@@ -422,7 +395,6 @@ it("folds every reaction, edit and deletion of the thread as the oracle counts t
       row.reactions.reduce((sum, group) => sum + group.events.length, 0),
     ).toBe(want.reactions.get(row.id));
   }
-  // Each group the fixture built folds as designed.
   const folded = new Map(rows.map((row) => [row.id, row]));
   expect(groups.deleted?.every((id) => !folded.has(id))).toBe(true);
   expect(
@@ -447,7 +419,6 @@ it("presents a thread that fits whole as complete", async () => {
   await ready(h);
   expect(h.shown()).toEqual(idsOf(want.top));
   expect(h.arrangement.snapshot()?.complete).toBe(true);
-  // Nothing more to show or read.
   expect(screen.queryByRole("button", { name: "More" })).toBeNull();
 });
 
@@ -463,9 +434,7 @@ it("grows a Top window from 200 to 460 rows, the most a thread reader shows, and
   h.click("More");
   await waitFor(() => expect(h.shown()).toHaveLength(460));
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 460)));
-  // The rows were read already: growing reads nothing.
   expect(h.reads).toHaveLength(reads);
-  // The plugin's 460 are within the reader's bounds; a probe's 461 are not.
   const ids = idsOf(want.rows.slice(0, 461));
   let result: PresentResult | undefined;
   act(() => {
@@ -473,11 +442,9 @@ it("grows a Top window from 200 to 460 rows, the most a thread reader shows, and
   });
   expect(result).toBe("limit");
   expect(h.shown()).toHaveLength(460);
-  // The plugin's budget leaves room under the event bound for live aux.
   expect(h.arrangement.limits).toEqual(THREAD_LIMITS);
 });
 
-/** Types into the bar's filter and submits it, as a person would. */
 const find = (text: string) => {
   fireEvent.change(screen.getByRole("searchbox", { name: "Filter replies" }), {
     target: { value: text },
@@ -515,7 +482,6 @@ it("pages a Top list past the reader's 460 rows, each page the oracle's slice, a
     expect(h.shown()).toEqual(idsOf(want.top.slice(from - 1, to)));
     expect(h.arrangement.snapshot()?.place).toBe("start");
   }
-  // The last window has no Next; Previous steps back through the same slices.
   expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
   h.click("Previous");
   await statusIs(h, replies(1381, 1840, total));
@@ -527,15 +493,12 @@ it("filters every row by its edited text, in any case, whatever the scan had rea
   const want = oracle(events, root.id);
   const h = await mount({ fixture: thread, rootId: root.id });
 
-  // An Oldest view has read only its first windows: filtering finishes the scan.
   h.click("Oldest");
   await ready(h);
   expect(h.status()).toMatch(/\+$/);
   const gizmo = want.matching(want.oldest, "gizmo");
   expect(gizmo.length).toBeGreaterThan(50);
   expect(gizmo.length).toBeLessThan(200);
-  // Some matches lie past anything it had read (two pages of 200), and some
-  // replies that said it were edited away, which only the folded text shows.
   expect(gizmo.some((row) => want.oldest.indexOf(row) >= 600)).toBe(true);
   expect(
     want.rows.filter((row) => /gizmo/i.test(row.content)).length,
@@ -544,12 +507,10 @@ it("filters every row by its edited text, in any case, whatever the scan had rea
   await statusIs(h, replies(1, gizmo.length, gizmo.length));
   expect(h.shown()).toEqual(idsOf(gizmo));
 
-  // The same filter ranks by Top.
   h.click("Top");
   await statusIs(h, replies(1, gizmo.length, gizmo.length));
   expect(h.shown()).toEqual(idsOf(want.matching(want.top, "gizmo")));
 
-  // A filter with more matches than a window pages like the whole list.
   find("reply 1");
   const many = want.matching(want.top, "reply 1");
   expect(many.length).toBeGreaterThan(920);
@@ -560,7 +521,6 @@ it("filters every row by its edited text, in any case, whatever the scan had rea
   await statusIs(h, replies(461, 920, many.length));
   expect(h.shown()).toEqual(idsOf(many.slice(460, 920)));
 
-  // Nothing matches; clearing shows every row again.
   find("no such words");
   await statusIs(h, "No replies match");
   expect(h.shown()).toEqual([]);
@@ -577,7 +537,6 @@ it("reaches the last reply of an Oldest list by Next, reading forward as it goes
   await ready(h);
   h.click("More");
   await waitFor(() => expect(h.shown()).toHaveLength(460));
-  // It has read only as far as the windows reach.
   expect(h.status()).toMatch(/\+$/);
   for (const from of [461, 921, 1381]) {
     h.click("Next");
@@ -602,7 +561,6 @@ it("re-ranks when a reaction lands on a row that is not shown", async () => {
   const shown = new Set(h.shown());
   const quiet = (groups.one ?? []).find((id) => !shown.has(id)) as string;
   expect(quiet).toBeDefined();
-  // Thirty accounts react to it: more than any shown row has.
   const live = await Promise.all(
     reactors
       .slice(0, 30)
@@ -638,7 +596,6 @@ it("hides a shown row when its deletion arrives live", async () => {
   h.flush();
   const want = oracle([...events, gone as RelayEvent], root.id);
   await waitFor(() => expect(h.shown()).not.toContain(first));
-  // The next row takes its place.
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
 });
 
@@ -651,13 +608,11 @@ it("keeps the viewer's own reply in view from sending to seen, then ranks it as 
     h.arrangement.snapshot()?.rows.find((row) => row.content === "mine");
   void h.owner.session.messages.reply(CHANNEL, root.id, "mine");
   await waitFor(() => expect(own()?.delivery).toBe("sending"));
-  // Pinned above the 200 ranked rows, which keep their number.
   expect(h.shown()[0]).toBe(own()?.id);
   expect(h.shown()).toHaveLength(201);
   h.publications[0]?.accept();
   await waitFor(() => expect(own()?.delivery).toBe("accepted"));
   expect(h.shown()[0]).toBe(own()?.id);
-  // The relay echoes it back: it is an ordinary row now, with no reactions.
   h.heard(h.publications[0]?.event as RelayEvent);
   await waitFor(() => expect(own()).toBeUndefined());
   expect(h.shown()).toHaveLength(200);
@@ -671,7 +626,6 @@ it("paints Oldest first from the reads its first window needs and pages forward 
   h.click("Oldest");
   await ready(h);
   const reads = h.scanReads(before);
-  // The root, then pages from the thread's start until 200 replies survive deletion.
   expect(reads).toHaveLength(3);
   const [page] = reads[1]?.filters ?? [];
   expect(page).toMatchObject({
@@ -705,7 +659,6 @@ it("reads a thread through older pages alone when the relay has no newer windows
   h.click("Top");
   await ready(h);
   const reads = h.scanReads(before);
-  // The root, then ten pages of 200 from the newest.
   expect(reads).toHaveLength(11);
   const filters = reads.flatMap(({ filters }) => filters);
   expect(filters.some((f) => f.direction === "newer")).toBe(false);
@@ -742,7 +695,6 @@ it("nests replies under their shown parents and opens the branches that hold the
       marked(row, "e").length > 1 ? marked(row, "e")[1] : undefined,
     ]),
   );
-  // A row nests where its signed parent is shown above it; none nests under a row that is not.
   expect(parents.size).toBeGreaterThan(50);
   for (const [id, parent] of parents) {
     expect(signed.get(id)).toBe(parent);
@@ -777,7 +729,6 @@ it("waits behind another arrangement and shows when that one leaves", async () =
   await waitFor(() => expect(h.status()).toMatch(/waiting/), {
     timeout: 30_000,
   });
-  // The probe's rows stay.
   expect(h.shown().sort()).toEqual([...first].sort());
   act(() => {
     h.handle.probe?.present?.(null);
@@ -794,7 +745,6 @@ it("shows fewer rows when live growth ends its presentation", async () => {
   h.click("More");
   await waitFor(() => expect(h.shown()).toHaveLength(460));
   const rows = h.shown();
-  // Past the 2,000 events the reader holds, from rows it shows.
   const live = await Promise.all(
     Array.from({ length: 400 }, (_, i) =>
       reactionTo(
@@ -805,7 +755,6 @@ it("shows fewer rows when live growth ends its presentation", async () => {
     ),
   );
   h.heard(...live);
-  // It re-presents half as many, and says so.
   await waitFor(() => expect(h.shown()).toHaveLength(230));
   expect(h.arrangement.status(h.lane() as never)).toBe("shown");
   expect(h.status()).toBe(
@@ -823,9 +772,6 @@ it("reads the whole thread again after a reconnect once it is visible, and is no
   await statusIs(h, replies(1, 200, total));
   act(() => h.connection("retrying"));
   await statusIs(h, `${replies(1, 200, total)}+`);
-  // What the stream never delivered while it was down, whatever its age: forty
-  // accounts react to a reply that is not shown, and the first shown row's
-  // author deletes it.
   const [first] = h.shown() as [string];
   const quiet = (groups.one ?? []).find(
     (id) => !h.shown().includes(id),
@@ -851,8 +797,6 @@ it("reads the whole thread again after a reconnect once it is visible, and is no
   ] as RelayEvent[];
   h.world.add(missed);
   const before = h.reads.length;
-  // The wait is random: take the shortest. A hidden window reads nothing
-  // until it is shown.
   vi.spyOn(Math, "random").mockReturnValue(0);
   const visibility = vi
     .spyOn(document, "visibilityState", "get")
@@ -882,7 +826,6 @@ it("keeps an Oldest list in order when replies arrive before the read reaches th
   const h = await mount({ fixture: thread, rootId: root.id });
   h.click("Oldest");
   await ready(h);
-  // More new replies than the read is ahead of the next window.
   const late = (await prove(
     Array.from({ length: 30 }, (_, i) =>
       mint(authors[i % authors.length] as never, {
@@ -900,7 +843,6 @@ it("keeps an Oldest list in order when replies arrive before the read reaches th
   h.heard(...late);
   const want = oracle([...events, ...late], root.id);
   const total = want.rows.length;
-  // Each window is the oracle's slice: the new replies come last, not early.
   for (let from = 201; from <= total; from += 200) {
     h.click("Next");
     const to = Math.min(from + 199, total);
@@ -912,7 +854,6 @@ it("keeps an Oldest list in order when replies arrive before the read reaches th
   expect(h.shown().slice(-30)).toEqual(idsOf(late));
 }, 60_000);
 
-/** The host's own channel window, loaded, with three live rows, one marked unread. */
 async function hostChannel(h: Harness) {
   void h.session.channels.refresh?.(CHANNEL);
   await waitFor(() =>
@@ -966,7 +907,6 @@ it("ranks a 5,000-row channel by top reacted from verified windows, without touc
 
   const reads = h.scanReads(before);
   expect(reads.every(({ priority }) => priority === "background")).toBe(true);
-  // 5,000 rows, 200 to a page: 25 windows, each with the relay's signed bounds.
   expect(reads).toHaveLength(25);
   const pages = h.answers.filter((page) => page.some((e) => e.kind === 39006));
   expect(pages).toHaveLength(25);
@@ -994,7 +934,6 @@ it("ranks a new live message in a channel's Top list", async () => {
     }),
   ])) as [RelayEvent];
   h.heard(fresh);
-  // Forty accounts react: more than any row has.
   const reactions = await Promise.all(
     reactors.map((key, i) => reactionTo(key, fresh.id, T + 60_001 + i)),
   );

@@ -8580,8 +8580,6 @@ it("reads and marks unread a held-only message, never counting or caching it", a
   expect(h.journal()?.state.frontiers).toEqual({ [`msg:${held.id}`]: 12 });
   await h.session.unread.markMessageUnread("room", held.id);
   await h.session.unread.markMessageRead("room", held.id);
-  // A captured read, a thread mark and a thread read find a held-only
-  // reply under a held-only root.
   const root = eventDto(message(h.alice, "room", "root", 20));
   const reply = eventDto(
     message(h.alice, "room", "reply", 21, [["e", root.id, "", "reply"]]),
@@ -8597,14 +8595,12 @@ it("reads and marks unread a held-only message, never counting or caching it", a
     [`thread:${root.id}`]: 21,
   });
   await h.session.unread.prepareThreadRead("room", root.id)();
-  // Viewing a held reply that the thread mark already covers writes nothing.
   const covered = eventDto(
     message(h.alice, "room", "covered", 21, [["e", root.id, "", "reply"]]),
   );
   hold.set([held, root, reply, covered]);
   await handle.observe([covered.id]);
   expect(h.journal()?.state.frontiers).not.toHaveProperty(`msg:${covered.id}`);
-  // The hold is evidence only: nothing counted, nothing cached for views.
   expect(h.snapshot().observedCount).toBe(counted);
   expect(
     h.session.observe([{ kinds: [9], "#h": ["room"], limit: 10 }]).snapshot()

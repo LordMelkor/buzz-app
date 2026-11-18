@@ -28,7 +28,6 @@ export function threadAuthority(origin: string) {
     .replace(/\.$/, "");
 }
 
-/** The request cursor in the filter's own direction. */
 const requestCursor = (filter: ReadFilter) =>
   filter.direction === "newer"
     ? filter.after === undefined
@@ -172,8 +171,6 @@ export async function verifyThreadWindows(
     const newer = filter.direction === "newer";
     const { cursor } = threadBounds(bound, newer ? "newer" : "older");
     const from = requestCursor(filter);
-    // The next cursor advances in the request's order: older is
-    // `created_at DESC, id ASC`, newer its exact reverse.
     if (cursor && from && relayOrder(cursor, from) * (newer ? 1 : -1) <= 0)
       throw invalid();
   }

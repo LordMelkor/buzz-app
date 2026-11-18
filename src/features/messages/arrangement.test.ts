@@ -19,7 +19,6 @@ import {
   createPlace,
   nearestShown,
   placeIntent,
-  type ArrangementLane,
 } from "./arrangement";
 import { replyTree } from "./reply-tree";
 
@@ -31,7 +30,6 @@ afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
   vi.unstubAllGlobals();
 });
-/** An event as a verified read returns it: the only kind with proof. */
 const proven = (event: RelayEvent) => eventDto(event);
 const live = { phase: "live" as const, channelId: "c" };
 const wide: PresentationLimits = { rows: 460, events: 2000, bytes: 4 << 20 };
@@ -83,7 +81,6 @@ function host(
     arrangement,
     seen,
     frames,
-    /** The one animation frame that follows. */
     frame() {
       for (const [id, run] of [...frames]) {
         frames.delete(id);
@@ -92,7 +89,7 @@ function host(
     },
   };
 }
-const lane = (key: string): ArrangementLane => ({ key });
+const lane = (key: string) => ({ key });
 const reaction = (author: Key, target: EventData, time: number) =>
   proven(
     signed(author, {
@@ -121,7 +118,6 @@ function thread(count = 3) {
   const replies = Array.from({ length: count }, (_, index) =>
     reply(other, root, 11 + index, `reply ${index}`),
   );
-  // Typed as the most the tests destructure.
   return {
     root,
     replies: replies as unknown as [
@@ -198,7 +194,6 @@ it("passes parents, open, complete and place through, nested to depth 4", () => 
     place: "keep",
   });
   expect(arrangement.snapshot()?.parents).toBeUndefined();
-  // An empty record is a request for a flat list, not for the reader's branches.
   arrangement.present(one, { ids: [a, b], events, parents: {} });
   expect(arrangement.snapshot()?.parents?.size).toBe(0);
 });
@@ -217,7 +212,6 @@ it("refuses duplicate ids and too many rows, events or bytes, and keeps what it 
     "invalid",
   );
   expect(arrangement.snapshot()).toBe(shown);
-  // The root and three replies are at the limit; a fourth reply is past it.
   expect(
     arrangement.present(first, { ids: replies.map((row) => row.id), events }),
   ).toBe("shown");
@@ -237,7 +231,6 @@ it("refuses duplicate ids and too many rows, events or bytes, and keeps what it 
     "limit",
   );
   expect(small.arrangement.snapshot()).toBeUndefined();
-  // Any malformed field is refused before anything changes.
   const before = arrangement.snapshot();
   for (const bad of [
     { ids: "x" },
@@ -276,7 +269,6 @@ it("holds the root as the header without counting its reactions against the limi
     rootId: root.id,
     limits: { rows: 10, events: 2, bytes: 4 << 20 },
   });
-  // A page read with the root's aux, as a relay without `root_aux` sends it.
   const page = [
     ...events,
     reaction(other, root, 30),
@@ -300,7 +292,6 @@ it("applies a live reaction and its deletion (two hops) to a row it was given by
   receive([deletion(other, [first.id], 31)], live);
   frame();
   expect(arrangement.snapshot()?.rows[0]?.reactions).toHaveLength(0);
-  // It never adds a row: a new live reply is not shown.
   receive([reply(other, root, 32, "late")], live);
   frame();
   expect(arrangement.snapshot()?.rows).toHaveLength(1);
@@ -343,7 +334,6 @@ it("ends when live growth passes the limits, never trims, and shows again on a n
   receive([reaction(other, row, 32)], live);
   expect(arrangement.status(first)).toBe("ended");
   expect(arrangement.snapshot()).toBeUndefined();
-  // Its hold is gone: the row's live reactions are dropped again.
   const heard: RelayEvent[] = [];
   session.subscribeLive((batch) => heard.push(...batch.events));
   receive([reaction(other, row, 33)], live);
@@ -360,7 +350,6 @@ it("swaps its one hold in place: a full session still re-presents, and a withdra
   expect(
     arrangement.present(first, { ids: [replies[0]?.id ?? ""], events }),
   ).toBe("shown");
-  // No free view slot is left, and a second hold would need one.
   expect(() => session.retain()).toThrow(/capacity/);
   expect(
     arrangement.present(first, { ids: [replies[1]?.id ?? ""], events }),
@@ -435,7 +424,6 @@ it("keeps refolding live changes after a re-present that overtook a pending fram
   const one = lane("one");
   arrangement.present(one, { ids: [row.id], events });
   receive([reaction(other, row, 30)], live);
-  // The re-present folds at once, so the frame the first reaction asked for is moot.
   arrangement.present(one, { ids: [row.id], events });
   receive([reaction(viewer, row, 31)], live);
   frame();
@@ -459,7 +447,6 @@ it("shows an own pending reply only when named, and follows its delivery", async
   const one = lane("one");
   arrangement.present(one, { ids: [], events });
   expect(arrangement.snapshot()?.rows).toEqual([]);
-  // Named with no events at all.
   arrangement.present(one, { ids: [id], events: [] });
   expect(arrangement.snapshot()?.rows[0]).toMatchObject({
     content: "mine",
@@ -484,21 +471,17 @@ it("shows the first lane to present and holds a later one, keeping nothing, unti
   const second = lane("a");
   expect(arrangement.present(first, { ids: [a.id], events })).toBe("shown");
   expect(arrangement.present(second, { ids: [b.id], events })).toBe("held");
-  // A held lane is still checked, so it learns now that it would not fit.
   expect(arrangement.present(second, { ids: [b.id, b.id], events })).toBe(
     "invalid",
   );
   expect(arrangement.status(second)).toBe("held");
-  // A lane that never presented has no presentation.
   expect(arrangement.status(lane("b"))).toBe("none");
   expect(ids(arrangement.snapshot()?.rows)).toEqual([a.id]);
-  // The shown lane withdraws: the host's rows, and the held lane may present.
   arrangement.present(first, null);
   expect(arrangement.snapshot()).toBeUndefined();
   expect(arrangement.status(second)).toBe("none");
   expect(arrangement.present(second, { ids: [b.id], events })).toBe("shown");
   expect(arrangement.present(first, { ids: [a.id], events })).toBe("held");
-  // Live growth ends the shown lane, which frees the held one too.
   receive([reaction(other, b, 30), reaction(other, b, 31)], live);
   receive([reaction(other, b, 32)], live);
   expect(arrangement.status(second)).toBe("ended");
@@ -522,7 +505,6 @@ it("keeps a presentation through a StrictMode replay and retires after a real un
   receive([reaction(other, a, 30)], live);
   expect(heard).toHaveLength(1);
   arrangement.retire();
-  // Still open to a replay until the commit ends.
   expect(arrangement.status(first)).toBe("shown");
   await Promise.resolve();
   expect(arrangement.snapshot()).toBeUndefined();
@@ -568,7 +550,6 @@ it("holds one pending place until it is applied, replaced by a later one, cancel
   place.capture({ kind: "end" });
   place.capture({ kind: "start" });
   expect(place.take(all)).toBe("start");
-  // Held until done: a row in a closed branch needs another commit to place.
   expect(place.take(() => false)).toBe("start");
   place.done();
   expect(place.take(all)).toBeUndefined();
@@ -577,7 +558,6 @@ it("holds one pending place until it is applied, replaced by a later one, cancel
   expect(place.take(all)).toBeUndefined();
   place.capture({ kind: "end" });
   expect(place.take(all)).toBe("end");
-  // A capture drops a placement not yet applied.
   place.capture({ kind: "keep", ...anchor("c") });
   expect(place.take((id) => id === "d")).toEqual({ id: "d", top: 12 });
   place.cancel();

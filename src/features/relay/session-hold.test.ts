@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { createRelaySession } from "./session";
 import { CHANNEL_LIMITS } from "./store";
 import { eventDto, type EventData, type RelayEvent } from "./events";
@@ -21,7 +21,6 @@ const owners: ReturnType<typeof createRelaySession>[] = [];
 afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
 });
-/** An event as a verified read returns it: the only kind with proof. */
 const proven = (event: RelayEvent) => eventDto(event);
 const live = { phase: "live" as const, channelId: "c" };
 function setup(publish: (event: RelayEvent) => Promise<void>) {
@@ -221,7 +220,6 @@ it("holds only proven events of channels the viewer can read", () => {
   const secret = proven(message(other, "secret", "hidden", 10));
   const raw = message(other, "c", "raw", 11);
   session.retain().set([secret, raw]);
-  // A held event would let react find its target.
   expect(() => session.messages.react(secret.id, "👍")).toThrow(
     /Load the message/,
   );
@@ -262,7 +260,6 @@ it("holds up to a byte bound, keeps the previous set past it, and shares the vie
   const row = proven(message(other, "c", "row", 10));
   const hold = session.retain();
   hold.set([row]);
-  // The hold's bound is a channel window's: 8 MiB.
   const big = Array.from({ length: 5 }, (_, index) =>
     proven(
       message(
@@ -288,6 +285,14 @@ it("holds up to a byte bound, keeps the previous set past it, and shares the vie
 
 it("passes snapshotRead priority to the reader, so a background scan queues behind foreground reads", async () => {
   const started: { kind: number; priority?: string; release(): void }[] = [];
+  let onStart = () => {};
+  const startedReads = (count: number) =>
+    new Promise<void>((resolve) => {
+      onStart = () => {
+        if (started.length >= count) resolve();
+      };
+      onStart();
+    });
   const owner = createRelaySession({
     viewer: viewer.pubkey,
     relayAuthor: relay.pubkey,
@@ -295,13 +300,14 @@ it("passes snapshotRead priority to the reader, so a background scan queues behi
     query: (filters, _signal, _id, priority) => {
       const kind = filters[0]?.kinds?.[0] ?? 0;
       if (kind < 30001) return Promise.resolve([]);
-      return new Promise<RelayEvent[]>((resolve) =>
+      return new Promise<RelayEvent[]>((resolve) => {
         started.push({
           kind,
           ...(priority ? { priority } : {}),
           release: () => resolve([]),
-        }),
-      );
+        });
+        onStart();
+      });
     },
   });
   owners.push(owner);
@@ -309,17 +315,17 @@ it("passes snapshotRead priority to the reader, so a background scan queues behi
   if (!read) throw new Error("snapshotRead unavailable");
   const filter = (kind: number) => [{ kinds: [kind], limit: 10 }];
   const scan = read(filter(30001), { priority: "background" });
-  await vi.waitFor(() => expect(started).toHaveLength(1));
+  await startedReads(1);
   const next = read(filter(30002), { priority: "background" });
   const foreground = read(filter(30003), {});
-  await vi.waitFor(() => expect(started).toHaveLength(2));
+  await startedReads(2);
   expect(started.map(({ kind, priority }) => [kind, priority])).toEqual([
     [30001, "background"],
     [30003, "foreground"],
   ]);
   started[0]?.release();
   await scan;
-  await vi.waitFor(() => expect(started).toHaveLength(3));
+  await startedReads(3);
   expect(started[2]?.kind).toBe(30002);
   for (const item of started) item.release();
   await Promise.all([next, foreground]);

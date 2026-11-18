@@ -29,14 +29,6 @@ import {
   type Key,
 } from "../../../src/features/relay/testing";
 
-// Test-only relay for the arranger plugin. It answers the reads a plugin makes
-// through `snapshotRead`: root lookups, thread windows (`older` and `newer`,
-// with `root_aux`) and top-level channel windows, each with the signed bounds
-// event the reader verifies. Fixture events are minted with real ids but a
-// zeroed signature, and proven by a verifier whose signature check is stubbed:
-// signature checking is the transport's, covered by `event-proof.test.ts`, and
-// real signing of 5,000+ events would only slow this test.
-
 export const CHANNEL = "5b0c8a4e-6c2e-4a3b-9d1f-0a1b2c3d4e5f";
 export const ORIGIN = "https://relay.example";
 /** Fixture clock: every created_at is relative to this. */
@@ -54,7 +46,7 @@ export function mint(
     created_at: number;
     tags: string[][];
   },
-): Event {
+) {
   const fields = { ...template, pubkey: key.pubkey };
   return { ...fields, id: getEventHash(fields), sig: "0".repeat(128) };
 }
@@ -63,7 +55,7 @@ const prover = createEventVerifier(1 << 16, async (claims) =>
   claims.map(() => true),
 );
 /** Gives events the proof a verified read gives them. */
-export async function prove(events: readonly Event[]): Promise<RelayEvent[]> {
+export async function prove(events: readonly Event[]) {
   const native = prover.native;
   if (!native) throw new Error("no native verifier");
   const settled = await native.settle(events.map((e) => native.prepare(e)));
@@ -84,7 +76,7 @@ export function seeded(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-export function shuffled<T>(items: readonly T[], random: () => number): T[] {
+export function shuffled<T>(items: readonly T[], random: () => number) {
   const out = [...items];
   for (let i = out.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
@@ -101,7 +93,6 @@ export type ReadRecord = {
 const auxKinds = new Set([REACTION, EDIT, DELETION]);
 const targetsOf = (event: EventData) =>
   event.tags.flatMap(([name, id]) => (name === "e" && id ? [id] : []));
-/** A page's rows in the relay's `newer` order: created_at ascending, id descending. */
 const ascending = (a: EventData, b: EventData) => relayOrder(a, b);
 
 /** The world a relay serves: proven events, indexed. */
@@ -128,7 +119,6 @@ export function createWorld(events: readonly RelayEvent[] = []) {
       sorted.clear();
     },
     byId,
-    /** Rows of a thread (`root`) or the top level, by `ascending`. */
     rows(root?: string) {
       const key = root ?? "";
       let list = sorted.get(key);
@@ -138,7 +128,6 @@ export function createWorld(events: readonly RelayEvent[] = []) {
       }
       return list;
     },
-    /** Aux reaching `ids` in one hop, then aux reaching those (a deletion of a reaction). */
     closure(ids: readonly string[]) {
       const first = ids.flatMap((id) => aux.get(id) ?? []);
       const second = first.flatMap((event) => aux.get(event.id) ?? []);
@@ -151,11 +140,7 @@ export function createWorld(events: readonly RelayEvent[] = []) {
 }
 export type World = ReturnType<typeof createWorld>;
 
-/** The rows after `cursor` in the filter's own direction. */
-function after(
-  rows: readonly RelayEvent[],
-  filter: ReadFilter,
-): readonly RelayEvent[] {
+function after(rows: readonly RelayEvent[], filter: ReadFilter) {
   if (filter.direction === "newer") {
     const at = filter.after;
     return at === undefined
@@ -177,7 +162,6 @@ function after(
       );
 }
 
-/** A relay-signed bounds event, proven. */
 async function bound(
   relay: Key,
   kind: 39006 | 39007,
@@ -206,7 +190,7 @@ export function createRelay(options: {
   const reads: ReadRecord[] = [];
   const members = roster(relay, CHANNEL, [viewer.pubkey], 1);
   const channelMeta = metadata(relay, CHANNEL, "Arranger fixture", 1);
-  async function answer(filter: ReadFilter): Promise<readonly RelayEvent[]> {
+  async function answer(filter: ReadFilter) {
     if (filter.ids) return filter.ids.flatMap((id) => world.byId.get(id) ?? []);
     if (filter.kinds?.includes(39002) || filter.kinds?.includes(39000))
       return [members, channelMeta];
@@ -282,7 +266,6 @@ export function createRelay(options: {
         ),
       ];
     }
-    // A repair read: aux that name these rows since a time.
     if (filter["#e"])
       return world
         .auxOf(filter["#e"])
@@ -361,12 +344,9 @@ export function openSession(options: {
     viewer,
     relay,
     publications,
-    /** Hears an event as the live stream delivers it. */
     hear(...events: readonly RelayEvent[]) {
       traffic.receive(events, live);
     },
-    /** Reports the live connection's status, as the transport does when it
-     * drops and when it connects again. */
     connection(status: LiveSnapshot["status"]) {
       traffic.state({ status, routes: [] });
     },

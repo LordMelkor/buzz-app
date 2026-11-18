@@ -30,10 +30,6 @@ import type { MessageRowProps } from "./MessageRow";
 import { ThreadPanel } from "./ThreadPanel";
 import type { Reading } from "./use-reading";
 
-// The arranger plugin in the real thread panel: a real session over a fixture
-// relay, the host's own thread view, and the real reader. Rows are cheap
-// stand-ins, so the timings here are the reader's, not a row's own cost.
-
 type ReadingProps = Parameters<typeof Reading>[0];
 const readingProps: ReadingProps[] = [];
 vi.mock("./use-reading", () => ({
@@ -76,7 +72,6 @@ afterEach(async () => {
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
   for (const dispose of cleanups.splice(0)) await dispose();
 });
-/** Rows lay out 100px apart in the order drawn, the first at 100. */
 beforeEach(() => {
   scrolled = 0;
   vi.stubGlobal(
@@ -115,7 +110,6 @@ const rowIds = () =>
       "[data-thread-rows] ol [data-message-id]",
     ),
   ].map((row) => row.dataset.messageId ?? "");
-/** Every message drawn, in order, root first. */
 const drawn = () =>
   [...document.querySelectorAll<HTMLElement>("[data-thread-rows] article")].map(
     (row) => row.dataset.messageId ?? "",
@@ -169,12 +163,10 @@ async function mount(messageId: string, fixture = thread) {
   });
   return { relay };
 }
-/** The arranger's own status line, apart from the panel's. */
 const barStatus = () =>
   screen
     .getByRole("toolbar", { name: "Arrange rows" })
     .querySelector("[role=status]")?.textContent;
-/** The host's own rows, once the panel has placed them. */
 const hostRows = () =>
   waitFor(() => {
     expect(rowIds().length).toBeGreaterThan(0);
@@ -183,7 +175,6 @@ const hostRows = () =>
       "false",
     );
   });
-/** Top's 200 rows and the one row the reader was opened to. */
 const shownTop = () =>
   waitFor(() => expect(barStatus()).toBe("Replies 1–200 of 1,899"), {
     timeout: 30_000,
@@ -194,7 +185,6 @@ it("opens a thread at a row the host never loaded, ranks by Top, and leaves the 
   const target = (groups.one ?? [])[0] as string;
   await mount(target);
   await hostRows();
-  // Not one of the host's rows, nor will Top rank it among the first 200.
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await shownTop();
   const rows = drawn();
@@ -202,7 +192,6 @@ it("opens a thread at a row the host never loaded, ranks by Top, and leaves the 
   expect(rows[1]).toBe(target);
   expect(rows).toHaveLength(202);
   expect(scrolled).toBe(100);
-  // Reading takes only what is drawn: a partial list, read through its last row.
   expect(lastReading()).toMatchObject({
     partial: true,
     endMessageId: rows.at(-1),
@@ -216,14 +205,11 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
   await hostRows();
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await shownTop();
-  // Reading the first row of the list, 20px below the top edge.
   scrolled = 80;
   const order = rowIds();
   const reads = relay.reads.length;
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
   expect(barStatus()).toBe("");
-  // Placing a row inside a closed branch opens the branch: wait until the rows
-  // and the place stop moving.
   let last = "";
   await waitFor(
     () => {
@@ -238,8 +224,6 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
   expect(drawn()[0]).toBe(root.id);
   expect(host).not.toContain(order.at(-1));
   expect(relay.reads).toHaveLength(reads);
-  // The host does not show the row it was reading, the list's first, so it
-  // keeps the first row below it that the host shows, still 20px down.
   expect(host).not.toContain(order[0]);
   const near = order.find((id) => host.includes(id)) as string;
   expect(scrolled).toBe(100 * (host.indexOf(near) + 1) - 20);
@@ -256,7 +240,6 @@ it("reads a thread it shows whole through to its last row", async () => {
   await waitFor(() => expect(barStatus()).toMatch(/^Replies 1–\d+ of \d+$/), {
     timeout: 30_000,
   });
-  // The list holds every reply: reaching its end reads the thread.
   expect(lastReading()).toMatchObject({
     partial: false,
     endMessageId: drawn().at(-1),

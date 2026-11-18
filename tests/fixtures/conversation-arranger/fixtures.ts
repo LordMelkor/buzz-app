@@ -18,8 +18,6 @@ export const REACTORS = 40;
 const authors = Array.from({ length: 8 }, keypair);
 const reactors = Array.from({ length: REACTORS }, keypair);
 
-/** One message in twenty says "Gizmo", so a filter for "gizmo" matches 5% of
- * rows, ignoring case. An edit replaces the whole text. */
 const said = (word: string, i: number) =>
   i % 20 === 3 ? `${word} ${i} Gizmo` : `${word} ${i}`;
 const tag = (id: string, marker?: string) =>
@@ -64,10 +62,7 @@ export type Fixture = Readonly<{
  * 1, 250 whose one reactor reacted twice, 200 whose reaction was deleted, 230
  * edited, 100 deleted (each with two reactions) and the rest untouched. Twenty
  * of the 2-reactor replies are also edited. */
-export async function threadFixture(
-  count = 2000,
-  seed = 7,
-): Promise<Fixture & { root: RelayEvent }> {
+export async function threadFixture(count = 2000, seed = 7) {
   const random = seeded(seed);
   const raw: Event[] = [];
   const rootAt = T - 100;
@@ -82,7 +77,6 @@ export async function threadFixture(
   const replyKeys: Key[] = [];
   for (let i = 0; i < count; i++) {
     const author = authors[i % authors.length] as Key;
-    // Every fifth reply answers the root; others an earlier reply, up to six back.
     const parentIndex = i % 5 === 0 ? -1 : Math.max(0, i - 1 - (i % 6));
     const parent = i > 0 && parentIndex >= 0 ? replies[parentIndex] : undefined;
     const event = mint(author, {
@@ -141,7 +135,6 @@ export async function threadFixture(
   for (const i of twos) for (let k = 0; k < 2; k++) raw.push(react(i, k));
   for (const i of twos.slice(0, Math.round(20 * scale))) raw.push(edit(i));
   for (const i of group("one", next(sizes[3]))) raw.push(react(i, 0));
-  // The same account reacts twice: two events, one reactor.
   for (const i of group("twice", next(sizes[4])))
     raw.push(react(i, 0), react(i, 0, 2));
   for (const i of group("cancelled", next(sizes[5]))) {
@@ -166,7 +159,6 @@ export async function threadFixture(
       ),
     );
   }
-  // The root has reactions of its own, which a page can leave out.
   for (let k = 0; k < 5; k++)
     raw.push(reactionOf(reactors[k] as Key, rootEvent.id, rootAt + 1));
   const events = await prove(raw);
@@ -183,10 +175,7 @@ export async function threadFixture(
 
 /** A channel of `count` top-level rows and 3,000 reactions (at the default size):
  * 20 rows with 20 distinct reactors, 200 with 5 and 800 with 2. */
-export async function channelFixture(
-  count = 5000,
-  seed = 11,
-): Promise<Fixture> {
+export async function channelFixture(count = 5000, seed = 11) {
   const random = seeded(seed);
   const raw: Event[] = [];
   const rows: Event[] = [];

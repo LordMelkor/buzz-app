@@ -253,7 +253,6 @@ export function createThreadView({
   let remote: readonly RelayEvent[] = [];
   let remoteIds = new Set<string>();
   let staged: readonly RelayEvent[] = [];
-  /** How far a running read has fetched; `null` once it read to the end. */
   let reach: ThreadCursor | null | undefined;
   let selectionStaged: readonly RelayEvent[] = [];
   let selectionController: AbortController | undefined;
@@ -572,12 +571,6 @@ export function createThreadView({
     }
     return true;
   }
-  /** A reply past the committed cursor belongs to the next older page.
-   * Admission follows the view's window: unwindowed (no page yet) and
-   * complete (older, no cursor) admit every related row; windowed (older,
-   * cursor) admits rows up to the cursor (or a running read's reach), legacy
-   * diffs, which no strict page returns, and aux of held rows; legacy walks
-   * forward, so live rows are always inside it. */
   const beyond = (event: RelayEvent) => {
     if (
       mode !== "older" ||
@@ -586,7 +579,6 @@ export function createThreadView({
       !isReply(event)
     )
       return false;
-    // A run reading past the committed cursor admits up to its own reach.
     const edge =
       reach === null
         ? undefined
@@ -604,7 +596,6 @@ export function createThreadView({
     const incoming = related(fresh);
     if (!incoming.length) return;
     const next = union(remote, incoming);
-    // No page committed: no window to overflow; the first page decides.
     if (!pages && (next.length > MAX_EVENTS || listByteSize(next) > MAX_BYTES))
       return;
     if (retain(next)) {
@@ -1152,8 +1143,6 @@ export function createThreadView({
           retain(fetched);
           return;
         }
-        // Rows read past the committed cursor wait for the commit; until
-        // then a live edit, deletion or reply among them must still land.
         staged = fetched;
         reach = nextCursor ?? null;
         // Only strict bounds prove exhaustion. Legacy short pages may be filtered

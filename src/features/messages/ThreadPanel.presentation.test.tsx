@@ -73,7 +73,6 @@ const proven = (event: RelayEvent): EventData => eventDto(event);
 const root = proven(message(other, "c", "root", T));
 const replyEvent = (name: string, at: number): EventData =>
   proven(message(other, "c", name, at, [["e", root.id, "", "reply"]]));
-// The plugin's rows; the host's own view never loads them.
 const [a, b, c, d] = ["a", "b", "c", "d"].map((name, index) =>
   replyEvent(name, T + 10 + index),
 ) as [EventData, EventData, EventData, EventData];
@@ -91,7 +90,6 @@ afterEach(() => {
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
 });
 
-/** Rows lay out 100px apart in the order drawn, the first at 100. */
 let scrolled = 0;
 beforeEach(() => {
   scrolled = 0;
@@ -127,7 +125,7 @@ beforeEach(() => {
 
 const readerEntry = (
   component: Contribution<ComposerAccessory>["component"],
-): Contribution<ComposerAccessory> => ({
+) => ({
   id: "arranger",
   key: "test:arranger",
   pluginId: "test",
@@ -146,15 +144,12 @@ function mount({
   navigation,
   unread = {},
 }: {
-  /** What the host's own view loaded. */
   replies?: readonly EventData[];
   snapshot?: Partial<ThreadSnapshot>;
   props?: Partial<ThreadPanelProps>;
   strict?: boolean;
-  /** Runs in the accessory's layout effect, as a plugin presenting at mount. */
   onProps?: (props: ComposerAccessoryProps) => void;
   navigation?: PageNavigation;
-  /** Replaces parts of the session's unread owner. */
   unread?: Partial<Record<string, unknown>>;
 } = {}) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
@@ -172,7 +167,7 @@ function mount({
   owners.push(owner);
   owner.session.channels.ensure("c");
   callbacks.receive([roster(relay, "c", [viewer.pubkey], T)]);
-  const rowsOf = (events: readonly EventData[]): readonly ChannelMessage[] =>
+  const rowsOf = (events: readonly EventData[]) =>
     owner.session.foldRows("c", events, root.id);
   const [rootRow] = rowsOf([root]) as [ChannelMessage];
   let published: ThreadSnapshot = {
@@ -211,7 +206,6 @@ function mount({
   const entries = [
     readerEntry((accessory) => {
       latest.current = accessory;
-      // Every commit, as a plugin reacting to whatever else changed.
       useLayoutEffect(() => {
         onProps?.(accessory);
       });
@@ -245,7 +239,6 @@ function mount({
     session,
     latest,
     rowsOf,
-    /** The host's view publishes a new state. */
     publish(next: Partial<ThreadSnapshot>) {
       published = { ...published, ...next };
       act(() => {
@@ -273,7 +266,6 @@ function mount({
     },
   };
 }
-/** The messages drawn, in order, root first. */
 const drawn = () =>
   [...document.querySelectorAll<HTMLElement>("[data-thread-rows] article")].map(
     (row) => named.get(row.dataset.messageId ?? "") ?? row.dataset.messageId,
@@ -308,7 +300,6 @@ it("mounts the reader bar outside the composer, so a read-only thread has it too
   expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
   const bar = screen.getByText("bar").parentElement as HTMLElement;
   expect(lastReading().controls?.current).toBe(bar);
-  // Above the messages, outside their scroller.
   expect(scroller().contains(bar)).toBe(false);
   expect(
     bar.compareDocumentPosition(scroller()) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -331,7 +322,6 @@ it("nests rows under their display parents, opening the branches it lists once e
     ids: [a.id, b.id, c.id],
     parents: { [b.id]: a.id, [c.id]: b.id },
   });
-  // Branches start closed.
   expect(drawn()).toEqual(["root", "a"]);
   h.present({
     ids: [a.id, b.id, c.id],
@@ -345,7 +335,6 @@ it("nests rows under their display parents, opening the branches it lists once e
     open: [a.id, b.id],
   });
   expect(drawn()).toEqual(["root", "a", "b", "c"]);
-  // The reader's own collapse stands when a presentation lists it again.
   fireEvent.click(screen.getByRole("button", { name: /Collapse 2 replies/ }));
   expect(drawn()).toEqual(["root", "a"]);
   h.present({
@@ -354,7 +343,6 @@ it("nests rows under their display parents, opening the branches it lists once e
     open: [a.id, b.id],
   });
   expect(drawn()).toEqual(["root", "a"]);
-  // Until it stops listing the branch and lists it anew.
   h.present({ ids: [a.id, b.id, c.id], parents: { [b.id]: a.id } });
   h.present({
     ids: [a.id, b.id, c.id],
@@ -386,13 +374,10 @@ it("never loads more of the host's history while it presents", () => {
     },
   });
   h.present({ ids: [a.id, b.id] });
-  // The older page lands. With unread known in the host's rows, the unread
-  // line would page back to find its place.
   h.publish({ replies: h.rowsOf([root, d]).slice(1), readKind: undefined });
   fireEvent.wheel(scroller(), { deltaY: -100 });
   fireEvent.keyDown(scroller(), { key: "Home" });
   expect(h.view.loadMore).not.toHaveBeenCalled();
-  // The decision is made without it, so the reader is not left waiting.
   expect(scroller()).not.toHaveAttribute("data-positioning");
   expect(drawn()).toEqual(["root", "a", "b"]);
 });
@@ -439,7 +424,6 @@ it("leaves out the unread line and the earlier-reply note while it presents", ()
     screen.getByText("Earlier reply unavailable in loaded history."),
   ).toBeVisible();
   expect(document.querySelector("[data-new-messages-boundary]")).not.toBeNull();
-  // The same row, shown by a plugin.
   h.present({ ids: [orphan.id, a.id], events: [orphan, a] });
   expect(drawn()).toEqual(["root", "orphan", "a"]);
   expect(
@@ -462,8 +446,6 @@ it("draws no day divider and merges no rows while it presents", () => {
     ids: [later.id, early.id, soon.id],
     events: [later, early, soon],
   });
-  // The order is the plugin's: a divider would date the wrong rows, and
-  // "soon" would merge into "early" across whatever the plugin left out.
   for (const name of ["later", "early", "soon"]) {
     const row = screen.getByText(name).closest("article") as HTMLElement;
     expect(row).not.toHaveAttribute("data-day");
@@ -482,7 +464,6 @@ it("replies to a presented row the host never loaded", () => {
   expect(screen.queryByText("Reply target is no longer available.")).toBeNull();
   expect(screen.getByText(/Replying to/)).toBeVisible();
   h.withdraw();
-  // Its row is gone with the presentation, as any vanished target is.
   expect(
     screen.getByText("Reply target is no longer available."),
   ).toBeVisible();
@@ -524,7 +505,6 @@ it("yields a target it does not show: the visit opens, reading starts and the pl
 });
 
 it("records no Back/Forward place for a visit left while it presents", () => {
-  // Control: leaving the opened thread records where the reader was.
   const shown = navigationTo(root.id);
   const control = mount({ replies: [a, b], navigation: shown });
   fireEvent.scroll(scroller());
@@ -535,7 +515,6 @@ it("records no Back/Forward place for a visit left while it presents", () => {
   h.present({ ids: [b.id, a.id] });
   fireEvent.scroll(scroller());
   h.unmount();
-  // A presented row is not a place in the host's rows.
   expect(navigation.savePosition).not.toHaveBeenCalled();
 });
 
@@ -570,7 +549,6 @@ it("starts reading when an inline reveal's row is not shown", () => {
     props: { messageId: d.id, revealSelected: true, revealRequest: 1 },
     snapshot: { targetStatus: "loading" },
   });
-  // Its reveal is still waiting for the row.
   expect(lastReading().settled.current).toBe(false);
   h.present({ ids: [a.id, b.id] });
   expect(lastReading().settled.current).toBe(true);
@@ -583,7 +561,6 @@ it("wires a partial presentation's reading: its end row, its newest row, its bar
     endMessageId: undefined,
     latestMessageId: d.id,
   });
-  // Rows out of time order: the end is the last drawn, the latest the newest.
   h.present({
     ids: [c.id, a.id, b.id],
     parents: { [b.id]: a.id },
@@ -597,10 +574,8 @@ it("wires a partial presentation's reading: its end row, its newest row, its bar
   expect(lastReading().controls?.current).toBe(
     screen.getByText("bar").parentElement,
   );
-  // A branch closed by the reader is not the last row drawn.
   fireEvent.click(screen.getByRole("button", { name: /Collapse 1 reply/ }));
   expect(lastReading().endMessageId).toBe(a.id);
-  // A list that holds the whole thread reads it to the end.
   h.present({ ids: [a.id, b.id, c.id, d.id], complete: true });
   expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
   h.withdraw();
@@ -616,7 +591,6 @@ it("places a presentation by its place intent", () => {
   scrolled = 1500;
   h.present({ ids: [b.id, c.id], place: "start" });
   expect(scrolled).toBe(0);
-  // A named row is brought to the top, opening the branch that holds it.
   h.present({
     ids: [b.id, c.id],
     parents: { [c.id]: b.id },
@@ -643,12 +617,9 @@ it("holds a place named by a presentation made at mount until its rows are drawn
 
 it("keeps the first visible row where it was, or the nearest one still shown", () => {
   const h = mount({ replies: [a, b, c] });
-  // `b` is the first row in view, 50px down.
   scrolled = 150;
   h.present({ ids: [d.id, a.id, b.id, c.id] });
-  // It now sits 100px lower; keeping brings it back to 50px.
   expect(scrolled).toBe(250);
-  // Without that row, the nearest one still shown takes its place.
   h.present({ ids: [c.id, d.id] });
   expect(scrolled).toBe(50);
 });
@@ -710,8 +681,6 @@ it("unmounts the reader and revokes its present when the view drops its root, as
   h.present({ ids: [b.id, a.id] });
   const present = h.latest.current?.present;
   expect(drawn()).toEqual(["root", "b", "a"]);
-  // A cache clear empties every hold; the view purges and loses its root, so no
-  // presenting reader is left without live evidence.
   h.publish({ status: "idle", root: undefined, replies: [] });
   expect(screen.queryByText("bar")).toBeNull();
   expect(present?.({ ids: [a.id], events: [a] })).toBe("retired");
