@@ -551,7 +551,7 @@ it("reaches the last reply of an Oldest list by Next, reading forward as it goes
   expect(h.shown()).toEqual(idsOf(want.oldest.slice(1840)));
   expect(h.shown().at(-1)).toBe(want.oldest.at(-1)?.id);
   expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
-}, 60_000);
+});
 
 it("re-ranks when a reaction lands on a row that is not shown", async () => {
   const { events, root, groups, reactors } = thread;
@@ -819,7 +819,7 @@ it("reads the whole thread again after a reconnect once it is visible, and is no
     .filter(({ filters }) => filters.some((f) => f.thread_window));
   expect(scan.length).toBeGreaterThan(0);
   expect(scan.every(({ priority }) => priority === "background")).toBe(true);
-}, 60_000);
+});
 
 it("keeps an Oldest list in order when replies arrive before the read reaches them", async () => {
   const { events, root, authors } = thread;
@@ -852,7 +852,7 @@ it("keeps an Oldest list in order when replies arrive before the read reaches th
     );
   }
   expect(h.shown().slice(-30)).toEqual(idsOf(late));
-}, 60_000);
+});
 
 async function hostChannel(h: Harness) {
   void h.session.channels.refresh?.(CHANNEL);
@@ -941,7 +941,7 @@ it("ranks a new live message in a channel's Top list", async () => {
   const want = oracle([...events, fresh, ...reactions]);
   await waitFor(() => expect(h.shown()[0]).toBe(fresh.id));
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
-}, 60_000);
+});
 
 it("holds nothing from a channel's live messages before a sort is chosen", async () => {
   const h = await mount({ fixture: channel });
@@ -968,4 +968,4 @@ it("pages a channel's Top list past the reader's 2,400 rows", async () => {
   h.click("Next");
   await statusIs(h, replies(4801, 5000, 5000, "Messages"));
   expect(h.shown()).toEqual(idsOf(want.top.slice(4800)));
-}, 120_000);
+});

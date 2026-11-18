@@ -196,7 +196,7 @@ it("opens a thread at a row the host never loaded, ranks by Top, and leaves the 
     partial: true,
     endMessageId: rows.at(-1),
   });
-}, 30_000);
+});
 
 it("returns the host's rows when withdrawn, at the row it was reading or the nearest one still shown, with no host read", async () => {
   const { root, groups } = thread;
@@ -231,7 +231,7 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
     partial: false,
     endMessageId: undefined,
   });
-}, 30_000);
+});
 
 it("reads a thread it shows whole through to its last row", async () => {
   await mount(small.root.id, small);
@@ -246,4 +246,4 @@ it("reads a thread it shows whole through to its last row", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
   expect(lastReading().endMessageId).toBeUndefined();
-}, 30_000);
+});
