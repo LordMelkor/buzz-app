@@ -225,10 +225,11 @@ export type ConversationPresentation = Readonly<{
   /** Default "keep": the first visible row stays where it was. */
   place?: "keep" | "start" | Readonly<{ id: string }>;
 }>;
-/** `shown` or `held`: accepted (`null`, a withdrawal, answers `shown`); only
- * the first accessory in order shows. `limit`: more than the reader's limits, or
- * the reader cannot hold it now; the previous presentation stays. `invalid`:
- * duplicate ids. `retired`: the reader, or this accessory, is gone. */
+/** `shown`: accepted (`null`, a withdrawal, answers `shown`). `held`: another
+ * accessory showed first; nothing is kept, so present again once `presentation`
+ * is `none`. `limit`: more than the reader's limits, or the reader cannot hold
+ * it now; the previous presentation stays. `invalid`: duplicate ids.
+ * `retired`: the reader, or this accessory, is gone. */
 export type PresentResult = "shown" | "held" | "limit" | "invalid" | "retired";
 export type ComposerAccessoryProps = Readonly<{
   session: RelaySession;

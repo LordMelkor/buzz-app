@@ -92,10 +92,7 @@ function host(
     },
   };
 }
-const lane = (key: string, order?: number): ArrangementLane => ({
-  key,
-  order,
-});
+const lane = (key: string): ArrangementLane => ({ key });
 const reaction = (author: Key, target: EventData, time: number) =>
   proven(
     signed(author, {
@@ -175,7 +172,8 @@ it("passes parents, open, complete and place through, nested to depth 4", () => 
     string,
   ];
   const { arrangement } = host({ rootId: root.id });
-  arrangement.present(lane("one"), {
+  const one = lane("one");
+  arrangement.present(one, {
     ids: [a, b, c, d, e],
     events,
     parents: { [b]: a, [c]: b, [d]: c, [e]: d },
@@ -193,7 +191,7 @@ it("passes parents, open, complete and place through, nested to depth 4", () => 
     display?.parents?.get(id),
   );
   expect(tree.ancestors(e)).toEqual([d, c, b, a]);
-  arrangement.present(lane("one"), { ids: [a, b], events });
+  arrangement.present(one, { ids: [a, b], events });
   expect(arrangement.snapshot()).toMatchObject({
     open: [],
     complete: false,
@@ -201,7 +199,7 @@ it("passes parents, open, complete and place through, nested to depth 4", () => 
   });
   expect(arrangement.snapshot()?.parents).toBeUndefined();
   // An empty record is a request for a flat list, not for the reader's branches.
-  arrangement.present(lane("one"), { ids: [a, b], events, parents: {} });
+  arrangement.present(one, { ids: [a, b], events, parents: {} });
   expect(arrangement.snapshot()?.parents?.size).toBe(0);
 });
 
@@ -269,6 +267,25 @@ it("refuses the 461st row of a thread, the reader's bound", () => {
   expect(arrangement.present(first, { ids: names(461), events: [] })).toBe(
     "limit",
   );
+});
+
+it("holds the root as the header without counting its reactions against the limits", () => {
+  const { root, replies, events } = thread(1);
+  const [a] = replies;
+  const { arrangement } = host({
+    rootId: root.id,
+    limits: { rows: 10, events: 2, bytes: 4 << 20 },
+  });
+  // A page read with the root's aux, as a relay without `root_aux` sends it.
+  const page = [
+    ...events,
+    reaction(other, root, 30),
+    reaction(other, root, 31),
+  ];
+  expect(arrangement.present(lane("a"), { ids: [a.id], events: page })).toBe(
+    "shown",
+  );
+  expect(ids(arrangement.snapshot()?.rows)).toEqual([a.id]);
 });
 
 it("applies a live reaction and its deletion (two hops) to a row it was given by snapshot, with no re-present", () => {
@@ -415,10 +432,11 @@ it("keeps refolding live changes after a re-present that overtook a pending fram
   const { root, replies, events } = thread(1);
   const [row] = replies;
   const { arrangement, receive, frame } = host({ rootId: root.id });
-  arrangement.present(lane("one"), { ids: [row.id], events });
+  const one = lane("one");
+  arrangement.present(one, { ids: [row.id], events });
   receive([reaction(other, row, 30)], live);
   // The re-present folds at once, so the frame the first reaction asked for is moot.
-  arrangement.present(lane("one"), { ids: [row.id], events });
+  arrangement.present(one, { ids: [row.id], events });
   receive([reaction(viewer, row, 31)], live);
   frame();
   expect(arrangement.snapshot()?.rows[0]?.reactions[0]?.events).toHaveLength(2);
@@ -438,10 +456,11 @@ it("shows an own pending reply only when named, and follows its delivery", async
   await session.outbox?.ready();
   session.messages.reply("c", root.id, "mine");
   const id = session.outbox?.snapshot()[0]?.event.id ?? "";
-  arrangement.present(lane("one"), { ids: [], events });
+  const one = lane("one");
+  arrangement.present(one, { ids: [], events });
   expect(arrangement.snapshot()?.rows).toEqual([]);
   // Named with no events at all.
-  arrangement.present(lane("one"), { ids: [id], events: [] });
+  arrangement.present(one, { ids: [id], events: [] });
   expect(arrangement.snapshot()?.rows[0]).toMatchObject({
     content: "mine",
     delivery: "sending",
@@ -454,83 +473,36 @@ it("shows an own pending reply only when named, and follows its delivery", async
   expect(arrangement.snapshot()?.rows[0]?.delivery).toBe("failed");
 });
 
-it("shows the first lane by order then key, holds the rest and promotes on withdraw", () => {
-  const { root, replies, events } = thread(2);
-  const [a, b] = replies;
-  const { arrangement } = host({ rootId: root.id });
-  const late = lane("a", 5);
-  const early = lane("z", 1);
-  expect(arrangement.present(late, { ids: [a.id], events })).toBe("shown");
-  expect(arrangement.present(early, { ids: [b.id], events })).toBe("shown");
-  expect(arrangement.status(late)).toBe("held");
-  expect(arrangement.status(early)).toBe("shown");
-  expect(ids(arrangement.snapshot()?.rows)).toEqual([b.id]);
-  const tied = lane("b", 5);
-  expect(arrangement.present(tied, { ids: [a.id], events })).toBe("held");
-  expect(arrangement.present(early, null)).toBe("shown");
-  expect(arrangement.status(early)).toBe("none");
-  // `a` before `b` among equal orders.
-  expect(arrangement.status(late)).toBe("shown");
-  expect(arrangement.status(tied)).toBe("held");
-  arrangement.present(late, null);
-  arrangement.present(tied, null);
-  expect(arrangement.snapshot()).toBeUndefined();
-});
-
-it("promotes a held lane when the shown one ends", () => {
+it("shows the first lane to present and holds a later one, keeping nothing, until the shown one leaves or ends", () => {
   const { root, replies, events } = thread(2);
   const [a, b] = replies;
   const { arrangement, receive } = host({
     rootId: root.id,
     limits: { rows: 10, events: 4, bytes: 4 << 20 },
   });
-  const first = lane("a");
-  const second = lane("b");
-  arrangement.present(first, { ids: [a.id], events });
-  arrangement.present(second, { ids: [b.id], events });
-  receive([reaction(other, a, 30), reaction(other, a, 31)], live);
-  receive([reaction(other, a, 32)], live);
-  expect(arrangement.status(first)).toBe("ended");
-  expect(arrangement.status(second)).toBe("shown");
-  expect(ids(arrangement.snapshot()?.rows)).toEqual([b.id]);
-});
-
-it("keeps its own copy of what a held lane selected, not the plugin's whole read", () => {
-  const { root, replies, events } = thread(3);
-  const [a, b] = replies;
-  const { arrangement } = host({ rootId: root.id });
-  const first = lane("a");
-  const second = lane("b");
-  arrangement.present(first, { ids: [a.id], events });
-  // The plugin's read, which it reuses as its buffer once it has presented.
-  const scan = [...events, reaction(other, b, 30)];
-  expect(arrangement.present(second, { ids: [b.id], events: scan })).toBe(
-    "held",
+  const first = lane("z");
+  const second = lane("a");
+  expect(arrangement.present(first, { ids: [a.id], events })).toBe("shown");
+  expect(arrangement.present(second, { ids: [b.id], events })).toBe("held");
+  // A held lane is still checked, so it learns now that it would not fit.
+  expect(arrangement.present(second, { ids: [b.id, b.id], events })).toBe(
+    "invalid",
   );
-  scan.length = 0;
+  expect(arrangement.status(second)).toBe("held");
+  // A lane that never presented has no presentation.
+  expect(arrangement.status(lane("b"))).toBe("none");
+  expect(ids(arrangement.snapshot()?.rows)).toEqual([a.id]);
+  // The shown lane withdraws: the host's rows, and the held lane may present.
   arrangement.present(first, null);
-  expect(arrangement.status(second)).toBe("shown");
-  const [row] = arrangement.snapshot()?.rows ?? [];
-  expect(row?.id).toBe(b.id);
-  expect(row?.reactions).toHaveLength(1);
-});
-
-it("ends a promoted lane that no longer fits, and falls back to the host's rows", () => {
-  const { root, replies, events } = thread(1);
-  const [a] = replies;
-  const { arrangement, receive } = host({
-    rootId: root.id,
-    limits: { rows: 10, events: 4, bytes: 4 << 20 },
-  });
-  const first = lane("a");
-  const second = lane("b");
-  // Both name the row, so the live reactions that ended `first` count for `second`.
-  arrangement.present(first, { ids: [a.id], events });
-  arrangement.present(second, { ids: [a.id], events });
-  receive([reaction(other, a, 30), reaction(other, a, 31)], live);
-  receive([reaction(other, a, 32)], live);
-  expect(arrangement.status(first)).toBe("ended");
+  expect(arrangement.snapshot()).toBeUndefined();
+  expect(arrangement.status(second)).toBe("none");
+  expect(arrangement.present(second, { ids: [b.id], events })).toBe("shown");
+  expect(arrangement.present(first, { ids: [a.id], events })).toBe("held");
+  // Live growth ends the shown lane, which frees the held one too.
+  receive([reaction(other, b, 30), reaction(other, b, 31)], live);
+  receive([reaction(other, b, 32)], live);
   expect(arrangement.status(second)).toBe("ended");
+  expect(arrangement.status(first)).toBe("none");
   expect(arrangement.snapshot()).toBeUndefined();
 });
 

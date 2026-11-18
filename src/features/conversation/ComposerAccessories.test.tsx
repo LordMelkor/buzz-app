@@ -349,7 +349,7 @@ it("withdraws a reader lane when its accessory unmounts", () => {
 });
 
 it.each([false, true])(
-  "withdraws a throwing reader lane, revokes its present and promotes the next (StrictMode %s)",
+  "withdraws a throwing reader lane, revokes its present and frees the reader for the next (StrictMode %s)",
   (reactStrictMode) => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     let bombPresent: ComposerAccessoryProps["present"];
@@ -381,10 +381,13 @@ it.each([false, true])(
     expect(screen.getByText("spare:held")).toBeTruthy();
     act(() => explode());
     expect(screen.getByText("a unavailable")).toBeTruthy();
-    expect(screen.getByText("spare:shown")).toBeTruthy();
+    expect(screen.getByText("spare:none")).toBeTruthy();
     expect(reader.arrangement.status(bomb)).toBe("none");
     expect(bombPresent?.(nothing)).toBe("retired");
-    expect(reader.arrangement.status(spare)).toBe("shown");
+    act(() => {
+      expect(sparePresent?.(nothing)).toBe("shown");
+    });
+    expect(screen.getByText("spare:shown")).toBeTruthy();
     error.mockRestore();
   },
 );

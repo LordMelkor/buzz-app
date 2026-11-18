@@ -575,6 +575,10 @@ function createArranger(initial: ComposerAccessoryProps) {
       message = "Showing fewer rows: the reader reached its limit.";
       arrange();
     },
+    /** The accessory it waited behind left: present what it is showing. */
+    free() {
+      if (phase.state === "ready" && sort) arrange();
+    },
     update(next: ComposerAccessoryProps) {
       props = next;
     },
@@ -657,6 +661,7 @@ export function apply(ctx: Context) {
     );
     React.useEffect(() => {
       if (props.presentation === "ended") arranger.ended();
+      if (props.presentation === "none") arranger.free();
     }, [arranger, props.presentation]);
     const noun = props.threadRootId !== undefined ? "replies" : "messages";
     const [draft, setDraft] = React.useState("");

@@ -1731,10 +1731,11 @@ present for reader accessories only.
   (branches shown open), `complete` (`ids` hold every row, so reaching the end
   reads it; otherwise only the rows viewed are marked read) and `place`
   (`"keep"` by default, `"start"` or `{ id }`).
-- The result is `shown`, `held` (another accessory in order is showing; this one
-  waits and shows when that one leaves), `limit` (more than `limits`, or the
-  reader cannot hold it now; the previous presentation stays), `invalid`
-  (duplicate ids or a malformed field) or `retired`.
+- The result is `shown`, `held` (another accessory showed first; nothing is
+  kept, and `presentation` turns `none` when that one leaves, so present again),
+  `limit` (more than `limits`, or the reader cannot hold it now; the previous
+  presentation stays), `invalid` (duplicate ids or a malformed field) or
+  `retired`.
 - `presentation` is `none`, `shown`, `held` or `ended`. `ended` means live
   growth passed `limits`; the reader never trims, because a trim could bring a
   deleted row back.

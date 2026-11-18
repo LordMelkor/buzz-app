@@ -2304,82 +2304,64 @@ it("skips an oversized replay into a view with no page yet, then commits its fir
   }
 });
 
-it("admits a live reply inside the pages a refresh has read past the committed cursor", async () => {
+/** After a reconnect, a refresh pages past the committed cursor (the reply at
+ * 3) to the end of the thread; `during` runs while its last page is held. */
+async function refreshPastCursor(
+  during: (h: Awaited<ReturnType<typeof setup>>) => void,
+) {
   const one = at(1),
     two = at(2),
     three = at(3),
     four = at(4);
+  let reconnected = false;
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => (release = resolve));
+  let reading!: () => void;
+  const reached = new Promise<void>((resolve) => (reading = resolve));
+  const h = await setup(async (filter) => {
+    if (filter.ids) return [root];
+    if (!reconnected) return [three, bounds(filter, cursorOf(three))];
+    if (filter.until === undefined)
+      return [four, bounds(filter, cursorOf(four))];
+    if (filter.until === four.created_at)
+      return [two, bounds(filter, cursorOf(two))];
+    reading();
+    await paused;
+    return [one, bounds(filter)];
+  });
+  await h.view.refresh();
+  reconnected = true;
+  h.traffic.established(channel);
+  await reached;
+  during(h);
+  release();
+  await vi.waitFor(() => {
+    expect(h.view.snapshot()).toMatchObject({ status: "ready" });
+    expect(h.view.snapshot().replies.map((row) => row.id)).toContain(one.id);
+  });
+  return h.view.snapshot().replies.map((row) => row.id);
+}
+
+it("admits a live reply inside the pages a refresh has read past the committed cursor", async () => {
   // Its timestamp places it between two pages the refresh has already read.
   const late = message(author, channel, "late", 25, [
     ["e", root.id, "", "reply"],
   ]);
-  let reconnected = false;
-  let release!: () => void;
-  const paused = new Promise<void>((resolve) => (release = resolve));
-  let reading!: () => void;
-  const reached = new Promise<void>((resolve) => (reading = resolve));
-  const h = await setup(async (filter) => {
-    if (filter.ids) return [root];
-    if (!reconnected) return [three, bounds(filter, cursorOf(three))];
-    if (filter.until === undefined)
-      return [four, bounds(filter, cursorOf(four))];
-    if (filter.until === four.created_at)
-      return [two, bounds(filter, cursorOf(two))];
-    reading();
-    await paused;
-    return [one, bounds(filter)];
-  });
-  await h.view.refresh();
-  reconnected = true;
-  h.traffic.established(channel);
-  await reached;
-  h.traffic.receive([late]);
-  release();
-  await vi.waitFor(() => {
-    expect(h.view.snapshot()).toMatchObject({ status: "ready" });
-    expect(h.view.snapshot().replies.map((row) => row.id)).toContain(one.id);
-  });
-  expect(h.view.snapshot().replies.map((row) => row.id)).toContain(late.id);
+  expect(await refreshPastCursor((h) => h.traffic.receive([late]))).toContain(
+    late.id,
+  );
 });
 it("keeps a live deletion of a row a refresh reads past the committed cursor", async () => {
   // The held reply is gone after the drop, so the refresh pages past the
   // window it had, to the end of the thread.
-  const one = at(1),
-    two = at(2),
-    three = at(3),
-    four = at(4);
-  let reconnected = false;
-  let release!: () => void;
-  const paused = new Promise<void>((resolve) => (release = resolve));
-  let reading!: () => void;
-  const reached = new Promise<void>((resolve) => (reading = resolve));
-  const h = await setup(async (filter) => {
-    if (filter.ids) return [root];
-    if (!reconnected) return [three, bounds(filter, cursorOf(three))];
-    if (filter.until === undefined)
-      return [four, bounds(filter, cursorOf(four))];
-    if (filter.until === four.created_at)
-      return [two, bounds(filter, cursorOf(two))];
-    reading();
-    await paused;
-    return [one, bounds(filter)];
+  const two = at(2);
+  const deletion = signed(author, {
+    kind: 5,
+    content: "",
+    created_at: 500,
+    tags: [["e", two.id]],
   });
-  await h.view.refresh();
-  reconnected = true;
-  h.traffic.established(channel);
-  await reached;
-  h.traffic.receive([
-    signed(author, {
-      kind: 5,
-      content: "",
-      created_at: 500,
-      tags: [["e", two.id]],
-    }),
-  ]);
-  release();
-  await vi.waitFor(() => {
-    expect(h.view.snapshot()).toMatchObject({ status: "ready" });
-    expect(h.view.snapshot().replies.map((row) => row.id)).toContain(one.id);
-  });
-  expect(h.view.snapshot().replies.map((row) => row.id)).not.toContain(two.id);
+  expect(
+    await refreshPastCursor((h) => h.traffic.receive([deletion])),
+  ).not.toContain(two.id);
 });

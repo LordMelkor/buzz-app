@@ -26,26 +26,20 @@ import { AUX, growAux, inChannel } from "../relay/threads";
  * - SM1, the host: `live -> leaving -> retired`. `retire` only starts `leaving`,
  *   which a StrictMode replay's `attach` cancels in the same commit; the
  *   microtask after it tears down. `retired` is final and answers `retired`.
- * - SM2, a lane (one reader accessory): none (no entry), `holding` or `ended`.
- *   `present(P)` within limits -> `holding`; `present(null)` or unmount -> none;
- *   live growth past the limits -> `ended` (until it presents again). A
- *   boundary error unmounts the accessory, which withdraws it and revokes its
- *   `present`, so a failed lane needs no state of its own. The shown lane is the
- *   first `holding` one by `(order, key)`; the rest are held, and the next is
- *   promoted when the shown one leaves.
- * - SM3, the display: host rows (no `holding` lane) or the shown lane's rows
- *   with its evidence. Live evidence grows in place; growth past the limits ends
+ * - SM2, a lane (one reader accessory): none, `shown`, `held` or `ended`. One
+ *   lane is shown at a time, the first to present within limits; nothing else
+ *   is stored. `present(P)` while another is shown -> `held`, which turns to
+ *   none when that one leaves, so the lane presents again. `present(null)` or
+ *   unmount -> none; live growth past the limits -> `ended` (until it presents
+ *   again). A boundary error unmounts the accessory, which withdraws it and
+ *   revokes its `present`, so a failed lane needs no state of its own.
+ * - SM3, the display: host rows (no lane shown) or the shown lane's rows with
+ *   its evidence. Live evidence grows in place; growth past the limits ends
  *   the lane and is never trimmed (a trim could bring a deleted row back).
  * - SM4, the place intent, below: at most one pending.
  */
-type LaneState =
-  | Readonly<{ state: "holding"; presentation: ConversationPresentation }>
-  | Readonly<{ state: "ended" }>;
-/** Contributions fit: the order the accessories already have. */
-export type ArrangementLane = Readonly<{
-  key: string;
-  order?: number | undefined;
-}>;
+/** A reader accessory, by identity. */
+export type ArrangementLane = object;
 /** The rows a reader shows in place of the host's, while a lane is shown. */
 export type Display = Readonly<{
   /** The rows named by `ids` that fold, in `ids` order. */
@@ -89,7 +83,8 @@ export function createArrangement({
   limits: PresentationLimits;
 }>) {
   let phase: "live" | "leaving" | "retired" = "live";
-  const lanes = new Map<ArrangementLane, LaneState>();
+  /** Lanes not shown that are waiting (`held`) or `ended`. */
+  const lanes = new Map<ArrangementLane, "held" | "ended">();
   let shown: ArrangementLane | undefined;
   let evidence: Evidence | undefined;
   let display: Display | undefined;
@@ -100,17 +95,6 @@ export function createArrangement({
   const emit = () => {
     for (const listener of [...listeners]) listener();
   };
-  const rank = (lane: ArrangementLane) =>
-    Number.isFinite(lane.order) ? (lane.order as number) : 0;
-  const before = (a: ArrangementLane, b: ArrangementLane) =>
-    rank(a) - rank(b) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-  /** The first holding lane by `(order, key)`, counting `candidate` as holding. */
-  function leader(candidate?: ArrangementLane) {
-    let best = candidate;
-    for (const [lane, { state }] of lanes)
-      if (state === "holding" && (!best || before(lane, best) < 0)) best = lane;
-    return best;
-  }
   /** The ids' rows and their aux from `live` and the plugin's events, or why not. */
   function select(
     presentation: ConversationPresentation,
@@ -145,10 +129,11 @@ export function createArrangement({
     for (const event of pool.values())
       if (wanted.has(event.id) && !AUX.has(event.kind) && event.kind !== 39007)
         held.set(event.id, event);
-    // The root, when given, stays beside its replies as the reader's header.
+    growAux([...pool.values()], held);
+    // The root, when given, stays beside its replies as the reader's header,
+    // which shows its reactions: they do not count against the limits.
     const root = pool.get(rootId ?? "");
     if (root) held.set(root.id, root);
-    growAux([...pool.values()], held);
     return exceeds(held, limits) ? "limit" : { events: held };
   }
   function fold(current: Evidence) {
@@ -232,27 +217,15 @@ export function createArrangement({
     watch();
     return picked;
   }
-  /** The shown lane left: promote the next holding one, which ends if it no
-   * longer fits, or fall back to the host's rows. */
-  function settle() {
-    for (let next = leader(); next; next = leader()) {
-      const lane = lanes.get(next);
-      if (
-        lane?.state === "holding" &&
-        typeof show(next, lane.presentation) !== "string"
-      ) {
-        emit();
-        return;
-      }
-      lanes.set(next, { state: "ended" });
-    }
+  /** The shown lane left (`ended`, if it ended): the host's rows again, and
+   * every held lane may present. */
+  function free(ended?: ArrangementLane) {
+    for (const [lane, state] of lanes) if (state === "held") lanes.delete(lane);
+    if (ended) lanes.set(ended, "ended");
     release();
     emit();
   }
-  function end() {
-    if (shown) lanes.set(shown, { state: "ended" });
-    settle();
-  }
+  const end = () => free(shown);
   function onLive({ events }: LiveBatch) {
     const current = evidence;
     if (!current) return;
@@ -292,30 +265,23 @@ export function createArrangement({
       if (phase === "retired") return "retired";
       if (presentation === null) {
         lanes.delete(lane);
-        if (shown === lane) settle();
+        if (shown === lane) free();
         else emit();
         return "shown";
       }
-      const wins = leader(lane) === lane;
-      const picked = wins
-        ? show(lane, presentation)
-        : select(presentation, evidence?.live.values() ?? []);
+      // Checked either way, so a held lane learns now that it would not fit.
+      const held = shown !== undefined && shown !== lane;
+      const picked = held
+        ? select(presentation, evidence?.live.values() ?? [])
+        : show(lane, presentation);
       if (typeof picked === "string") return picked;
-      // Only what was selected is kept, and selecting from it again gives the
-      // same rows: the plugin's whole read is not held.
-      const events = [...picked.events.values()];
-      lanes.set(lane, {
-        state: "holding",
-        presentation: { ...presentation, events },
-      });
+      if (held) lanes.set(lane, "held");
+      else lanes.delete(lane);
       emit();
-      return wins ? "shown" : "held";
+      return held ? "held" : "shown";
     },
-    status(lane: ArrangementLane): "none" | "shown" | "held" | "ended" {
-      const state = lanes.get(lane)?.state;
-      if (state === "holding") return shown === lane ? "shown" : "held";
-      return state === "ended" ? "ended" : "none";
-    },
+    status: (lane: ArrangementLane): "none" | "shown" | "held" | "ended" =>
+      shown === lane ? "shown" : (lanes.get(lane) ?? "none"),
     /** The shown presentation, or `undefined` for the host's rows. */
     snapshot: (): Display | undefined => display,
     subscribe(listener: () => void) {
