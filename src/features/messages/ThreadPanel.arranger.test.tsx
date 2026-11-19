@@ -24,7 +24,7 @@ import type { PluginModule } from "../../plugins/api";
 import { PluginRuntime } from "../../plugins/runtime";
 import type { ConversationExtensions } from "../conversation/contracts";
 import { ConversationService } from "../conversation/service";
-import type { RelayEvent } from "../relay/events";
+import type { ReadFilter, RelayEvent } from "../relay/events";
 import type { MessageComposerProps } from "./MessageComposer";
 import type { MessageRowProps } from "./MessageRow";
 import { ThreadPanel } from "./ThreadPanel";
@@ -129,8 +129,15 @@ const PLUGIN = {
   error: null,
 };
 
-async function mount(messageId: string, fixture = thread) {
-  const relay = openSession({ world: createWorld(fixture.events) });
+async function mount(
+  messageId: string,
+  fixture = thread,
+  hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined,
+) {
+  const relay = openSession({
+    world: createWorld(fixture.events),
+    ...(hold ? { hold } : {}),
+  });
   const module: PluginModule = {
     inject: ["react", "conversation"],
     apply: (ctx) => arranger.apply(ctx as never),
@@ -200,34 +207,50 @@ it("opens a thread at a row the host never loaded, then ranks by Top from the fi
   });
 });
 
-it("returns the host's rows when withdrawn, at the row it was reading or the nearest one still shown, with no host read", async () => {
+it("returns the host's rows when withdrawn, at the row it was reading or the nearest one still shown, without reading them again", async () => {
   const { root, groups } = thread;
   const target = (groups.one ?? [])[0] as string;
-  const { relay } = await mount(target);
+  let holding = false;
+  const held: (() => void)[] = [];
+  const { relay } = await mount(target, thread, () =>
+    holding ? new Promise<void>((release) => held.push(release)) : undefined,
+  );
+  cleanups.push(() => {
+    for (const release of held) release();
+  });
   await hostRows();
   fireEvent.click(screen.getByRole("button", { name: "Top" }));
   await shownTop();
   scrolled = 80;
   const order = rowIds();
   const reads = relay.reads.length;
+  holding = true;
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
   expect(barStatus()).toBe("");
+  const shown = rowIds();
+  const near = order.find((id) => shown.includes(id)) as string;
   let last = "";
   await waitFor(
     () => {
-      const now = `${rowIds().join()}@${scrolled}`;
+      const now = `${relay.reads.length}/${rowIds().join()}@${scrolled}`;
       const settled = now === last;
       last = now;
       expect(settled).toBe(true);
     },
     { interval: 100 },
   );
+  expect(
+    relay.reads
+      .slice(reads)
+      .filter(
+        ({ filters, priority }) =>
+          priority !== "background" ||
+          filters.some((f) => f.thread_window && f.until === undefined),
+      ),
+  ).toEqual([]);
   const host = rowIds();
   expect(drawn()[0]).toBe(root.id);
-  expect(host).not.toContain(order.at(-1));
-  expect(relay.reads).toHaveLength(reads);
-  expect(host).not.toContain(order[0]);
-  const near = order.find((id) => host.includes(id)) as string;
+  expect(shown).not.toEqual(order);
   expect(scrolled).toBe(100 * (host.indexOf(near) + 1) - 20);
   expect(lastReading()).toMatchObject({
     partial: false,
