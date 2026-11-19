@@ -1784,9 +1784,12 @@ The scan pattern:
    with `readPage`: it feeds the host's own views and unread counts, which are
    bounded and are not a place to hold a scan. A thread page's aux closure
    repeats the root's aux; if the relay refuses a page (503) for a root with
-   many reactions, read that thread with `include_aux: false` and its replies'
-   reactions, edits and deletions with `#e` reads of their ids, paged with
-   `until` and `before_id` until a page comes back empty.
+   many reactions, read that thread with `include_aux: false`. Then read its
+   replies' reactions, edits and deletions with `#e` reads of their ids, as the
+   closure does: one read names the channel in `#h`, and one reads kinds 5 and
+   9005 without it, for deletions that carry no `h` tag. Page each with `until`
+   and `before_id` until a page comes back empty, and hold each page as it
+   arrives, so that a live deletion of an event already read is not dropped.
 2. Keep what was read in one `retain()` hold and fold with `foldRows`. Rank from
    the folded rows, such as the distinct accounts that reacted; the definition of
    a score is the plugin's.

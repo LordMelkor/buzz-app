@@ -19,6 +19,7 @@ import * as arranger from "../../../tests/fixtures/conversation-arranger/plugin"
 import {
   CHANNEL,
   createWorld,
+  DELETION,
   EDIT,
   mint,
   openSession,
@@ -75,7 +76,7 @@ function oracle(events: readonly EventData[], rootId?: string) {
   const byId = new Map(events.map((event) => [event.id, event]));
   const deleted = new Set<string>();
   for (const event of events)
-    if (event.kind === 5)
+    if (event.kind === 5 || event.kind === 9005)
       for (const id of marked(event, "e"))
         if (byId.get(id)?.pubkey === event.pubkey) deleted.add(id);
   const rows = events.filter(
@@ -158,6 +159,8 @@ type Mount = {
   probe?: boolean;
   targetId?: string;
   windowRows?: number;
+  namedOnly?: boolean;
+  hold?: Parameters<typeof openSession>[0]["hold"];
 };
 async function mount({
   fixture,
@@ -166,12 +169,16 @@ async function mount({
   probe,
   targetId,
   windowRows,
+  namedOnly,
+  hold,
 }: Mount) {
   const world = createWorld(fixture.events);
   const relay = openSession({
     world,
     ...(windowNewer === undefined ? {} : { windowNewer }),
     ...(windowRows === undefined ? {} : { windowRows }),
+    ...(namedOnly === undefined ? {} : { namedOnly }),
+    ...(hold === undefined ? {} : { hold }),
   });
   const answers: (readonly RelayEvent[])[] = [];
   const read = relay.session.snapshotRead;
@@ -383,7 +390,7 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
 });
 
 it("reads a heavy root's replies' reactions by id once the relay refuses its pages' aux", async () => {
-  const { root } = thread;
+  const { root, authors, reactors } = thread;
   const onRoot = await prove(
     Array.from({ length: 500 }, (_, i) =>
       mint(thread.reactors[i % thread.reactors.length] as never, {
@@ -397,11 +404,73 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
       }),
     ),
   );
-  const heavy = { ...thread, events: [...thread.events, ...onRoot] };
-  const want = oracle(heavy.events, root.id);
-  const h = await mount({ fixture: heavy, rootId: root.id, windowRows: 1200 });
+  const best = oracle(thread.events, root.id).top[0] as RelayEvent;
+  const unscoped = await prove([
+    mint(authors.find((key) => key.pubkey === best.pubkey) as never, {
+      kind: DELETION,
+      content: "",
+      created_at: T + 20_000,
+      tags: [["e", best.id]],
+    }),
+  ]);
+  const heavy = {
+    ...thread,
+    events: [...thread.events, ...onRoot, ...unscoped],
+  };
+  let paused!: () => void;
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    paused = resolve;
+  });
+  const h = await mount({
+    fixture: heavy,
+    rootId: root.id,
+    windowRows: 1200,
+    namedOnly: true,
+    hold: (filters) =>
+      !release &&
+      filters.some(
+        (filter) => !filter.thread_window && filter["#h"] && filter.until,
+      )
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+            paused();
+          })
+        : undefined,
+  });
   const before = h.reads.length;
   h.click("Top");
+  await held;
+  const page = h.answers.at(-1) ?? [];
+  const counts = new Map<string, number>();
+  for (const event of page)
+    if (event.kind === REACTION) {
+      const target = event.tags.find(([name]) => name === "e")?.[1] as string;
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+    }
+  const [most] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [];
+  const gone = await prove(
+    page
+      .filter(
+        (event) =>
+          event.kind === REACTION && event.tags.some(([, id]) => id === most),
+      )
+      .map((event) =>
+        mint(reactors.find((key) => key.pubkey === event.pubkey) as never, {
+          kind: DELETION,
+          content: "",
+          created_at: T + 30_000,
+          tags: [
+            ["h", CHANNEL],
+            ["e", event.id],
+          ],
+        }),
+      ),
+  );
+  h.world.add(gone);
+  h.heard(...gone);
+  h.flush();
+  release?.();
   await ready(h);
 
   const filters = h.scanReads(before).flatMap(({ filters }) => filters);
@@ -414,7 +483,9 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
   expect(windows.slice(0, 2)).toEqual(
     windows.slice(2, 4).map((filter) => ({ ...filter, include_aux: true })),
   );
-  const pages = h.answers.filter((page) => page.some((e) => e.kind === 39007));
+  const pages = h.answers.filter((answer) =>
+    answer.some((e) => e.kind === 39007),
+  );
   const aux = filters.filter((filter) => !filter.thread_window && filter["#e"]);
   expect(new Set(aux.flatMap((filter) => filter["#e"] ?? []))).toEqual(
     new Set(
@@ -424,6 +495,11 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
         .map((e) => e.id),
     ),
   );
+  const want = oracle([...heavy.events, ...gone], root.id);
+  expect(want.top.slice(0, 200)).not.toEqual(
+    oracle(heavy.events, root.id).top.slice(0, 200),
+  );
+  expect(h.shown()).not.toContain(best.id);
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
   expect(want.score(h.shown()[0] as string)).toBe(20);
 });
@@ -622,29 +698,31 @@ it("re-ranks when a reaction lands on a row that is not shown", async () => {
   expect(h.arrangement.snapshot()?.rows[0]?.reactions).not.toHaveLength(0);
 });
 
-it("hides a shown row when its deletion arrives live", async () => {
+it("hides shown rows when their deletions arrive live", async () => {
   const { events, root, authors } = thread;
   const h = await mount({ fixture: thread, rootId: root.id });
   h.click("Top");
   await ready(h);
-  const [first] = h.shown() as [string];
-  const row = events.find((event) => event.id === first) as RelayEvent;
-  const author = authors.find((key) => key.pubkey === row.pubkey);
-  const [gone] = await prove([
-    mint(author as never, {
-      kind: 5,
-      content: "",
-      created_at: T + 20_000,
-      tags: [
-        ["h", CHANNEL],
-        ["e", first],
-      ],
+  const shown = h.shown().slice(0, 2);
+  const gone = await prove(
+    [5, 9005].map((kind, i) => {
+      const row = events.find((event) => event.id === shown[i]) as RelayEvent;
+      return mint(authors.find((key) => key.pubkey === row.pubkey) as never, {
+        kind,
+        content: "",
+        created_at: T + 20_000,
+        tags: [
+          ["h", CHANNEL],
+          ["e", row.id],
+        ],
+      });
     }),
-  ]);
-  h.heard(gone as RelayEvent);
+  );
+  h.heard(...gone);
   h.flush();
-  const want = oracle([...events, gone as RelayEvent], root.id);
-  await waitFor(() => expect(h.shown()).not.toContain(first));
+  const want = oracle([...events, ...gone], root.id);
+  await waitFor(() => expect(h.shown()).not.toContain(shown[0]));
+  expect(h.shown()).not.toContain(shown[1]);
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
 });
 

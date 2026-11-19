@@ -22,7 +22,7 @@ const HEADROOM = 200;
 const SMALLEST = 20;
 const JITTER_MS = 10_000;
 const BOUNDS = { thread: 39007, channel: 39006 } as const;
-const AUX = new Set([5, 7, 40003]);
+const AUX = new Set([5, 7, 9005, 40003]);
 const AUX_PAGE = 500;
 
 /** The scan's whole life, as one value. A new sort, a withdraw or unmount aborts `scanning`. */
@@ -128,33 +128,37 @@ function createArranger(initial: ComposerAccessoryProps) {
   }
 
   async function replyAux(ids: readonly string[], signal: AbortSignal) {
-    const found: RelayEvent[] = [];
-    let cursor: Cursor | undefined;
-    while (ids.length) {
-      const page = await read(
-        [
-          {
-            kinds: [5, 7, 9005, 40003],
-            "#e": [...ids],
-            limit: AUX_PAGE,
-            ...(cursor
-              ? { until: cursor.created_at, before_id: cursor.id }
-              : {}),
-          },
-        ],
-        signal,
-      );
-      const last = page.reduce<RelayEvent | undefined>(
-        (end, event) => (!end || inOrder(event, end) < 0 ? event : end),
-        undefined,
-      );
-      if (!last) return found;
-      if (cursor && inOrder(last, cursor) >= 0)
-        throw new Error("The relay did not page reactions");
-      found.push(...page);
-      cursor = { created_at: last.created_at, id: last.id };
+    if (!ids.length) return;
+    for (const scope of [
+      { kinds: [5, 7, 9005, 40003], "#h": [props.channelId] },
+      { kinds: [5, 9005] },
+    ]) {
+      let cursor: Cursor | undefined;
+      for (;;) {
+        const page = await read(
+          [
+            {
+              ...scope,
+              "#e": [...ids],
+              limit: AUX_PAGE,
+              ...(cursor
+                ? { until: cursor.created_at, before_id: cursor.id }
+                : {}),
+            },
+          ],
+          signal,
+        );
+        const last = page.reduce<RelayEvent | undefined>(
+          (end, event) => (!end || inOrder(event, end) < 0 ? event : end),
+          undefined,
+        );
+        if (!last) break;
+        if (cursor && inOrder(last, cursor) >= 0)
+          throw new Error("The relay did not page reactions");
+        keep(page);
+        cursor = { created_at: last.created_at, id: last.id };
+      }
     }
-    return found;
   }
 
   async function pages(
@@ -188,7 +192,6 @@ function createArranger(initial: ComposerAccessoryProps) {
     } catch (error) {
       if (!root || !closure || (error as { status?: unknown }).status !== 503)
         throw error;
-      closureRefused = root;
       closure = false;
       answer = await read(windows(), signal);
     }
@@ -203,15 +206,15 @@ function createArranger(initial: ComposerAccessoryProps) {
           },
       );
     keep(answer);
-    if (!closure)
-      keep(
-        await replyAux(
-          answer
-            .filter((event) => event.kind === 9 && event.id !== root)
-            .map((event) => event.id),
-          signal,
-        ),
+    if (!closure) {
+      await replyAux(
+        answer
+          .filter((event) => event.kind === 9 && event.id !== root)
+          .map((event) => event.id),
+        signal,
       );
+      closureRefused = root;
+    }
     return lanes.map(([lane]) => {
       const body = bodies.find((b) => (b.direction ?? "older") === lane);
       if (!body) throw new Error("The relay sent no window bounds");

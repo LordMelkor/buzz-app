@@ -193,6 +193,8 @@ export function createRelay(options: {
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined;
   /** The rows one request's thread windows may read, with their aux. */
   windowRows?: number;
+  /** A channel that a read reaches only by naming it in `#h`. */
+  namedOnly?: boolean;
 }) {
   const { world, viewer, relay } = options;
   const windowRows = options.windowRows ?? WINDOW_ROWS;
@@ -274,6 +276,7 @@ export function createRelay(options: {
     }
     if (filter["#e"]) {
       const kinds = new Set(filter.kinds ?? []);
+      const named = filter["#h"];
       const found = new Map(
         world
           .auxOf(filter["#e"])
@@ -281,7 +284,12 @@ export function createRelay(options: {
             (e) =>
               (!kinds.size || kinds.has(e.kind)) &&
               e.created_at >= (filter.since ?? 0) &&
-              !world.deleted(e),
+              !world.deleted(e) &&
+              (named
+                ? e.tags.some(
+                    ([name, id]) => name === "h" && named.includes(id ?? ""),
+                  )
+                : !options.namedOnly || !e.tags.some(([name]) => name === "h")),
           )
           .map((e) => [e.id, e]),
       );
@@ -324,6 +332,7 @@ export function openSession(options: {
   relay?: Key;
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined;
   windowRows?: number;
+  namedOnly?: boolean;
 }) {
   const viewer = options.viewer ?? keypair();
   const relay = options.relay ?? keypair();
