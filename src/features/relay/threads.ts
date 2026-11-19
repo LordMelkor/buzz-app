@@ -4,7 +4,6 @@ import { readSubthread, subthreadMessages } from "./subthread";
 import {
   canonicalChannel,
   MissingThreadBounds,
-  relayOrder,
   threadBounds,
   type ThreadCursor,
 } from "./thread-window";
@@ -253,7 +252,6 @@ export function createThreadView({
   let remote: readonly RelayEvent[] = [];
   let remoteIds = new Set<string>();
   let staged: readonly RelayEvent[] = [];
-  let reach: ThreadCursor | null | undefined;
   let selectionStaged: readonly RelayEvent[] = [];
   let selectionController: AbortController | undefined;
   let selectionRevision = 0;
@@ -546,7 +544,6 @@ export function createThreadView({
       remote = [];
       remoteIds.clear();
       staged = [];
-      reach = undefined;
       rootId = undefined;
       cursor = undefined;
       pages = 0;
@@ -571,34 +568,13 @@ export function createThreadView({
     }
     return true;
   }
-  const beyond = (event: RelayEvent) => {
-    if (
-      mode !== "older" ||
-      !cursor ||
-      !STRICT_WINDOW_KINDS.includes(event.kind) ||
-      !isReply(event)
-    )
-      return false;
-    const edge =
-      reach === null
-        ? undefined
-        : reach && relayOrder(reach, cursor) < 0
-          ? reach
-          : cursor;
-    return !!edge && relayOrder(event, edge) < 0;
-  };
-  function receive(events: readonly RelayEvent[], stream = false) {
+  function receive(events: readonly RelayEvent[]) {
     if (disposed || !canAccess() || (!rootId && !exact)) return;
-    const fresh = events.filter(
-      (event) => !remoteIds.has(event.id) && (stream || !beyond(event)),
-    );
+    const fresh = events.filter((event) => !remoteIds.has(event.id));
     if (!fresh.length) return;
     const incoming = related(fresh);
     if (!incoming.length) return;
-    const next = union(remote, incoming);
-    if (!pages && (next.length > MAX_EVENTS || listByteSize(next) > MAX_BYTES))
-      return;
-    if (retain(next)) {
+    if (retain(union(remote, incoming))) {
       publish();
       advance();
     }
@@ -664,7 +640,6 @@ export function createThreadView({
     older = false;
     failed = undefined;
     staged = [];
-    reach = undefined;
     shown = undefined;
     if (exact) targetStatus = "loading";
     if (clear || !canAccess()) {
@@ -1143,8 +1118,6 @@ export function createThreadView({
           retain(fetched);
           return;
         }
-        staged = fetched;
-        reach = nextCursor ?? null;
         // Only strict bounds prove exhaustion. Legacy short pages may be filtered
         // after LIMIT, so an empty continuation means merely no more returned.
         more = bounds ? bounds.hasMore : replies.length > 0;
@@ -1251,7 +1224,6 @@ export function createThreadView({
       owned.abort();
       if (controller === owned) {
         staged = [];
-        reach = undefined;
         controller = undefined;
         if (again && !disposed) {
           const established = again === "established";

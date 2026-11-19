@@ -49,7 +49,6 @@ function fixture(
     result: ReturnType<typeof deferred<void>>;
   }[] = [];
   let resetTraffic = () => {};
-  let establishChannel = (_channelId: string) => {};
   let incoming!: (events: readonly RelayEvent[]) => void;
   const stop = vi.fn();
   const accepted = new Map<string, RelayEvent>();
@@ -65,11 +64,6 @@ function fixture(
         callbacks.state({ status: "retrying", routes: [] });
         callbacks.state({ status: "connected", routes: [] });
         callbacks.established();
-      };
-      establishChannel = (channelId) => {
-        callbacks.state({ status: "retrying", routes: [] });
-        callbacks.state({ status: "connected", routes: [] });
-        callbacks.established(channelId);
       };
       return { update() {}, retry() {}, dispose: stop };
     },
@@ -156,7 +150,6 @@ function fixture(
     stop,
     emit: (events: readonly RelayEvent[]) => incoming(events),
     reconnect: () => resetTraffic(),
-    reestablish: (channelId: string) => establishChannel(channelId),
     staleRead: () => (stale = deferred<RelayEvent[]>()),
     async open() {
       owner.session.channels.ensureList();
@@ -704,74 +697,6 @@ it("persists queued intent even if the session closes before asynchronous storag
   await flush();
   expect(saved.some((item) => item.event.id === id)).toBe(true);
   expect(sign).not.toHaveBeenCalled();
-});
-
-const windowHistory = () =>
-  Array.from({ length: 40 }, (_, n) =>
-    message(other, "c", `row ${n}`, 100 + n),
-  );
-
-it("keeps a channel scan below the window's floor from limiting its history, and still admits head rows", async () => {
-  const history = windowHistory();
-  const held = history[30] as RelayEvent;
-  const big = (target: RelayEvent) =>
-    signed(other, {
-      kind: 7,
-      content: "x".repeat(12_000),
-      created_at: 50,
-      tags: [
-        ["h", "c"],
-        ["e", target.id],
-      ],
-    });
-  const h = fixture([...history], {
-    maxHistoryRows: 25,
-    maxHistoryBytes: 32 * 1024,
-  });
-  await h.open();
-  const window = () => h.session.channels.window("c");
-  expect(window().hasMore).toBe(true);
-  expect(window().historyLimited).toBeFalsy();
-  const before = window().rows.map((row) => row.id);
-  expect(before).toHaveLength(20);
-  const scanned = history.slice(0, 20);
-  h.transport.query = async () => [
-    ...scanned,
-    ...scanned.slice(0, 3).map(big),
-    signed(other, {
-      kind: 7,
-      content: "+",
-      created_at: 50,
-      tags: [
-        ["h", "c"],
-        ["e", held.id],
-      ],
-    }),
-  ];
-  await h.session.read([{ kinds: [9, 7], "#h": ["c"], until: 120, limit: 40 }]);
-  expect(window().historyLimited).toBeFalsy();
-  expect(window().rows.map((row) => row.id)).toEqual(before);
-  expect(
-    window().rows.find((row) => row.id === held.id)?.reactions,
-  ).toMatchObject([{ content: "+" }]);
-  const head = message(other, "c", "live head", 500);
-  h.emit([head]);
-  expect(window().rows.at(-1)?.id).toBe(head.id);
-  expect(window().historyLimited).toBeFalsy();
-});
-
-it("shows catch-up rows below the window's floor once the catch-up moves it", async () => {
-  const history = windowHistory();
-  const h = fixture(history);
-  await h.open();
-  const window = () => h.session.channels.window("c");
-  expect(window().rows.map((row) => row.createdAt)[0]).toBe(120);
-  history.splice(25);
-  h.reestablish("c");
-  for (let i = 0; i < 10; i++) await flush();
-  expect(window().rows.map((row) => row.createdAt)).toEqual(
-    Array.from({ length: 35 }, (_, n) => 105 + n),
-  );
 });
 
 it("continues incoming traffic at the history budget and applies live membership revocation", async () => {
