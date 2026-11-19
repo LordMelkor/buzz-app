@@ -688,6 +688,7 @@ it("saves no Back/Forward place for a link's visit left while it presents", () =
   for (let pass = 0; pass < 4; pass++) frame();
   h.present({ ids: [p0.id, p1.id, p2.id] });
   frame();
+  expect(h.latest.current?.presentation).toBe("shown");
   fireEvent.scroll(scroller());
   h.unmount();
   expect(navigation.savePosition).not.toHaveBeenCalled();
@@ -706,14 +707,29 @@ it("saves the geometry of the rows shown, never filed as the host's, when it unm
   expect(viewport.caches.at(-1)).toBeUndefined();
 });
 
-it("yields a target the presentation leaves out: the navigation opens, and the plugin sees the target", () => {
+it("takes its rows back to reveal a link's target they leave out, and keeps the next presentation that leaves it out", () => {
   const navigation = navigationTo(h1.id);
   const h = mount({ props: { navigation } });
   h.present({ ids: [p0.id, p1.id] });
-  expect(navigation.complete).toHaveBeenCalledWith({ status: "opened" });
+  expect(h.latest.current?.presentation).toBe("none");
   expect(h.latest.current?.targetId).toBe(h1.id);
-  h.withdraw();
-  expect(h.latest.current?.targetId).toBe(h1.id);
+  expect(navigation.complete).not.toHaveBeenCalled();
+  h.present({ ids: [p0.id, p1.id] });
+  expect(h.latest.current?.presentation).toBe("shown");
+  expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+    status: "opened",
+  });
+});
+
+it("reveals a link's target after taking back the rows that left it out", () => {
+  const navigation = navigationTo(h1.id);
+  const h = mount({ props: { navigation } });
+  h.present({ ids: [p0.id, p1.id] });
+  for (let pass = 0; pass < 4; pass++) frame();
+  expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+    status: "opened",
+  });
+  expect(h.latest.current?.presentation).toBe("none");
 });
 
 it("leaves a target the presentation shows to the host's reveal", () => {

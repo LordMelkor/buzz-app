@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { StrictMode, useLayoutEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -486,7 +487,10 @@ it("hides the jump button and keeps the arrivals count off while it presents", (
   expect(screen.getByRole("button", { name: /Jump to latest/ })).toBeVisible();
 });
 
-it("yields a target it does not show: the visit opens, reading starts and the plugin sees the id", () => {
+const rowOf = (h: ReturnType<typeof mount>, event: EventData) =>
+  h.rowsOf([root, event]).find((row) => row.id === event.id);
+
+it("takes its rows back to reveal a link's target they leave out, then keeps rows that leave it out", async () => {
   const navigation = navigationTo(d.id);
   const h = mount({
     replies: [d],
@@ -495,13 +499,53 @@ it("yields a target it does not show: the visit opens, reading starts and the pl
     snapshot: { targetStatus: "loading" },
   });
   expect(h.latest.current?.targetId).toBe(d.id);
-  expect(navigation.complete).not.toHaveBeenCalled();
   h.present({ ids: [a.id, b.id] });
+  expect(h.latest.current?.presentation).toBe("none");
+  expect(drawn()).toEqual(["root", "d"]);
+  expect(navigation.complete).not.toHaveBeenCalled();
+  h.publish({ targetStatus: "ready", target: rowOf(h, d) });
+  await waitFor(() =>
+    expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+      status: "opened",
+    }),
+  );
+  expect(lastReading().settled.current).toBe(true);
+  h.present({ ids: [a.id, b.id] });
+  expect(h.latest.current?.presentation).toBe("shown");
+  expect(drawn()).toEqual(["root", "a", "b"]);
+});
+
+it("keeps a second presentation that leaves out a link's target, and opens the visit", () => {
+  const navigation = navigationTo(d.id);
+  const h = mount({
+    replies: [d],
+    navigation,
+    props: { messageId: d.id },
+    snapshot: { targetStatus: "loading" },
+  });
+  h.present({ ids: [a.id, b.id] });
+  h.present({ ids: [a.id, b.id] });
+  expect(h.latest.current?.presentation).toBe("shown");
+  expect(drawn()).toEqual(["root", "a", "b"]);
   expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
     status: "opened",
   });
   expect(lastReading().settled.current).toBe(true);
-  expect(drawn()).toEqual(["root", "a", "b"]);
+});
+
+it("leaves a background panel's rows in place when they leave out its link's target", () => {
+  const navigation = navigationTo(d.id);
+  const h = mount({
+    replies: [d],
+    navigation,
+    props: { messageId: d.id, active: false },
+    snapshot: { targetStatus: "loading" },
+  });
+  h.present({ ids: [a.id, b.id] });
+  expect(h.latest.current?.presentation).toBe("shown");
+  expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+    status: "opened",
+  });
 });
 
 it("records no Back/Forward place for a visit left while it presents", () => {
@@ -543,7 +587,7 @@ it("shows activity rows as the plugin lists them, unfolded", () => {
   ).toHaveLength(0);
 });
 
-it("starts reading when an inline reveal's row is not shown", () => {
+it("takes its rows back for an inline reveal's row they leave out, and reads once it is revealed", async () => {
   const h = mount({
     replies: [d],
     props: { messageId: d.id, revealSelected: true, revealRequest: 1 },
@@ -551,10 +595,12 @@ it("starts reading when an inline reveal's row is not shown", () => {
   });
   expect(lastReading().settled.current).toBe(false);
   h.present({ ids: [a.id, b.id] });
-  expect(lastReading().settled.current).toBe(true);
+  expect(h.latest.current?.presentation).toBe("none");
+  h.publish({ targetStatus: "ready", target: rowOf(h, d) });
+  await waitFor(() => expect(lastReading().settled.current).toBe(true));
 });
 
-it("wires a partial presentation's reading: its end row, its newest row, its bar", () => {
+it("wires a presentation's reading: its end row, its newest row, its bar, and row by row while partial or collapsed", () => {
   const h = mount({ replies: [d] });
   expect(lastReading()).toMatchObject({
     partial: false,
@@ -576,6 +622,16 @@ it("wires a partial presentation's reading: its end row, its newest row, its bar
   );
   fireEvent.click(screen.getByRole("button", { name: /Collapse 1 reply/ }));
   expect(lastReading().endMessageId).toBe(a.id);
+  h.present({
+    ids: [a.id, b.id, c.id, d.id],
+    parents: { [d.id]: c.id },
+    complete: true,
+  });
+  expect(lastReading()).toMatchObject({ partial: true, endMessageId: c.id });
+  fireEvent.click(
+    screen.getByRole("button", { name: /1 reply/, expanded: false }),
+  );
+  expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
   h.present({ ids: [a.id, b.id, c.id, d.id], complete: true });
   expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
   h.withdraw();

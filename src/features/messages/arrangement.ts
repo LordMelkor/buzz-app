@@ -238,6 +238,9 @@ export function createArrangement({
       emit();
       return held ? "held" : "shown";
     },
+    withdraw() {
+      if (shown) free();
+    },
     status: (lane: ArrangementLane) =>
       shown === lane ? "shown" : (lanes.get(lane) ?? "none"),
     snapshot: () => display,

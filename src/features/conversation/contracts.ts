@@ -264,7 +264,9 @@ export type ComposerAccessoryProps = Readonly<{
     | ((presentation: ConversationPresentation | null) => PresentResult)
     | undefined;
   /** Reader placement only: this accessory's presentation, `ended` once live
-   * growth passed `limits`, until it presents again. */
+   * growth passed `limits`, until it presents again. `none` after `shown`
+   * without a withdrawal of its own: the reader took its rows back to show a
+   * message they leave out, as a link's target. */
   presentation?: "none" | "shown" | "held" | "ended" | undefined;
   /** Reader placement only. */
   limits?: PresentationLimits | undefined;

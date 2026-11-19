@@ -866,9 +866,6 @@ function Timeline({
     !!requestedId &&
     renderedRowIndex(rows, shownRows, requestedId) < 0;
   const targetId = targetHidden ? undefined : requestedId;
-  useLayoutEffect(() => {
-    if (targetHidden) navigation?.complete({ status: "opened" });
-  }, [targetHidden, navigation]);
   const lastPublicMessage = publicMessageNeighbor(rows, rows.length, -1);
   const intent = useRef(0);
   // Keep expansion pending with scroll restoration until the saved row arrives.
@@ -1275,6 +1272,17 @@ function Timeline({
     complete: completeTarget,
     hold: holdTarget,
   });
+  const withdrawnFor = useRef<AbortSignal>(undefined);
+  useLayoutEffect(() => {
+    if (!targetHidden || !targetSignal || revealedSignal === targetSignal)
+      return;
+    if (withdrawnFor.current === targetSignal)
+      navigation?.complete({ status: "opened" });
+    else {
+      withdrawnFor.current = targetSignal;
+      arrangement?.withdraw();
+    }
+  }, [targetHidden, targetSignal, revealedSignal, navigation, arrangement]);
   // A return restores its visit's place the way an opening restores the
   // channel's, whether the timeline mounts for it or showed another visit. The
   // visit still presented only completes. A place whose row isn't loaded opens
