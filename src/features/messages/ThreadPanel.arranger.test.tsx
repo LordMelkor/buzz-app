@@ -81,7 +81,10 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  HTMLElement.prototype.scrollIntoView = vi.fn();
+  HTMLElement.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) {
+    const at = rowIds().indexOf(this.dataset.messageId ?? "");
+    if (at >= 0) scrolled = Math.max(0, Math.min(100 * (at + 1), 39_400));
+  });
   HTMLElement.prototype.scrollTo = vi.fn();
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(
@@ -176,11 +179,11 @@ const hostRows = () =>
     );
   });
 const shownTop = () =>
-  waitFor(() => expect(barStatus()).toBe("Replies 1–200 of 1,899"), {
+  waitFor(() => expect(barStatus()).toBe("Replies 1–200 of 1,900"), {
     timeout: 30_000,
   });
 
-it("opens a thread at a row the host never loaded, ranks by Top, and leaves the row first with the reader on it", async () => {
+it("opens a thread at a row the host never loaded, then ranks by Top from the first reply", async () => {
   const { root, groups } = thread;
   const target = (groups.one ?? [])[0] as string;
   await mount(target);
@@ -189,9 +192,8 @@ it("opens a thread at a row the host never loaded, ranks by Top, and leaves the 
   await shownTop();
   const rows = drawn();
   expect(rows[0]).toBe(root.id);
-  expect(rows[1]).toBe(target);
-  expect(rows).toHaveLength(202);
-  expect(scrolled).toBe(100);
+  expect(rows).toHaveLength(201);
+  expect(scrolled).toBe(0);
   expect(lastReading()).toMatchObject({
     partial: true,
     endMessageId: rows.at(-1),

@@ -270,8 +270,6 @@ export type ComposerAccessoryProps = Readonly<{
   presentation?: "none" | "shown" | "held" | "ended" | undefined;
   /** Reader placement only. */
   limits?: PresentationLimits | undefined;
-  /** Reader placement only: the message this reader was opened to show, if any. */
-  targetId?: string | undefined;
   /** Presentation only; the host re-resolves targets. No editor or access grant. */
   canOpen(target: string): boolean;
   /** False after contribution removal or the originating composer retires.

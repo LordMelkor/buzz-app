@@ -712,7 +712,6 @@ it("takes its rows back to reveal a link's target they leave out, and keeps the 
   const h = mount({ props: { navigation } });
   h.present({ ids: [p0.id, p1.id] });
   expect(h.latest.current?.presentation).toBe("none");
-  expect(h.latest.current?.targetId).toBe(h1.id);
   expect(navigation.complete).not.toHaveBeenCalled();
   h.present({ ids: [p0.id, p1.id] });
   expect(h.latest.current?.presentation).toBe("shown");

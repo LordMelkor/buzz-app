@@ -158,7 +158,6 @@ type Mount = {
   rootId?: string | undefined;
   windowNewer?: boolean;
   probe?: boolean;
-  targetId?: string;
   windowRows?: number;
   namedOnly?: boolean;
   hold?: Parameters<typeof openSession>[0]["hold"];
@@ -168,7 +167,6 @@ async function mount({
   rootId,
   windowNewer,
   probe,
-  targetId,
   windowRows,
   namedOnly,
   hold,
@@ -250,7 +248,6 @@ async function mount({
       scope="scope"
       channelId={CHANNEL}
       threadRootId={rootId}
-      targetId={targetId}
       canOpen={() => true}
       open={() => true}
     />,
@@ -801,18 +798,26 @@ it("reads a thread through older pages alone when the relay has no newer windows
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
 });
 
-it("shows the row it was opened to first and places the reader on it", async () => {
-  const { events, root, groups } = thread;
+it("keeps the reader's place when the filter changes, and starts a new sort at the top", async () => {
+  const { events, root } = thread;
   const want = oracle(events, root.id);
-  const target = (groups.one ?? [])[0] as string;
-  const h = await mount({ fixture: thread, rootId: root.id, targetId: target });
+  const h = await mount({ fixture: thread, rootId: root.id });
   h.click("Top");
   await ready(h);
-  expect(h.shown()[0]).toBe(target);
-  expect(h.shown().slice(1)).toEqual(
-    idsOf(want.top.filter((row) => row.id !== target).slice(0, 200)),
+  expect(h.arrangement.snapshot()?.place).toBe("start");
+  const gizmo = want.matching(want.top, "gizmo");
+  find("gizmo");
+  await statusIs(h, replies(1, gizmo.length, gizmo.length));
+  expect(h.arrangement.snapshot()?.place).toBe("keep");
+  find("");
+  await statusIs(h, replies(1, 200, want.rows.length));
+  expect(h.arrangement.snapshot()?.place).toBe("keep");
+  h.click("Oldest");
+  await waitFor(
+    () => expect(h.shown()).toEqual(idsOf(want.oldest.slice(0, 200))),
+    { timeout: 30_000 },
   );
-  expect(h.arrangement.snapshot()?.place).toEqual({ id: target });
+  expect(h.arrangement.snapshot()?.place).toBe("start");
 });
 
 it("nests replies under their shown parents and opens the branches that hold them", async () => {

@@ -503,7 +503,6 @@ it("takes its rows back to reveal a link's target they leave out", async () => {
     props: { messageId: d.id },
     snapshot: { targetStatus: "loading" },
   });
-  expect(h.latest.current?.targetId).toBe(d.id);
   h.present({ ids: [a.id, b.id] });
   expect(h.latest.current?.presentation).toBe("none");
   expect(drawn()).toEqual(["root", "d"]);

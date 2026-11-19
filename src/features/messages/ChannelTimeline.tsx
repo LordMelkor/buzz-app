@@ -2580,7 +2580,6 @@ function Timeline({
               session={queries}
               scope={scope}
               channelId={channelId}
-              targetId={requestedId}
               canOpen={(target) => canOpenLink?.(target) ?? false}
               open={onOpenLink}
             />

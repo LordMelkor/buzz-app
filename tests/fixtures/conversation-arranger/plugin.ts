@@ -339,7 +339,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     reachesAll() ? scanAll(signal) : scanForward(signal);
 
   function arrange(place?: ConversationPresentation["place"]) {
-    const { present, limits, targetId } = props;
+    const { present, limits } = props;
     if (!present || !limits || !sort || phase.state !== "ready") return;
     const all = [...events.values()];
     const folded = rows();
@@ -359,14 +359,9 @@ function createArranger(initial: ComposerAccessoryProps) {
             (a.id < b.id ? -1 : 1)
         : (a, b) => inOrder(cursorOf(a), cursorOf(b)),
     );
-    const target = rest.find((row) => row.id === targetId);
-    const pinned = [
-      ...(sort === "top" ? mine : []),
-      ...(target ? [target] : []),
-    ];
+    const pinned = sort === "top" ? mine : [];
     const tail = sort === "top" ? [] : mine;
-    const queue = rest.filter((row) => row !== target);
-    while (starts.length > 1 && offset() >= queue.length) starts.pop();
+    while (starts.length > 1 && offset() >= rest.length) starts.pop();
     const from = offset();
     const auxByTarget = new Map<string, RelayEvent[]>();
     for (const event of all)
@@ -401,7 +396,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     let count = 0;
     let bytes = 0;
     const room = Math.max(0, limits.rows - pinned.length - tail.length);
-    const window = queue.slice(from, from + Math.min(size, room));
+    const window = rest.slice(from, from + Math.min(size, room));
     for (const row of [...pinned, ...window, ...tail]) {
       const c = costOf(row);
       if (
@@ -426,7 +421,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     }
     const open = [...new Set(Object.values(parents))];
     const complete = scanned && !lost && chosen.length === folded.length;
-    total = queue.length;
+    total = rest.length;
     taken = chosen.filter((row) => inWindow.has(row)).length;
     const result = present({
       ids,
@@ -568,7 +563,7 @@ function createArranger(initial: ComposerAccessoryProps) {
       size = PAGE;
       starts = [0];
       message = "";
-      refresh(props.targetId ? { id: props.targetId } : "start");
+      refresh("start");
     },
     find(text: string) {
       filter = text.trim();
@@ -576,7 +571,7 @@ function createArranger(initial: ComposerAccessoryProps) {
       size = PAGE;
       starts = [0];
       message = "";
-      refresh(props.targetId ? { id: props.targetId } : "start");
+      refresh();
     },
     more() {
       if (phase.state !== "ready") return;

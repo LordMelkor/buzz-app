@@ -1740,8 +1740,7 @@ present for reader accessories only.
   growth passed `limits`; the reader never trims, because a trim could bring a
   deleted row back.
 - `limits` are `{ rows, events, bytes }`: 460 rows, 2,000 events and 4 MiB in a
-  thread, and 2,400 rows and 8 MiB in a channel (no event count). `targetId` is
-  the message the reader was opened to, if any.
+  thread, and 2,400 rows and 8 MiB in a channel (no event count).
 
 The host owns everything else. While a presentation shows, the reader draws its
 rows with the ordinary message controls, keeps its own unread line, earlier-reply
@@ -1804,7 +1803,7 @@ The scan pattern:
 4. Leave headroom under `limits` for live reactions, edits and deletions of the
    rows shown (a few hundred events). A presentation that fits exactly ends on
    its first reaction.
-5. Pin what the person must see (their own pending sends, `targetId`), and let
+5. Pin what the person must see (their own pending sends), and let
    the rest follow the sort. Their rows fold from the outbox with delivery state.
 6. On `ended`, present a smaller slice, such as half as many rows, and say so.
 7. Changes made while the live connection is down (`session.live`) may never
