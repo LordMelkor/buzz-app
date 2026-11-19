@@ -129,7 +129,6 @@ function createArranger(initial: ComposerAccessoryProps) {
     lanes: readonly (readonly [Lane, Cursor | undefined])[],
     signal: AbortSignal,
   ) {
-    const windowed = props.session.windowNewer === true;
     const root = rootId();
     const filters = lanes.map(([lane, cursor]) => {
       const newer = lane === "newer";
@@ -139,12 +138,7 @@ function createArranger(initial: ComposerAccessoryProps) {
         limit: PAGE,
         include_aux: true,
         ...(root
-          ? {
-              thread_window: true,
-              "#e": [root],
-              depth_limit: 100,
-              ...(windowed ? { root_aux: false as const } : {}),
-            }
+          ? { thread_window: true, "#e": [root], depth_limit: 100 }
           : { top_level: true }),
         ...(newer ? { direction: "newer" as const } : {}),
         ...(cursor

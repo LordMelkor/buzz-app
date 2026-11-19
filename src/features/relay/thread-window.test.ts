@@ -144,11 +144,10 @@ it("keeps the older binding when direction and root aux are explicit defaults", 
     );
   const expected =
     "tw:1:5252322dfd797ddb1d5f1150acd4cf914b9fc09e39bcf3048d25aed514b3546d";
-  expect(await binding({ direction: "older", root_aux: true })).toBe(expected);
-  expect(await binding({ root_aux: false })).not.toBe(expected);
+  expect(await binding({ direction: "older" })).toBe(expected);
   expect(await binding({ direction: "newer" })).not.toBe(expected);
 });
-it("binds a forward page that leaves root aux out as the relay's vector", async () => {
+it("binds a forward page as the relay's vector", async () => {
   const filter: ReadFilter = {
     thread_window: true,
     "#h": [channel],
@@ -158,16 +157,15 @@ it("binds a forward page that leaves root aux out as the relay's vector", async 
     direction: "newer",
     after: 5,
     after_id: "ef".repeat(32),
-    root_aux: false,
   };
-  const canonical = `["tw",1,"newer","relay.example","${"ab".repeat(32)}","${channel}","${"cd".repeat(32)}",50,100,[9],[5,"${"ef".repeat(32)}"],false,"root_aux:false"]`;
+  const canonical = `["tw",1,"newer","relay.example","${"ab".repeat(32)}","${channel}","${"cd".repeat(32)}",50,100,[9],[5,"${"ef".repeat(32)}"],false]`;
   expect(createHash("sha256").update(canonical).digest("hex")).toBe(
-    "a417629c808147bf1592cab56498fd1137bda02e04450ba5aa6fc15d39d63c73",
+    "121bd4071006f4578547bba5c39ea6f733905fd5b67b6b09f88261e61a62075f",
   );
   expect(
     await threadBinding(filter, "https://relay.example", "ab".repeat(32)),
   ).toBe(
-    "tw:1:a417629c808147bf1592cab56498fd1137bda02e04450ba5aa6fc15d39d63c73",
+    "tw:1:121bd4071006f4578547bba5c39ea6f733905fd5b67b6b09f88261e61a62075f",
   );
 });
 describe("forward thread pages", () => {
@@ -181,7 +179,6 @@ describe("forward thread pages", () => {
     direction: "newer",
     after: at.created_at,
     after_id: at.id,
-    root_aux: false,
   };
   const newerBound = (filter: ReadFilter, content: Record<string, unknown>) => {
     const digest = createHash("sha256")
@@ -199,7 +196,6 @@ describe("forward thread pages", () => {
           [9],
           filter.after === undefined ? null : [filter.after, filter.after_id],
           false,
-          ...(filter.root_aux === false ? ["root_aux:false"] : []),
         ]),
       )
       .digest("hex");

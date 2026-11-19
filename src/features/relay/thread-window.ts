@@ -58,7 +58,6 @@ export async function threadBinding(
     [...new Set(filter.kinds)].sort((a, b) => a - b),
     cursor ? [cursor.created_at, cursor.id] : null,
     filter.include_aux ?? false,
-    ...(filter.root_aux === false ? ["root_aux:false"] : []),
   ]);
   const digest = await crypto.subtle.digest(
     "SHA-256",

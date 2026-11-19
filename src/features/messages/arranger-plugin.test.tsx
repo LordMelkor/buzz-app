@@ -354,18 +354,12 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
     .flatMap(({ filters }) => filters)
     .filter((filter) => filter.thread_window);
   expect(windows).toHaveLength(12);
-  expect(windows.every((filter) => filter.root_aux === false)).toBe(true);
   expect(windows.filter((filter) => filter.direction === "newer")).toHaveLength(
     6,
   );
   const pages = h.answers.filter((page) => page.some((e) => e.kind === 39007));
   expect(pages).toHaveLength(6);
   expect(h.answers.flat().every(hasEventProof)).toBe(true);
-  expect(
-    h.answers
-      .flat()
-      .some((e) => e.kind === REACTION && marked(e, "e").includes(root.id)),
-  ).toBe(false);
 
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
   expect(want.score(h.shown()[0] as string)).toBe(20);
@@ -631,7 +625,6 @@ it("paints Oldest first from the reads its first window needs and pages forward 
   expect(page).toMatchObject({
     thread_window: true,
     direction: "newer",
-    root_aux: false,
   });
   expect(page?.after).toBeUndefined();
   expect(reads.every(({ priority }) => priority === "background")).toBe(true);
@@ -642,7 +635,7 @@ it("paints Oldest first from the reads its first window needs and pages forward 
   await waitFor(() => expect(h.shown()).toHaveLength(460));
   expect(h.shown()).toEqual(idsOf(want.oldest.slice(0, 460)));
   const next = h.scanReads(before).at(-1)?.filters[0];
-  expect(next).toMatchObject({ direction: "newer", root_aux: false });
+  expect(next).toMatchObject({ direction: "newer" });
   expect(next?.after).toBeDefined();
   expect(next?.after_id).toBeDefined();
 });
@@ -662,7 +655,6 @@ it("reads a thread through older pages alone when the relay has no newer windows
   expect(reads).toHaveLength(11);
   const filters = reads.flatMap(({ filters }) => filters);
   expect(filters.some((f) => f.direction === "newer")).toBe(false);
-  expect(filters.some((f) => f.root_aux !== undefined)).toBe(false);
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
 });
 

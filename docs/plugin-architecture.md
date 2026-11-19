@@ -1775,9 +1775,8 @@ Three session capabilities serve a plugin that scans:
 
 On a relay that advertises `buzz-window-newer` (`session.windowNewer`), a window
 read can also page oldest first with `direction: "newer"` and `after`/`after_id`
-from the previous page's cursor, and a thread read can pass `root_aux: false`,
-because the reader already shows the root and its reactions. Without it, read
-older pages only; the final rows are the same and the scan is slower.
+from the previous page's cursor. Without it, read older pages only; the final
+rows are the same and the scan is slower.
 
 The scan pattern:
 

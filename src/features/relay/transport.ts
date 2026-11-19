@@ -175,7 +175,7 @@ export interface ReadTransport {
    * `search_sort: "newest"`. Older relays silently rank by relevance. */
   readonly searchSort?: true;
   /** The relay advertises `buzz-window-newer`: thread and channel windows
-   * accept `direction: "newer"` and thread pages accept `root_aux: false`. */
+   * accept `direction: "newer"`. */
   readonly windowNewer?: true;
   /** The relay advertises NIP-AR sync (`artifacts.sync.version` 1 in NIP-11):
    * a REQ with `"artifact": "current"` streams a complete set, then live heads. */

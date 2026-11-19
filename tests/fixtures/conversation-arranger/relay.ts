@@ -206,10 +206,7 @@ export function createRelay(options: {
       return [
         ...shown,
         ...(filter.include_aux
-          ? [
-              ...world.closure(shown.map((e) => e.id)),
-              ...(filter.root_aux === false ? [] : world.auxOf([roots])),
-            ]
+          ? world.closure([roots, ...shown.map((e) => e.id)])
           : []),
         await bound(
           relay,
