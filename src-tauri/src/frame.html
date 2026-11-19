@@ -1,0 +1,14 @@
+<!DOCTYPE html><meta charset="utf-8"><script>
+"use strict";
+if (self.origin === "null" && parent !== self) {
+  addEventListener("message", function write(event) {
+    const data = event.data;
+    if (event.source !== parent || !data || data.type !== "buzz-frame:write" || typeof data.html !== "string") return;
+    removeEventListener("message", write);
+    document.open();
+    document.write(data.html);
+    document.close();
+  });
+  parent.postMessage({ type: "buzz-frame:ready" }, "*");
+}
+</script>

@@ -31,20 +31,7 @@ const PERMISSIONS: &str = "camera=(), microphone=(), geolocation=(), display-cap
 /// Waits for `{ type: "buzz-frame:write", html }` from the embedding window,
 /// then replaces itself with `html`. It writes only once, and only with an
 /// opaque origin.
-const PAGE: &str = r#"<!DOCTYPE html><meta charset="utf-8"><script>
-"use strict";
-if (self.origin === "null" && parent !== self) {
-  addEventListener("message", function write(event) {
-    const data = event.data;
-    if (event.source !== parent || !data || data.type !== "buzz-frame:write" || typeof data.html !== "string") return;
-    removeEventListener("message", write);
-    document.open();
-    document.write(data.html);
-    document.close();
-  });
-  parent.postMessage({ type: "buzz-frame:ready" }, "*");
-}
-</script>"#;
+const PAGE: &str = include_str!("frame.html");
 
 pub(crate) fn frame_protocol<R: tauri::Runtime>(
     _ctx: tauri::UriSchemeContext<'_, R>,
