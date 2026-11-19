@@ -2364,6 +2364,11 @@ function ThreadMessages({
       void view.loadMore();
     } else void view.refresh();
   };
+  const newestReply = shownReplies.reduce<ChannelMessage | undefined>(
+    (latest, row) =>
+      !latest || compareMessages(row, latest) > 0 ? row : latest,
+    undefined,
+  )?.id;
   return (
     <MessageEditScope>
       <Reading
@@ -2379,14 +2384,12 @@ function ThreadMessages({
         // For a full thread, use display order to break same-second ties.
         latestMessageId={
           snapshot.root && !subthreadId
-            ? shownReplies.reduce<ChannelMessage | undefined>(
-                (latest, row) =>
-                  !latest || compareMessages(row, latest) > 0 ? row : latest,
-                undefined,
-              )?.id
+            ? presented
+              ? endRow
+              : newestReply
             : undefined
         }
-        endMessageId={presented ? endRow : undefined}
+        catchUpMessageId={presented ? newestReply : undefined}
         partial={!!display && (!display.complete || collapsed)}
         controls={readerBar}
       />

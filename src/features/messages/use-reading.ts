@@ -36,10 +36,6 @@ type Reading = {
   /** The newest row catch-up may read through, when it is not the bottom
    * row (a channel's newest top-level post). Defaults to the bottom row. */
   catchUpMessageId?: string | undefined;
-  /** The row at the list's end when it is not the latest, as under an
-   * arrangement: dwelling on it at the bottom catches up through
-   * `latestMessageId`. */
-  endMessageId?: string | undefined;
   /** True while the list leaves unread rows out of what it shows: it reads
    * only the rows shown, and never catches up. */
   partial?: boolean | undefined;
@@ -73,7 +69,6 @@ export function useReading({
   channelId,
   latestMessageId,
   catchUpMessageId,
-  endMessageId,
   partial = false,
   controls,
   rootId,
@@ -87,7 +82,6 @@ export function useReading({
   // already remeasures in the next frame, so it must not restart observation.
   const latestId = useEffectEvent(() => latestMessageId);
   const catchUpId = useEffectEvent(() => catchUpMessageId ?? latestMessageId);
-  const endId = useEffectEvent(() => endMessageId ?? latestMessageId);
   useEffect(() => {
     if (!enabled || !scroller.current) return;
     const element: HTMLElement = scroller.current;
@@ -224,7 +218,6 @@ export function useReading({
     };
     function bottomId() {
       const latest = latestId();
-      const end = endId();
       if (
         !latest ||
         element.scrollHeight - element.clientHeight - element.scrollTop > 1
@@ -239,7 +232,7 @@ export function useReading({
         ),
       ].find(
         (row) =>
-          (row.dataset.messageId ?? row.dataset.previewMessageId) === end,
+          (row.dataset.messageId ?? row.dataset.previewMessageId) === latest,
       );
       const bounds = row?.getBoundingClientRect();
       return bounds &&

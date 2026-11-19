@@ -625,8 +625,8 @@ it("wires a presentation's reading: its end row, its newest row, its bar, and ro
   const h = mount({ replies: [d] });
   expect(lastReading()).toMatchObject({
     partial: false,
-    endMessageId: undefined,
     latestMessageId: d.id,
+    catchUpMessageId: undefined,
   });
   h.present({
     ids: [c.id, a.id, b.id],
@@ -635,31 +635,37 @@ it("wires a presentation's reading: its end row, its newest row, its bar, and ro
   });
   expect(lastReading()).toMatchObject({
     partial: true,
-    endMessageId: b.id,
-    latestMessageId: c.id,
+    latestMessageId: b.id,
+    catchUpMessageId: c.id,
   });
   expect(lastReading().controls?.current).toBe(
     screen.getByText("bar").parentElement,
   );
   fireEvent.click(screen.getByRole("button", { name: /Collapse 1 reply/ }));
-  expect(lastReading().endMessageId).toBe(a.id);
+  expect(lastReading().latestMessageId).toBe(a.id);
   h.present({
     ids: [a.id, b.id, c.id, d.id],
     parents: { [d.id]: c.id },
     complete: true,
   });
-  expect(lastReading()).toMatchObject({ partial: true, endMessageId: c.id });
+  expect(lastReading()).toMatchObject({ partial: true, latestMessageId: c.id });
   fireEvent.click(
     screen.getByRole("button", { name: /1 reply/, expanded: false }),
   );
-  expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
+  expect(lastReading()).toMatchObject({
+    partial: false,
+    latestMessageId: d.id,
+  });
   h.present({ ids: [a.id, b.id, c.id, d.id], complete: true });
-  expect(lastReading()).toMatchObject({ partial: false, endMessageId: d.id });
+  expect(lastReading()).toMatchObject({
+    partial: false,
+    latestMessageId: d.id,
+  });
   h.withdraw();
   expect(lastReading()).toMatchObject({
     partial: false,
-    endMessageId: undefined,
     latestMessageId: d.id,
+    catchUpMessageId: undefined,
   });
 });
 

@@ -159,15 +159,8 @@ function subscribeDocumentActive(listener: () => void) {
 }
 const TIMELINE_PLACE = "timeline";
 const NO_ROWS: readonly ChannelMessage[] = Object.freeze([]);
-const readable = (row: ChannelMessage) => !row.membership && !row.huddle;
-const topLevel = (row: ChannelMessage) =>
-  readable(row) && !row.threadRootId && !row.replyParentId;
-const newest = (rows: readonly ChannelMessage[]) =>
-  rows.reduce<ChannelMessage | undefined>(
-    (latest, row) =>
-      !latest || row.createdAt > latest.createdAt ? row : latest,
-    undefined,
-  );
+const byTime = (rows: readonly ChannelMessage[]) =>
+  [...rows].sort((a, b) => a.createdAt - b.createdAt);
 // Older pages a visit reads unasked to fill a screen its head leaves empty.
 const FILL_PAGES = 5;
 // A row's content sits below its day divider and byline, and its virtual item
@@ -1377,17 +1370,20 @@ function Timeline({
     scroller,
     settled,
     restoring,
-    latestMessageId: (display
-      ? newest(display.rows.filter(readable))
-      : window.rows.filter(readable).at(-1)
-    )?.id,
+    latestMessageId: (display ? rows : window.rows)
+      .filter((row) => !row.membership && !row.huddle)
+      .at(-1)?.id,
     // The channel's read mark stops at its newest top-level post: an "Also
     // send to channel" reply at the bottom is not one.
-    catchUpMessageId: (display
-      ? newest(display.rows.filter(topLevel))
-      : window.rows.filter(topLevel).at(-1)
-    )?.id,
-    endMessageId: display ? rows.filter(readable).at(-1)?.id : undefined,
+    catchUpMessageId: (display ? byTime(display.rows) : window.rows)
+      .filter(
+        (row) =>
+          !row.membership &&
+          !row.huddle &&
+          !row.threadRootId &&
+          !row.replyParentId,
+      )
+      .at(-1)?.id,
     partial: !!display && !display.complete,
     controls: readerBar,
     // Reading before the entry boundary settles would erase the evidence it

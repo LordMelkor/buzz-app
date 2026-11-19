@@ -28,7 +28,6 @@ function setup({
   strict = false,
   latestMessageId = undefined as string | undefined,
   catchUpMessageId = undefined as string | undefined,
-  endMessageId = undefined as string | undefined,
   partial = false,
   rootId = undefined as string | undefined,
   enabled = true,
@@ -140,7 +139,6 @@ function setup({
       settled: position,
       latestMessageId,
       catchUpMessageId,
-      endMessageId,
       partial,
       controls,
       rootId,
@@ -219,7 +217,6 @@ function setup({
         settled: position,
         latestMessageId,
         catchUpMessageId,
-        endMessageId,
         partial,
         controls,
         rootId,
@@ -233,7 +230,6 @@ function setup({
         settled: position,
         latestMessageId: id,
         catchUpMessageId,
-        endMessageId,
         partial,
         controls,
         rootId,
@@ -247,7 +243,6 @@ function setup({
         settled: position,
         latestMessageId,
         catchUpMessageId,
-        endMessageId,
         partial: next,
         controls,
         rootId,
@@ -800,21 +795,6 @@ it("a historical viewport or a bottom reached only at dwell end cannot catch up"
   );
 });
 
-it("an arranged list's end row at the bottom catches up through the newest row", async () => {
-  const h = setup({
-    latestMessageId: "newest",
-    endMessageId: "bottom",
-    rootId: "thread",
-  });
-  h.setRows([row("newest", -300, -200), row("bottom", 400, 500)]);
-  h.mutation();
-  vi.advanceTimersToNextFrame();
-  await vi.advanceTimersByTimeAsync(300);
-  expect(h.dwelled()?.catchUp).toHaveBeenCalledExactlyOnceWith(
-    "newest",
-    "thread",
-  );
-});
 it("a partial list takes partial leases, which read only the rows shown", async () => {
   const h = setup({ latestMessageId: "visible", partial: true });
   await vi.advanceTimersByTimeAsync(300);

@@ -196,7 +196,7 @@ it("opens a thread at a row the host never loaded, then ranks by Top from the fi
   expect(scrolled).toBe(0);
   expect(lastReading()).toMatchObject({
     partial: true,
-    endMessageId: rows.at(-1),
+    latestMessageId: rows.at(-1),
   });
 });
 
@@ -231,7 +231,7 @@ it("returns the host's rows when withdrawn, at the row it was reading or the nea
   expect(scrolled).toBe(100 * (host.indexOf(near) + 1) - 20);
   expect(lastReading()).toMatchObject({
     partial: false,
-    endMessageId: undefined,
+    catchUpMessageId: undefined,
   });
 });
 
@@ -244,8 +244,8 @@ it("reads a thread it shows whole through to its last row", async () => {
   });
   expect(lastReading()).toMatchObject({
     partial: false,
-    endMessageId: drawn().at(-1),
+    latestMessageId: drawn().at(-1),
   });
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
-  expect(lastReading().endMessageId).toBeUndefined();
+  expect(lastReading().catchUpMessageId).toBeUndefined();
 });

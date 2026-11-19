@@ -741,19 +741,18 @@ it("leaves a target the presentation shows to the host's reveal", () => {
 it("reads only the rows shown while it is partial, and catches up at its end row once complete", () => {
   const h = mount();
   expect(lastReading().partial).toBe(false);
-  expect(lastReading().endMessageId).toBeUndefined();
   expect(lastReading().latestMessageId).toBe(h5.id);
   h.present({ ids: [p2.id, p0.id, p1.id] });
   expect(lastReading().partial).toBe(true);
-  expect(lastReading().latestMessageId).toBe(p2.id);
-  expect(lastReading().endMessageId).toBe(p1.id);
+  expect(lastReading().latestMessageId).toBe(p1.id);
+  expect(lastReading().catchUpMessageId).toBe(p2.id);
   const bar = screen.getByText("bar").parentElement;
   expect(lastReading().controls?.current).toBe(bar);
   h.present({ ids: [p2.id, p0.id, p1.id], complete: true });
   expect(lastReading().partial).toBe(false);
   h.withdraw();
-  expect(lastReading().endMessageId).toBeUndefined();
   expect(lastReading().latestMessageId).toBe(h5.id);
+  expect(lastReading().catchUpMessageId).toBe(h5.id);
 });
 
 it("retires the presentation when the timeline goes: its hold is released", async () => {
