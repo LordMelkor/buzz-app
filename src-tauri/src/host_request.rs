@@ -6,6 +6,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{Mutex, OnceLock};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 mod public_image;
 mod public_page;
@@ -222,6 +223,77 @@ struct UploadFile {
     content_type: String,
 }
 
+/// Held while Buzz shows a network access prompt, so prompts never stack.
+static ASKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Lets the calling plugin's `request`, byte reads and uploads reach `origin`
+/// once the person allows it in a native prompt. Plugin code shares the
+/// host's web view, so only a prompt drawn here proves the person answered.
+#[tauri::command]
+pub(crate) async fn plugin_host_request_origin<R: tauri::Runtime>(
+    window: tauri::Window<R>,
+    manager: tauri::State<'_, PluginManager>,
+    id: String,
+    revision: String,
+    origin: String,
+) -> Result<bool, String> {
+    let shown = origin.clone();
+    request_origin(manager, &ASKING, id, revision, origin, |name| {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let message = format!(
+            "Let \u{201c}{name}\u{201d} connect to {shown}? The plugin can then make HTTPS \
+             requests to this address until you remove it."
+        );
+        // GTK reads the message as a printf format.
+        #[cfg(target_os = "linux")]
+        let message = message.replace('%', "%%");
+        window
+            .dialog()
+            .message(message)
+            .title("Allow network access?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Allow".into(),
+                "Don't Allow".into(),
+            ))
+            .parent(&window)
+            .show(move |allowed| {
+                let _ = sender.send(allowed);
+            });
+        async move { receiver.await.unwrap_or(false) }
+    })
+    .await
+}
+
+/// Checks, asks, then saves. An origin the plugin already reaches returns
+/// `true` without asking; the save checks the plugin again, so one disabled
+/// or updated while `ask` was open saves nothing.
+async fn request_origin<Asked: std::future::Future<Output = bool>>(
+    manager: tauri::State<'_, PluginManager>,
+    asking: &tokio::sync::Mutex<()>,
+    id: String,
+    revision: String,
+    origin: String,
+    ask: impl FnOnce(String) -> Asked,
+) -> Result<bool, String> {
+    let (plugin, at, requested) = (id.clone(), revision.clone(), origin.clone());
+    let name = with_manager(manager.clone(), move |m| {
+        m.origin_request(&plugin, &at, &requested)
+    })
+    .await?;
+    let Some(name) = name else {
+        return Ok(true);
+    };
+    let _open = asking
+        .try_lock()
+        .map_err(|_| "Another network access request is open")?;
+    if !ask(name.chars().filter(|c| !c.is_control()).collect()).await {
+        return Ok(false);
+    }
+    with_manager(manager, move |m| m.approve_origin(&id, &revision, &origin)).await?;
+    Ok(true)
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct HostResponse {
     pub(crate) status: u16,
@@ -244,7 +316,7 @@ pub(crate) async fn plugin_host_request<R: tauri::Runtime>(
     let operation = async {
         let (plugin_id, artifact) = (id.clone(), revision.clone());
         let grants = with_manager(manager, move |manager| {
-            manager.host_grants(&plugin_id, &artifact)
+            manager.request_grants(&plugin_id, &artifact)
         })
         .await
         .map_err(|_| "Host request is unavailable")?;
@@ -537,7 +609,7 @@ async fn byte_grants(
     revision: &str,
 ) -> Result<HostGrants, String> {
     let (id, revision) = (id.to_owned(), revision.to_owned());
-    with_manager(manager, move |m| m.host_grants(&id, &revision))
+    with_manager(manager, move |m| m.request_grants(&id, &revision))
         .await
         .map_err(|_| "Host byte request is unavailable".into())
 }
@@ -606,9 +678,11 @@ pub(crate) async fn plugin_host_upload(
         timeout_ms: None,
     })?;
     let operation = async {
-        let grants = with_manager(manager, move |manager| manager.host_grants(&id, &revision))
-            .await
-            .map_err(|_| "Host request is unavailable")?;
+        let grants = with_manager(manager, move |manager| {
+            manager.request_grants(&id, &revision)
+        })
+        .await
+        .map_err(|_| "Host request is unavailable")?;
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let path = upload_path(&grants, &url, &upload.file.path, home.as_deref())?;
         let bytes = tokio::fs::read(&path)
@@ -1259,6 +1333,9 @@ mod tests {
 
 #[cfg(test)]
 mod replay_tests;
+
+#[cfg(test)]
+mod origin_tests;
 
 #[cfg(test)]
 #[path = "host_request/byte_tests.rs"]

@@ -20,6 +20,8 @@ export type PluginInfo = {
   readmeRevision?: string | null;
   iconPngRevision?: string | null;
   iconJpgRevision?: string | null;
+  /** HTTPS origins the person approved for the plugin at runtime, beyond the manifest's. */
+  approvedOrigins?: readonly string[];
 };
 export type PluginRelease = Pick<PluginInfo, "revision" | "publisher">;
 

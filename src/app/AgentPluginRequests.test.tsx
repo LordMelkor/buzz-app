@@ -209,7 +209,9 @@ it("updates at the pinned commit and keeps the plugin's enabled state", async ()
 });
 
 it("shows a plugin's access before enabling it", async () => {
-  const { manager, agent } = await harness([installed()]);
+  const { manager, agent } = await harness([
+    installed({ approvedOrigins: ["https://mcp.example:8443"] }),
+  ]);
   const { requestId } = await agent.request({
     action: "enable",
     id: "example.tasks",
@@ -225,6 +227,9 @@ it("shows a plugin's access before enabling it", async () => {
   ).toBeVisible();
   expect(within(dialog).getByText(reason)).toBeVisible();
   expect(within(dialog).getByText(/tasks\.example\.com/)).toBeVisible();
+  expect(
+    within(dialog).getByText("Connect to https://mcp.example:8443"),
+  ).toBeVisible();
   fireEvent.click(
     within(dialog).getByRole("button", { name: "Enable plugin" }),
   );

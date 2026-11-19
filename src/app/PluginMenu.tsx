@@ -13,7 +13,7 @@ import { IconButton } from "../shared/design-system/ui/IconButton";
 import { Button } from "../shared/design-system/ui/Button";
 import { AlertDialog } from "../shared/design-system/ui/AlertDialog";
 import { Dialog } from "../shared/design-system/ui/Dialog";
-import { PluginAccessReview } from "./PluginAccessReview";
+import { PluginAccessReview, withApprovedOrigins } from "./PluginAccessReview";
 
 export function PluginMenu({
   plugin,
@@ -129,7 +129,7 @@ export function PluginMenu({
         finalFocus={deleteTrigger}
         actions={<Button onClick={() => setShowAccess(false)}>Done</Button>}
       >
-        <PluginAccessReview manifest={plugin.manifest} />
+        <PluginAccessReview manifest={withApprovedOrigins(plugin)} />
       </Dialog>
       {confirmRollback && (
         <AlertDialog

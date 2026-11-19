@@ -9,7 +9,7 @@ import type { PluginManager } from "../plugins/manager";
 import type { PluginRequest } from "../plugins/requests";
 import type { Catalog } from "../plugins/types";
 import { ManagedPluginReview } from "./ManagedPlugins";
-import { PluginAccessReview } from "./PluginAccessReview";
+import { PluginAccessReview, withApprovedOrigins } from "./PluginAccessReview";
 import styles from "./Settings.module.css";
 
 type Authorize = NonNullable<
@@ -297,7 +297,7 @@ function ChangeReview({
       }
     >
       {body}
-      {plugin && <PluginAccessReview manifest={plugin.manifest} />}
+      {plugin && <PluginAccessReview manifest={withApprovedOrigins(plugin)} />}
     </Dialog>
   );
 }

@@ -29,6 +29,9 @@ const MAX_ICON_PIXELS: u64 = 1024 * 1024;
 pub const DEFAULT_HOST_COMMAND_OUTPUT_BYTES: u64 = 4096;
 pub const MAX_HOST_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 pub const MAX_HOST_COMMAND_INPUT_BYTES: u64 = 64 * 1024;
+/// Origins the person may approve for one plugin. Every host request reads
+/// them, so the plugin's registry entry stays small.
+const MAX_APPROVED_ORIGINS: usize = 64;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -335,19 +338,47 @@ impl Manifest {
             }
             let mut origins = std::collections::HashSet::new();
             for origin in &host.network_origins {
-                let url = url::Url::parse(origin).map_err(err)?;
-                if url.scheme() != "https"
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                    || url.origin().ascii_serialization() != *origin
-                    || !origins.insert(origin)
-                {
+                if valid_origin(origin).is_err() || !origins.insert(origin) {
                     return Err("Invalid HTTPS origin declaration".into());
                 }
             }
         }
         Ok(())
     }
+}
+/// A bare HTTPS origin: no credentials, path, query or default port, so it
+/// equals what a request URL's origin serializes to.
+fn valid_origin(origin: &str) -> Result<()> {
+    const INVALID: &str = "Invalid HTTPS origin: use https://host[:port], with no path";
+    let url = url::Url::parse(origin).map_err(|_| INVALID)?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.origin().ascii_serialization() != origin
+    {
+        return Err(INVALID.into());
+    }
+    Ok(())
+}
+/// Whether two releases share a publisher (or are both unsigned) and an install
+/// location, whatever version each pins, so origins the person approved for one
+/// carry over to the other. An unknown source, such as a dropped folder,
+/// matches nothing.
+fn same_publisher_and_location(
+    (a, a_signature): (Option<&InstallSource>, Option<&Event>),
+    (b, b_signature): (Option<&InstallSource>, Option<&Event>),
+) -> bool {
+    a_signature.map(|e| e.pubkey) == b_signature.map(|e| e.pubkey)
+        && match (a, b) {
+            (Some(InstallSource::Folder(a)), Some(InstallSource::Folder(b))) => {
+                a.root.join(&a.path) == b.root.join(&b.path)
+            }
+            (Some(InstallSource::Git(a)), Some(InstallSource::Git(b))) => {
+                a.repository == b.repository && a.path == b.path
+            }
+            (Some(InstallSource::Url(a)), Some(InstallSource::Url(b))) => a.url == b.url,
+            _ => false,
+        }
 }
 pub fn valid_id(id: &str) -> Result<()> {
     if id.is_empty()
@@ -650,6 +681,10 @@ struct Installed {
     icon_png_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     icon_jpg_revision: Option<String>,
+    /// HTTPS origins the person approved for the plugin at runtime, beyond the
+    /// manifest's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    approved_origins: Vec<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -916,6 +951,7 @@ pub struct PluginInfo {
     pub readme_revision: Option<String>,
     pub icon_png_revision: Option<String>,
     pub icon_jpg_revision: Option<String>,
+    pub approved_origins: Vec<String>,
 }
 
 #[derive(Default, Serialize)]
@@ -1148,6 +1184,11 @@ impl Manager {
             if *id != p.manifest.id || is_reserved(id) {
                 return Err("Invalid installed plugin identity".into());
             }
+            if p.approved_origins.len() > MAX_APPROVED_ORIGINS
+                || p.approved_origins.iter().any(|o| valid_origin(o).is_err())
+            {
+                return Err("Invalid approved origin".into());
+            }
             valid_hash(&p.current)?;
             if let Some(h) = &p.previous {
                 valid_hash(h)?;
@@ -1227,6 +1268,7 @@ impl Manager {
                     readme_revision: None,
                     icon_png_revision: None,
                     icon_jpg_revision: None,
+                    approved_origins: Vec::new(),
                 }
             })
             .collect();
@@ -1267,6 +1309,7 @@ impl Manager {
                 readme_revision: p.readme_revision,
                 icon_png_revision: p.icon_png_revision,
                 icon_jpg_revision: p.icon_jpg_revision,
+                approved_origins: p.approved_origins,
             });
         }
         Ok(Catalog {
@@ -1331,6 +1374,14 @@ impl Manager {
         });
         let enabled = enable || old.is_some_and(|p| p.enabled);
         let update_checks = old.and_then(|p| p.update_checks);
+        let approved_origins = old
+            .filter(|p| {
+                same_publisher_and_location(
+                    (p.current_source.as_ref(), p.current_signature.as_ref()),
+                    (source.as_ref(), release.signature.as_ref()),
+                )
+            })
+            .map_or_else(Vec::new, |p| p.approved_origins.clone());
         let previous_signature = old.and_then(|p| {
             if p.current == revision {
                 p.previous_signature.clone()
@@ -1354,6 +1405,7 @@ impl Manager {
                 readme_revision,
                 icon_png_revision,
                 icon_jpg_revision,
+                approved_origins,
             },
         );
         self.save(&registry)?;
@@ -1411,6 +1463,12 @@ impl Manager {
                             return Err(SIGNED_ROLLBACK_ERROR.into());
                         }
                         let a = self.artifact(id, &previous, p.previous_signature.as_ref())?;
+                        if !same_publisher_and_location(
+                            (p.current_source.as_ref(), p.current_signature.as_ref()),
+                            (p.previous_source.as_ref(), p.previous_signature.as_ref()),
+                        ) {
+                            p.approved_origins.clear();
+                        }
                         p.current = previous;
                         p.current_signature = p.previous_signature.take();
                         p.current_source = p.previous_source.take();
@@ -1529,6 +1587,15 @@ impl Manager {
                 plugin.current_signature.clone()
             };
             atomic_write(&self.artifact_path(&manifest.id, &revision), &release.bytes)?;
+            if !same_publisher_and_location(
+                (
+                    plugin.current_source.as_ref(),
+                    plugin.current_signature.as_ref(),
+                ),
+                (Some(&snapshot.1), release.signature.as_ref()),
+            ) {
+                plugin.approved_origins.clear();
+            }
             plugin.manifest = manifest;
             plugin.current = revision;
             plugin.current_signature = release.signature;
@@ -1585,7 +1652,87 @@ impl Manager {
             .host
             .unwrap_or_default())
     }
+    /// `host_grants` plus the origins the person approved for this plugin at
+    /// runtime. Only `host.request`, its byte reads and uploads use it; every
+    /// other grant check reads the manifest alone.
+    pub fn request_grants(&self, id: &str, revision: &str) -> Result<HostGrants> {
+        if revision == "bundled" {
+            return self.host_grants(id, revision);
+        }
+        let (artifact, approved) = self.current_artifact_with_approvals(id, revision)?;
+        let mut grants = artifact.manifest.host.unwrap_or_default();
+        for origin in approved {
+            if !grants.network_origins.contains(&origin) {
+                grants.network_origins.push(origin);
+            }
+        }
+        Ok(grants)
+    }
+    /// Checks, before Buzz asks the person, that `id` at `revision` may add
+    /// `origin`. Returns the plugin's name to ask with, or `None` when the
+    /// plugin can already reach the origin.
+    pub fn origin_request(&self, id: &str, revision: &str, origin: &str) -> Result<Option<String>> {
+        let _lock = self.lock()?;
+        let mut registry = self.read()?;
+        Ok(self
+            .unreached_origin(&mut registry, id, revision, origin)?
+            .map(|p| p.manifest.name.clone()))
+    }
+    /// Saves `origin` for `id` once the person allowed it. The checks repeat
+    /// under this lock, so a plugin disabled, updated or removed while Buzz
+    /// asked saves nothing.
+    pub fn approve_origin(&self, id: &str, revision: &str, origin: &str) -> Result<()> {
+        let _lock = self.lock()?;
+        let mut registry = self.read()?;
+        if let Some(p) = self.unreached_origin(&mut registry, id, revision, origin)? {
+            p.approved_origins.push(origin.into());
+            self.save(&registry)?;
+        }
+        Ok(())
+    }
+    fn unreached_origin<'a>(
+        &self,
+        registry: &'a mut Registry,
+        id: &str,
+        revision: &str,
+        origin: &str,
+    ) -> Result<Option<&'a mut Installed>> {
+        valid_origin(origin)?;
+        // `*` is a valid host character to the URL parser.
+        if origin.contains('*') {
+            return Err("Wildcard origins cannot be approved".into());
+        }
+        if self.safe_mode {
+            return Err("External plugins are disabled in safe mode".into());
+        }
+        let p = registry
+            .installed
+            .get_mut(id)
+            .ok_or("Plugin is not installed")?;
+        if !p.enabled || p.current != revision {
+            return Err("Plugin was disabled or updated; refresh the catalog".into());
+        }
+        let declared = p
+            .manifest
+            .host
+            .as_ref()
+            .is_some_and(|host| host.network_origins.iter().any(|o| o == origin));
+        if declared || p.approved_origins.iter().any(|o| o == origin) {
+            return Ok(None);
+        }
+        if p.approved_origins.len() >= MAX_APPROVED_ORIGINS {
+            return Err("Too many approved origins".into());
+        }
+        Ok(Some(p))
+    }
     fn current_artifact(&self, id: &str, revision: &str) -> Result<Artifact> {
+        Ok(self.current_artifact_with_approvals(id, revision)?.0)
+    }
+    fn current_artifact_with_approvals(
+        &self,
+        id: &str,
+        revision: &str,
+    ) -> Result<(Artifact, Vec<String>)> {
         if self.safe_mode {
             return Err("External plugins are disabled in safe mode".into());
         }
@@ -1595,7 +1742,8 @@ impl Manager {
         if !p.enabled || p.current != revision {
             return Err("Plugin was disabled or updated; refresh the catalog".into());
         }
-        self.artifact(id, revision, p.current_signature.as_ref())
+        let artifact = self.artifact(id, revision, p.current_signature.as_ref())?;
+        Ok((artifact, p.approved_origins.clone()))
     }
     pub fn recover(&self) -> Result<Catalog> {
         {
@@ -3111,6 +3259,220 @@ mod tests {
             paused.host_grants("block.builderlab", "bundled").unwrap(),
             grants
         );
+    }
+
+    #[test]
+    fn approved_origins_extend_only_that_plugins_requests_and_persist() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        let install = |id: &str, extra: &str| {
+            let source = temp.path().join(format!("build-{id}"));
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("plugin.js"), "export function apply() {}").unwrap();
+            fs::write(
+                source.join("manifest.json"),
+                format!(
+                    r#"{{"id":"{id}","name":"Example","apiVersion":1,"host":{{"networkOrigins":["https://declared.example"{extra}]}}}}"#
+                ),
+            )
+            .unwrap();
+            let revision = manager
+                .install(&source)
+                .unwrap()
+                .plugins
+                .into_iter()
+                .find(|plugin| plugin.manifest.id == id)
+                .unwrap()
+                .revision;
+            manager.change("enable", id).unwrap();
+            revision
+        };
+        let first = install("example.first", "");
+        let other = install("example.other", "");
+        let origins = |m: &Manager, id: &str, revision: &str| {
+            m.request_grants(id, revision).unwrap().network_origins
+        };
+        let origin = "https://mcp.example:8443";
+        assert_eq!(
+            manager.origin_request("example.first", &first, origin),
+            Ok(Some("Example".into()))
+        );
+        manager
+            .approve_origin("example.first", &first, origin)
+            .unwrap();
+        // Once approved, or when the manifest declares it, there is nothing to ask.
+        for reached in [origin, "https://declared.example"] {
+            assert_eq!(
+                manager.origin_request("example.first", &first, reached),
+                Ok(None)
+            );
+        }
+        let catalog = manager.catalog().unwrap();
+        let info = catalog
+            .plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == "example.first")
+            .unwrap();
+        assert_eq!(info.approved_origins, [origin]);
+        assert_eq!(
+            origins(&manager, "example.first", &first),
+            ["https://declared.example", origin]
+        );
+        // Another plugin is not granted it.
+        assert_eq!(
+            origins(&manager, "example.other", &other),
+            ["https://declared.example"]
+        );
+
+        // It survives a restart and an update from the same folder.
+        let reopened = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        assert!(origins(&reopened, "example.first", &first).contains(&origin.to_string()));
+        let updated = install("example.first", r#","https://extra.example""#);
+        assert_ne!(updated, first);
+        assert!(origins(&manager, "example.first", &updated).contains(&origin.to_string()));
+
+        // A stale revision, safe mode and a disabled plugin all refuse.
+        let late = "https://late.example";
+        assert!(manager
+            .origin_request("example.first", &first, late)
+            .is_err());
+        let paused = Manager::open(Some(temp.path().into()), "test", true).unwrap();
+        assert!(paused
+            .origin_request("example.first", &updated, late)
+            .is_err());
+        manager.change("disable", "example.first").unwrap();
+        assert!(manager
+            .origin_request("example.first", &updated, late)
+            .is_err());
+
+        // Removing the plugin forgets its origins for any reinstall.
+        manager.change("remove", "example.first").unwrap();
+        let reinstalled = install("example.first", "");
+        assert_eq!(
+            origins(&manager, "example.first", &reinstalled),
+            ["https://declared.example"]
+        );
+    }
+
+    #[test]
+    fn a_new_install_location_or_publisher_clears_approved_origins() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        let origin = "https://mcp.example";
+        let key = "01".repeat(32);
+        let write = |id: &str, folder: &str, version: &str, key: Option<&str>| {
+            let source = temp.path().join(folder);
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("plugin.js"), "export function apply() {}").unwrap();
+            fs::write(
+                source.join("manifest.json"),
+                format!(
+                    r#"{{"id":"{id}","name":"Example","description":"{version}","apiVersion":1}}"#
+                ),
+            )
+            .unwrap();
+            if let Some(key) = key {
+                super::sign_release(&source, key).unwrap();
+            }
+            source
+        };
+        let current = |id: &str| {
+            let catalog = manager.catalog().unwrap();
+            let plugin = catalog.plugins.into_iter().find(|p| p.manifest.id == id);
+            plugin.unwrap().revision
+        };
+        let install = |folder: &str, version: &str, key: Option<&str>| {
+            let source = write("example.page", folder, version, key);
+            manager.install(&source).unwrap();
+            manager.change("enable", "example.page").unwrap();
+            current("example.page")
+        };
+        let approved = |id: &str| {
+            manager
+                .request_grants(id, &current(id))
+                .unwrap()
+                .network_origins
+        };
+        let approve = |id: &str| manager.approve_origin(id, &current(id), origin).unwrap();
+        install("a", "1.0.0", None);
+        approve("example.page");
+        install("a", "1.0.1", None);
+        assert_eq!(approved("example.page"), [origin]);
+
+        install("a", "1.0.2", Some(&key));
+        assert!(approved("example.page").is_empty());
+
+        approve("example.page");
+        install("b", "1.0.3", Some(&key));
+        assert!(approved("example.page").is_empty());
+
+        approve("example.page");
+        manager.change("rollback", "example.page").unwrap();
+        assert!(approved("example.page").is_empty());
+
+        // Reloading a folder that is now signed changes its publisher too.
+        let source = write("example.reload", "c", "1.0.0", None);
+        manager.install(&source).unwrap();
+        manager.change("enable", "example.reload").unwrap();
+        approve("example.reload");
+        write("example.reload", "c", "1.0.1", Some(&key));
+        manager.change("disable", "example.reload").unwrap();
+        manager.reload("example.reload").unwrap();
+        manager.change("enable", "example.reload").unwrap();
+        assert!(approved("example.reload").is_empty());
+    }
+
+    #[test]
+    fn only_bare_https_origins_can_be_requested() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        let source = temp.path().join("build");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("plugin.js"), "export function apply() {}").unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            r#"{"id":"example.page","name":"Example","apiVersion":1}"#,
+        )
+        .unwrap();
+        let revision = manager
+            .install(&source)
+            .unwrap()
+            .plugins
+            .pop()
+            .unwrap()
+            .revision;
+        manager.change("enable", "example.page").unwrap();
+        for invalid in [
+            "http://mcp.example",
+            "https://mcp.example/path",
+            "https://mcp.example/",
+            "https://mcp.example?q=1",
+            "https://user@mcp.example",
+            "https://mcp.example:443",
+            "https://*.example",
+            "ftp://mcp.example",
+            "mcp.example",
+            "",
+        ] {
+            assert!(
+                manager
+                    .origin_request("example.page", &revision, invalid)
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+        for n in 0..super::MAX_APPROVED_ORIGINS {
+            manager
+                .approve_origin("example.page", &revision, &format!("https://h{n}.example"))
+                .unwrap();
+        }
+        assert!(manager
+            .origin_request("example.page", &revision, "https://one-too-many.example")
+            .is_err());
+        // Bundled plugins have no registry entry to extend.
+        assert!(manager
+            .origin_request("buzz.reminders", "bundled", "https://mcp.example")
+            .is_err());
     }
 
     #[test]

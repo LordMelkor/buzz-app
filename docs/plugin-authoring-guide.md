@@ -218,8 +218,40 @@ Add `"host"` to `inject`, then:
 
 - `await ctx.host.runCommand("status", input?)` runs a declared command (no shell, 5 s deadline, stdin only if `maxInputBytes` is declared). It returns stdout (4096 bytes by default, up to `maxOutputBytes`, at most 1048576), or `null` on failure or when output exceeds the bound. A command may declare `artifact: { path, sha256, siblings?: [{ name, sha256 }] }` (an absolute or `~/…` path, lowercase SHA-256 hex, and files beside it that must match too) to run only those verified bytes, never a program on PATH; `program` is then just its label and the declared `args` are passed to it. Interpreters and programs it calls by name are still found on PATH, so give it an absolute shebang such as `#!/bin/sh` and call programs by absolute path.
 - `await ctx.host.request({ url, method?, headers?, body?, timeoutMs? })` returns `{ status, headers, body }` and throws on an undeclared origin or timeout. `url` must use an exact declared HTTPS origin (origin only in the manifest: scheme + host, no path or trailing slash). No redirects, no cookies. Plain `fetch` to other origins is blocked by the app's content security policy, so use this.
+- `await ctx.host.requestOrigin?.(origin)` asks the person to let `request` (and the byte and upload calls) reach an origin your manifest cannot declare, such as the server URL each person types for a self-hosted service. `origin` is `https://host[:port]` only; pass `new URL(typed).origin`. Buzz shows its own prompt naming your plugin and that origin. It resolves `true` once allowed (at once, without a prompt, if your plugin can already reach the origin, so it is safe to call on every start) and `false` if the person declines. It rejects on a malformed origin, while another such prompt is open, or when your plugin was disabled or updated meanwhile. An allowed origin stays allowed for your plugin only, across restarts and updates from the same source and publisher, is listed in Settings under what the plugin can do, and is dropped when the plugin is removed. No `networkOrigins` entry is needed. Desktop only: check `typeof ctx.host.requestOrigin === "function"` first.
 - `ctx.host.spawn?.(id, { args?, cwd?, env?, onStdout?, onStderr? })` starts a declared `processes` entry (desktop only; check it exists). Returns `{ write, end, kill, exited }`. Your `args` follow the declared ones.
 - `files: true` enables `ctx.host.readFile(path, { cwd? })` (bytes, at most 50 MB), `ctx.host.resolveDirectory(path, { create? })` and `ctx.agents.assignConversationFolder`. Other grants: `mcp: true` (`host.serveMcp`), `managedFiles: true`, `publicImages: true` (`host.requestBytes` may also read PNG, JPEG, GIF, WebP and AVIF images from any public HTTPS site, one hop at a time; check each redirect's `Location` yourself), `publicPages: true` (`host.readPage(url)` returns a public HTTPS page's title, description, site name, image and icon, never its HTML; redirects come back as `location`), `agentHooks: ["plugin/kind", ...]` (agent type keys such as `buzz.claude-code/claude-code`).
+
+A settings card (inject `react`, `settingsCards` and `host`) that connects to the person's own server: they type the address, Buzz asks whether your plugin may reach it, and the plugin sends its first request only after a yes. Keep the address in your own namespaced `localStorage` key if you need it after a restart; the allowed origin itself persists.
+
+```js
+ctx.settingsCards.register({
+  id: "server",
+  title: "Server",
+  component: function Server() {
+    const h = ctx.react.createElement;
+    const [typed, setTyped] = ctx.react.useState("");
+    const [status, setStatus] = ctx.react.useState("");
+    if (typeof ctx.host.requestOrigin !== "function")
+      return h("p", null, "Update Buzz to connect your server.");
+    const connect = async () => {
+      try {
+        const origin = new URL(typed).origin;
+        if (!(await ctx.host.requestOrigin(origin)))
+          return setStatus("Not connected: Buzz was not allowed to reach it.");
+        const reply = await ctx.host.request({ url: `${origin}/api/me` });
+        setStatus(`Connected (${reply.status})`);
+      } catch (error) {
+        setStatus(String(error));
+      }
+    };
+    return h("div", null,
+      h("input", { "aria-label": "Server address", value: typed, placeholder: "https://board.example.org", onChange: (e) => setTyped(e.target.value) }),
+      h("button", { type: "button", onClick: connect }, "Connect"),
+      status && h("p", null, status));
+  },
+});
+```
 
 ## UI
 

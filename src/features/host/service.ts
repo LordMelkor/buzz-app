@@ -242,6 +242,15 @@ export interface Host {
     signal: AbortSignal,
   ) => Promise<readonly HostRepositoryFolder[]>;
   request(input: HostRequest): Promise<HostResponse>;
+  /** Asks the person, in a prompt Buzz draws naming this plugin and the
+   * origin, to let this plugin's `request`, byte and upload calls reach one
+   * more exact origin: `https://host[:port]` with no path or wildcard, such as
+   * a server URL the person typed. Resolves `true` when allowed, at once and
+   * without asking when the plugin can already reach it, and `false` when the
+   * person declines. Rejects on a malformed origin or while another prompt is
+   * open. An allowed origin lasts across restarts and same-source updates
+   * until the plugin is removed. Installed desktop plugins only. */
+  requestOrigin?: (origin: string) => Promise<boolean>;
   /** POST-only, desktop and compatible native host required. A repeated call
    * authority rejects with unknown outcome, never resubmits or caches success.
    * Blocks IPC-fallback resends only, not fresh calls or upstream retries.
@@ -692,6 +701,19 @@ export class HostService extends Service implements Host {
       id: owner.id,
       revision: owner.revision,
       request: input,
+    }).catch(rethrow);
+  }
+
+  async requestOrigin(origin: string) {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri() || owner.revision === "bundled")
+      throw new Error(
+        "Requesting an origin requires an installed desktop plugin",
+      );
+    return await invoke<boolean>("plugin_host_request_origin", {
+      id: owner.id,
+      revision: owner.revision,
+      origin,
     }).catch(rethrow);
   }
 

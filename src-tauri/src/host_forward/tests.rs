@@ -1466,3 +1466,43 @@ fn ipc_shapes_match_the_typescript_bindings() {
         Harness::Goose
     );
 }
+
+#[tokio::test]
+async fn an_origin_approved_at_runtime_does_not_grant_forwarding() {
+    use tauri::Manager as _;
+    let root = tempfile::tempdir().unwrap();
+    let manager =
+        buzzodz_plugins::Manager::open(Some(root.path().join("data")), "test", false).unwrap();
+    let source = root.path().join("plugin");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("plugin.js"), "export function apply() {}").unwrap();
+    std::fs::write(
+        source.join("manifest.json"),
+        r#"{"id":"example.forward","name":"Forward","apiVersion":1}"#,
+    )
+    .unwrap();
+    let revision = manager
+        .install(&source)
+        .unwrap()
+        .plugins
+        .into_iter()
+        .find(|p| p.manifest.id == "example.forward")
+        .unwrap()
+        .revision;
+    manager.change("enable", "example.forward").unwrap();
+    manager
+        .approve_origin("example.forward", &revision, "https://gateway.example")
+        .unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(crate::PluginManager(Ok(manager)));
+    assert_eq!(
+        granted(
+            app.state(),
+            "https://gateway.example".into(),
+            "example.forward".into(),
+            revision
+        )
+        .await,
+        Err("The agent gateway is not declared".into())
+    );
+}

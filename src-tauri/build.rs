@@ -182,6 +182,7 @@ fn main() {
             "plugin_host_call_context",
             "plugin_host_request",
             "plugin_host_request_bytes",
+            "plugin_host_request_origin",
             "plugin_host_read_page",
             "plugin_host_upload_bytes_once",
             "plugin_host_save_bytes",

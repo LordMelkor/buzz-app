@@ -3,6 +3,7 @@ import { AgentsContext } from "../features/agents/react";
 import type { RegisteredAgentType } from "../features/agents/service";
 
 import type { PluginManifest } from "../plugins/api";
+import type { PluginInfo } from "../plugins/types";
 import { Accordion } from "../shared/design-system/ui/Accordion";
 import { Button } from "../shared/design-system/ui/Button";
 import {
@@ -272,6 +273,20 @@ export function pluginAccessIncreases(
   return hostDeclarations(manifest, []).some(
     (item) => !granted.has(item.signature),
   );
+}
+
+export function withApprovedOrigins({ manifest, approvedOrigins }: PluginInfo) {
+  if (!approvedOrigins?.length) return manifest;
+  return {
+    ...manifest,
+    host: {
+      ...manifest.host,
+      networkOrigins: [
+        ...(manifest.host?.networkOrigins ?? []),
+        ...approvedOrigins,
+      ],
+    },
+  };
 }
 
 export function PluginAccessReview({

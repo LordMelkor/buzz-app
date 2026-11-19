@@ -1849,3 +1849,38 @@ it("renderer disposal suppresses an opted-in acknowledgement without claiming na
     expect.anything(),
   );
 });
+
+it.each([true, false])(
+  "asks Buzz to allow an origin for the calling plugin and returns its answer: %s",
+  async (allowed) => {
+    const { plugin } = pluginContext();
+    vi.mocked(invoke).mockResolvedValue(allowed);
+    await expect(
+      plugin.host.requestOrigin?.("https://plane.example.org:8443"),
+    ).resolves.toBe(allowed);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      "plugin_host_request_origin",
+      {
+        id: "example.plugin",
+        revision: "abc",
+        origin: "https://plane.example.org:8443",
+      },
+    );
+  },
+);
+
+it("refuses to request an origin outside an installed desktop plugin", async () => {
+  const { root, plugin } = pluginContext();
+  const bundled = root.extend({
+    pluginOwner: { id: "buzz.channels", revision: "bundled" },
+  });
+  for (const host of [root.host, bundled.host])
+    await expect(host.requestOrigin?.("https://a.example")).rejects.toThrow(
+      "installed desktop plugin",
+    );
+  vi.mocked(isTauri).mockReturnValue(false);
+  await expect(
+    plugin.host.requestOrigin?.("https://a.example"),
+  ).rejects.toThrow("installed desktop plugin");
+  expect(invoke).not.toHaveBeenCalled();
+});

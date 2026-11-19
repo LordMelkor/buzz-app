@@ -281,6 +281,39 @@ fn denied_ipc_requests_never_consume_dispatch_authority() {
 }
 
 #[test]
+fn a_request_reaches_an_origin_only_after_the_person_allows_it() {
+    // As above, loopback TLS is untrusted: a request that passes the origin
+    // check reaches the listener and then fails.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("https://{}/api/me", listener.local_addr().unwrap());
+    let origin = reqwest::Url::parse(&url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let fixture = App::new("https://declared.example");
+    let server = std::thread::spawn(move || drop(listener.accept().unwrap()));
+    let body = fixture.body(&url, None);
+    let request = || ipc(&fixture.view, "plugin_host_request", body.clone());
+    let answer = |allowed: bool| {
+        tauri::async_runtime::block_on(request_origin(
+            fixture.app.state(),
+            &tokio::sync::Mutex::new(()),
+            "example.replay".into(),
+            fixture.revision.clone(),
+            origin.clone(),
+            |_| std::future::ready(allowed),
+        ))
+    };
+    assert_eq!(answer(false), Ok(false));
+    assert!(request()
+        .unwrap_err()
+        .contains("Host request origin is not declared"));
+    assert_eq!(answer(true), Ok(true));
+    assert!(request().unwrap_err().contains("Host request failed"));
+    server.join().unwrap();
+}
+
+#[test]
 fn full_claims_reset_only_on_page_advance_and_stale_boot_poison_overflow_fail_closed() {
     let calls = HostCalls::default();
     let first = envelope(&calls);

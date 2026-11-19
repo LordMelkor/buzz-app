@@ -2091,6 +2091,34 @@ for long operations such as Apps initialization. Archive uploads have a
 Existing bundled GitHub requests retain their first-party renderer fetch and CSP
 entry.
 
+A plugin that needs an origin its manifest cannot name, such as the server URL
+each person types for a self-hosted service, calls
+`await host.requestOrigin?.("https://board.example.org")`. The
+[authoring guide](plugin-authoring-guide.md#host-access-manifesthost) has a
+settings-card recipe: the person types the address in the plugin's own
+settings, the plugin calls this, and on `true` it calls `request`. The native
+command shows a dialog, drawn by Buzz and parented to the window, that names
+the plugin and the exact origin, with Allow and Don't Allow buttons. The prompt
+is native because plugin modules run in the host's own web view: a prompt drawn
+there, or a token minted there, is one plugin code could draw or mint itself,
+so only a dialog shown by the command that saves proves the person answered.
+The origin must be `https://host[:port]` with no path, credentials, default
+port or wildcard, the same shape a manifest accepts. Native code checks it,
+and that the plugin is installed, enabled and at the calling revision, before
+it asks, and again under the registry lock when it saves, so a plugin
+disabled, updated or removed while the dialog is open saves nothing. An origin
+the manifest declares, or one already approved, resolves `true` without a
+dialog. Declining resolves `false` and saves nothing. One dialog is open at a
+time; a call while one is open rejects. An installed plugin may have up to 64
+approved origins. They are stored in the plugin registry beside the plugin, not
+in its manifest, and only the `request`, byte and upload checks add them to
+that plugin's declared origins. Every other grant, such as gateway forwarding,
+reads the manifest alone. Approved origins survive restarts, updates, reloads
+and rollbacks from the same install location (the same folder, Git repository and
+path, or URL) and publisher (both unsigned or the same signer), and are cleared
+otherwise. They are listed under "What this plugin can do" in Settings and are
+forgotten when the plugin is removed. Approving one leaves the plugin running.
+
 `host.requestOnce?.(request, { callId })` is an explicit opt-in, desktop-only POST
 primitive for non-idempotent submissions on compatible hosts.
 Ordinary `request`, byte GET/save, archive uploads, processes and publication do not

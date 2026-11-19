@@ -135,6 +135,7 @@ export function apply(ctx: Context) {
     headers: { Authorization: "Bearer sample" },
     body: "{}",
   }).then((response) => void response.status);
+  if (typeof host.requestOrigin === "function") void host.requestOrigin("https://plane.example.com:8443").then((allowed: boolean) => allowed);
   // Final synchronous eligibility is part of the optional protected method.
   if (typeof host.requestOnce === "function") {
     const options: HostRequestOnceOptions = {
