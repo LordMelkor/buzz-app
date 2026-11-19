@@ -242,7 +242,11 @@ function createArranger(initial: ComposerAccessoryProps) {
       closure = false;
       answer = await read(windows(), signal);
     }
-    const stamped = answer.filter((event) => event.kind === kindOfBounds());
+    const stamped = answer.filter(
+      (event) =>
+        event.kind === kindOfBounds() &&
+        event.pubkey === props.session.relayAuthor,
+    );
     walkStart = Math.min(
       walkStart ?? requested,
       requested,

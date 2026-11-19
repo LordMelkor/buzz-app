@@ -1,14 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createRelayReader } from "./reader";
-import { bounds, flush, keypair, message, scriptedTransport } from "./testing";
-import { windowFilter } from "./window";
+import { flush, scriptedTransport } from "./testing";
 
 const owners: ReturnType<typeof createRelayReader>[] = [];
-function setup(
-  options: Parameters<typeof createRelayReader>[1] = {},
-  relayAuthor = "relay",
-) {
-  const scripted = scriptedTransport("viewer", relayAuthor);
+function setup(options: Parameters<typeof createRelayReader>[1] = {}) {
+  const scripted = scriptedTransport("viewer", "relay");
   const owner = createRelayReader(scripted.transport, options);
   owners.push(owner);
   return { ...scripted, ...owner, read: owner.reader.read };
@@ -467,24 +463,4 @@ it("gives large reads their own deadline; a joining read keeps it", async () => 
   await vi.advanceTimersByTimeAsync(899);
   await failures;
   expect(wire.signal?.aborted).toBe(true);
-});
-it("returns a channel page with its verified bound and rejects one whose bound is not the relay's", async () => {
-  const relay = keypair(),
-    impostor = keypair();
-  const channelId = "11111111-1111-1111-1111-111111111111";
-  const { read, next } = setup({}, relay.pubkey);
-  const row = message(keypair(), channelId, "hi", 10);
-  const bound = bounds(relay, channelId, "head", {
-    has_more: false,
-    next_cursor: null,
-  });
-  const valid = read([windowFilter(channelId, null)]);
-  next().respond([row, bound]);
-  expect(await valid).toEqual([row, bound]);
-  const forged = read([windowFilter(channelId, null)]);
-  next().respond([
-    row,
-    bounds(impostor, channelId, "head", { has_more: false, next_cursor: null }),
-  ]);
-  await expect(forged).rejects.toThrow(/invalid window bounds/);
 });

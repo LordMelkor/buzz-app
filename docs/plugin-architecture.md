@@ -1775,7 +1775,10 @@ Three session capabilities serve a plugin that scans:
 On a relay that advertises `buzz-window-newer` (`session.windowNewer`), a window
 read can also page oldest first with `direction: "newer"` and `after`/`after_id`
 from the previous page's cursor. Without it, read older pages only; the final
-rows are the same and the scan is slower.
+rows are the same and the scan is slower. The reader checks a thread window's
+bound (kind 39007) before `snapshotRead` returns it. A channel window's bound
+(kind 39006) is returned as the relay sent it: use it only when its author is
+`session.relayAuthor`.
 
 The scan pattern:
 
@@ -1816,13 +1819,14 @@ The scan pattern:
 Known limits. A live, exact "Top" needs every reply's events held, which fits a
 few thousand replies in memory; a 50,000-reply thread is about 250 pages and 65 MB
 per viewer. Past the 8 MiB hold bound, a plugin can still rank exactly at scan time
-(`foldRows` is stateless), but live changes then reach only the rows it holds. The
+(`foldRows` is stateless): it can keep a small summary of every row and hold only
+its top candidates, but live changes then reach only the rows it holds. The
 reference plugin below holds everything it reads, so past that bound it stops with
 an error instead. A true live "Top" at that size needs a
 relay-ranked query, which is a separate relay capability. A scan through
-`readPage` is trimmed: a thread view admits only rows inside its own verified
-window, so the view stays ready, but the rows past it are dropped, and unread
-keeps its own session-wide bound. The test plugin
+`readPage` feeds the host's open views: past about 2,400 rows it trims or empties
+a channel window, and past 2,000 events it ends a thread view with its limit
+error. The test plugin
 `tests/fixtures/conversation-arranger/plugin.ts` (not shipped) is a reference: a
 Top and Oldest arranger with a text filter and Next and Previous paging, tested
 over a 2,000-reply thread and a 5,000-row channel.
