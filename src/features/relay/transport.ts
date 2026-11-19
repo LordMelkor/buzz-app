@@ -146,7 +146,10 @@ export interface ReadTransport {
   readonly channelLifecycle?: RelayWriter;
   /** Name/about/private-only metadata writer, separate from lifecycle and outbox. */
   readonly channelDetails?: RelayWriter;
-  readonly memberAdministration?: RelayWriter;
+  readonly memberAdministration?: RelayWriter & {
+    /** NIP-11 advertises `buzz-solo-member-role` for kind:9050 updates. */
+    readonly soloMemberRoleUpdates?: true;
+  };
   /** NIP-AR kind-45010 config artifacts only; never supplied to the outbox. */
   readonly configArtifacts?: RelayWriter;
   /** Narrow NIP-IA 9035/9036 signer/publisher; never supplied to the message outbox. */
@@ -561,6 +564,7 @@ export async function connectBrokerTransport(
     sidebarMuteWrites?: boolean;
     channelKit?: boolean;
     channelIdentity?: boolean;
+    soloMemberRoleUpdates?: boolean;
     searchSort?: boolean;
     artifactSync?: boolean;
     sidebarPreferenceWrites?: boolean;
@@ -1204,7 +1208,14 @@ export async function connectBrokerTransport(
       ? { channelDetails: routeWriter("channel-details") }
       : {}),
     ...(session.memberAdministration === true
-      ? { memberAdministration: routeWriter("member-administration") }
+      ? {
+          memberAdministration: {
+            ...routeWriter("member-administration"),
+            ...(session.soloMemberRoleUpdates === true
+              ? { soloMemberRoleUpdates: true as const }
+              : {}),
+          },
+        }
       : {}),
     ...(session.channelLifecycle === true
       ? { channelLifecycle: routeWriter("channel-lifecycle") }

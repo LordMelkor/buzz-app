@@ -197,6 +197,84 @@ channel. Without plugin-managed actions, the channel/chat link remains the defau
 Other omitted overrides preserve chat/channel behavior. Hosts predating this extension lack the two UI entries; check their
 presence before offering sharing when supporting those hosts.
 
+## Controlled document editing
+
+`ctx.conversation.ui.DocumentEditor` reuses Buzz's editor, persistent formatting
+toolbar, link dialog and Markdown conversion. Inject `react` and `conversation`;
+no editor or React runtime imports are needed. The type-only author package
+exports `DocumentEditorProps`, `DocumentEditorHandle` and
+`DocumentEditorSelection`. Older hosts lack this entry; check its presence before
+offering editing when supporting those hosts.
+
+The plugin controls `value`/`onChange` (Markdown), `editing`, `source`/
+`onSourceChange`, and `linkOpen`/`onLinkOpenChange`. Supply `maxLength` as the
+serialized editing budget and `onSave` for Cmd/Ctrl+Enter. `disabled` locks editor
+and formatting actions while the plugin's save or access policy requires it.
+Rich editing also observes the host's 100,000-character Markdown limit; source
+mode uses the supplied `maxLength`.
+Adopt accepted changes in local state synchronously and persist them separately.
+Keeping `value` unchanged declines a change; both modes restore that accepted
+value, including when returning from source to rich text.
+The component performs no relay writes and stores no drafts; saving, byte limits,
+conflicts, permissions and pending navigation remain the plugin's responsibility.
+Rich mode uses CommonMark paragraph and hard-break semantics like the document
+reader: Enter starts a paragraph and Shift+Enter inserts a hard break (lists and
+code retain their existing structural editing). The serialized length budget uses
+the same document format as `onChange`. Copy/paste retains that structure in both
+plain Markdown and the app's rich HTML payload, including hard breaks and loose
+lists. Normal plain-text paste reads Markdown; paste-as-plain-text keeps the
+existing literal-text behavior.
+Type one to six hashes followed by a space at the start of a paragraph to
+create a heading. Loaded and pasted Markdown headings retain their level.
+Shift+Enter in H3–H6 behaves like Enter, since those headings are single-line in Markdown.
+In H1 and H2, a hard break appears in saved Markdown once more heading content follows it.
+Supported top-level GFM tables appear as grids in rich mode and retain their
+Markdown through surrounding edits. Edit their cells in source mode. Copy and
+Cut on selected grid text both copy the selection. Tables pasted or wrapped
+into a list or quote keep their enclosing Markdown as source. Tables also stay
+visible as source when their combined cell count exceeds the reader's display limit.
+
+```js
+const [value, onChange] = ctx.react.useState("A **document**.");
+const [source, onSourceChange] = ctx.react.useState(false);
+const [linkOpen, onLinkOpenChange] = ctx.react.useState(false);
+const editor = ctx.react.useRef(null);
+return ctx.react.createElement(ctx.conversation.ui.DocumentEditor, {
+  ref: editor,
+  value, onChange, source, onSourceChange, linkOpen, onLinkOpenChange,
+  editing: true,
+  disabled: saving,
+  maxLength: 32768,
+  onSave: saveDocument,
+  label: "Record body",
+  placeholder: "Write your record…",
+  destinations: [{ label: "Reference", href: "buzz://plugin?id=example.records&record=reference" }],
+});
+```
+
+The formatting bar floats along the bottom of the editor. To position it in
+your own pane, pass a `toolbarTarget` at the bottom edge of the content. The
+bar opens above that slot over the content. Put the editor inside the pane's
+scroll container. During formatted editing, the editor reserves scroll padding
+on the nearest ancestor that can scroll vertically so the caret and keyboard
+selection can stay above the bar.
+Use the host's controls and link dialog directly. Optional `destinations`
+are loaded choices for the existing link dialog; their URLs still pass the host
+link validator. Typing `[[` opens that dialog only when `destinations` is nonempty;
+without choices, brackets are ordinary text. Read-mode `children` can render `conversation.ui.Markdown` with `scale: "document"`
+for the shared document heading hierarchy.
+Supported formatting loads into the editor; unsupported syntax remains editable
+literal source, including verbatim line breaks through both clipboard flavors.
+Switching to `source: true` exposes the controlled Markdown value.
+
+The optional ref has `focusEnd()`, `selection()` and `focusSelection(selection)`.
+`selection()` returns `{start, end, source}` only while the field has focus.
+Offsets refer to the current field's text: rich-mode offsets are projected text,
+and source-mode offsets are Markdown. They are not byte offsets. The plugin owns
+restoring the corresponding mode before restoring a selection. Key the editor
+by document identity when switching documents so internal selection, undo history
+and link-dialog intent belong to that document.
+
 ## Host access (`manifest.host`)
 
 Everything beyond the services above must be declared in `manifest.json`; the owner reviews it at install. Undeclared commands, origins, processes and file access are refused by the host. Limits: at most 16 each of `commands`, `processes`, `networkOrigins`, `agentHooks`. Program names are bare names (`[A-Za-z0-9._-]`, at most 80 bytes, no paths), at most 16 args of 1024 bytes each.

@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi } from "@buzz/author";
+import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -64,6 +64,14 @@ export function apply(ctx: Context) {
   void pickerHasNoHostProps;
   // @ts-expect-error Host navigation visits are not plugin props.
   createElement(ctx.conversation.ui.MembersDialog, { ...picker, visit: true });
+  const editorRef: { current: DocumentEditorHandle | null } = { current: null };
+  const selection: DocumentEditorSelection = { start: 0, end: 1, source: false };
+  const editor: DocumentEditorProps = { ref: editorRef, value: "**Hello**", onChange(value) { void value.length; }, editing: true, source: false, onSourceChange() {}, linkOpen: false, onLinkOpenChange() {}, onSave() {}, maxLength: 32768, destinations: [{label: "Reference", href: "buzz://plugin?id=example.plugin"}] };
+  createElement(ctx.conversation.ui.DocumentEditor, editor);
+  editorRef.current?.focusSelection(selection);
+  // @ts-expect-error Source mode must be controlled with a boolean.
+  const invalidEditor: DocumentEditorProps = { ...editor, source: "Markdown" };
+  void invalidEditor;
   const ui: PluginUi | undefined = ctx.reflect.get("ui");
   if (ui) {
     void createElement(ui.Dialog, { open: true, onOpenChange: (open: boolean) => void open, title: "Edit",

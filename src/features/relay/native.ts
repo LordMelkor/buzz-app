@@ -459,6 +459,9 @@ export async function connectNativeTransport(
   const channelIdentity =
     Array.isArray(info.supported_extensions) &&
     info.supported_extensions.includes("nip-cl");
+  const soloMemberRoleUpdates =
+    Array.isArray(info.supported_extensions) &&
+    info.supported_extensions.includes("buzz-solo-member-role");
   const artifactSupport =
     Array.isArray(info.supported_extensions) &&
     info.supported_extensions.includes("nip-ar");
@@ -603,9 +606,14 @@ export async function connectNativeTransport(
       validateLifecycleTemplate,
     ),
     channelDetails: commandWriter("channel-details", validateDetailsTemplate),
-    memberAdministration: commandWriter("member-administration", (event) =>
-      validateMemberAdministrationTemplate(event, transport.viewer ?? ""),
-    ),
+    memberAdministration: {
+      ...commandWriter("member-administration", (event) =>
+        validateMemberAdministrationTemplate(event, transport.viewer ?? ""),
+      ),
+      ...(soloMemberRoleUpdates
+        ? { soloMemberRoleUpdates: true as const }
+        : {}),
+    },
     identityArchive: commandWriter(
       "identity-archive",
       validateArchiveRequestTemplate,

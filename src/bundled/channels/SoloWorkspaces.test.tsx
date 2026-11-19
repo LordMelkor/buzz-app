@@ -515,8 +515,10 @@ it("shares a workspace frame while keeping selection, disclosure and chat creati
     await user.click(screen.getByRole("button", { name: "New task in Work" }));
     expect(onTask).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Actions for Work" }));
-    expect(screen.queryByRole("menuitem", { name: "New task" })).toBeNull();
-    await user.keyboard("{Escape}");
+    await user.click(
+      await screen.findByRole("menuitem", { name: /^New task$/ }),
+    );
+    expect(onTask).toHaveBeenCalledTimes(2);
     expect(onSelect).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "New chat in Work" }),

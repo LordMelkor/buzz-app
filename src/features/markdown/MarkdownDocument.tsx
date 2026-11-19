@@ -1,5 +1,14 @@
-import { createContext, useContext, type ReactElement } from "react";
-import Markdown, { type Components, type UrlTransform } from "react-markdown";
+import {
+  createContext,
+  useContext,
+  type ComponentPropsWithoutRef,
+  type ReactElement,
+} from "react";
+import Markdown, {
+  type Components,
+  type ExtraProps,
+  type UrlTransform,
+} from "react-markdown";
 import type {
   CodeBlockRenderer,
   ContributionReader,
@@ -34,6 +43,13 @@ const SCALES: Record<HeadingScale, string | undefined> = {
   inherit: undefined,
 };
 
+export function MarkdownTable({
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<"table"> & ExtraProps) {
+  return <table ref={observeTableOverflow} {...props} />;
+}
+
 /** Component types stay module-stable, so a re-render never remounts a
  * focused link or a plugin block; what changes per render is read here. */
 export const sharedComponents: Components = {
@@ -67,9 +83,7 @@ export const sharedComponents: Components = {
     const { codeBlocks, copy } = useContext(CapabilitiesContext);
     return <CodeFence {...props} copy={copy} registry={codeBlocks} />;
   },
-  table: ({ node: _node, ...props }) => (
-    <table ref={observeTableOverflow} {...props} />
-  ),
+  table: MarkdownTable,
 };
 
 /** A Markdown document with the shared element styles and components. The

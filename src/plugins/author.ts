@@ -81,6 +81,11 @@ export type {
 } from "../bundled/channels/ChannelGeneralAccess";
 export type { MemberChange } from "../features/channel-members/administration-protocol";
 export type {
+  DocumentEditorProps,
+  DocumentEditorHandle,
+  DocumentEditorSelection,
+} from "../features/messages/DocumentEditor";
+export type {
   ConversationWorkspaceProps,
   PageTabTarget,
   PageTabOptions,
