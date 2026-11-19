@@ -34,6 +34,7 @@ import { normalizeName } from "../features/search/person-match";
 import {
   VERIFIED_PROFILE_BATCH,
   type VerifiedProfile,
+  type VerifiedProfileAuthority,
   verifiedProfile,
   verifiedProfileFilter,
   verifiedProfileSubject,
@@ -2353,8 +2354,9 @@ class Tools {
    * matches verified names too and returns a person with no profile as their
    * verified head alone. NIP-50 search, the fallback, matches profiles only.
    * Without the connection's relay key no verified names are read;
-   * `unverified` says a read of them failed. */
+   * `unverified` says the key or a read of the names failed. */
   async searchPeople(q: string) {
+    let unknownKey = false;
     const [named, relay] = await Promise.all([
       // Name search refuses a query longer than its limit, so a longer name
       // uses NIP-50 search.
@@ -2362,16 +2364,17 @@ class Tools {
         ? this.client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
         : undefined,
       // One key for the whole search, so its heads and names agree.
-      this.client.relayAuthor ?? this.client.relayAuthority?.(),
+      this.client.relayAuthor ??
+        this.client.relayAuthorLookup?.().catch(() => {
+          unknownKey = true;
+          return undefined;
+        }),
     ]);
     const profiles = newest(
       named?.filter((event) => event.kind === 0) ??
         (await this.client.query([{ kinds: [0], search: q, limit: 100 }])),
     );
-    const authority =
-      relay && HEX_KEY.test(relay)
-        ? { pubkey: relay, multipleIssuers: false }
-        : undefined;
+    const authority = relayAuthorityOf(relay);
     // The community's order; a person it found by a head alone has no profile.
     const order = [
       ...new Set(
@@ -2390,11 +2393,17 @@ class Tools {
     // The search's own heads count too, so a failed read keeps who it found.
     const heads = named?.filter((event) => event.kind !== 0) ?? [];
     const { names: verified, failed } = await this.verifiedNamesBy(
-      relay,
+      authority,
       order,
       heads,
     );
-    return { searched: !!named, profiles, verified, order, unverified: failed };
+    return {
+      searched: !!named,
+      profiles,
+      verified,
+      order,
+      unverified: unknownKey || failed,
+    };
   }
 
   /** The author `value` names: me, a pubkey or npub, or one name, a profile
@@ -2485,20 +2494,24 @@ class Tools {
    * reads them, so `send` and the app agree on who is verified. None without
    * the connection's relay key. */
   async verifiedNames(pubkeys: readonly string[]) {
-    return (await this.verifiedNamesBy(this.client.relayAuthor, pubkeys)).names;
+    return (
+      await this.verifiedNamesBy(
+        relayAuthorityOf(this.client.relayAuthor),
+        pubkeys,
+      )
+    ).names;
   }
 
-  /** {@link verifiedNames} checked against `relay`, also taking `known`
+  /** {@link verifiedNames} checked against `authority`, also taking `known`
    * heads a name search returned; `failed` when a read of them failed. */
   private async verifiedNamesBy(
-    relay: string | undefined,
+    authority: VerifiedProfileAuthority | undefined,
     pubkeys: readonly string[],
     known: readonly unknown[] = [],
   ) {
     const names = new Map<string, VerifiedProfile>();
     let failed = false;
-    if (!relay || !HEX_KEY.test(relay)) return { names, failed };
-    const authority = { pubkey: relay, multipleIssuers: false };
+    if (!authority) return { names, failed };
     const subjects = [...new Set(pubkeys)].filter((key) => HEX_KEY.test(key));
     const batches: string[][] = [];
     for (let at = 0; at < subjects.length; at += VERIFIED_PROFILE_BATCH)
@@ -2509,7 +2522,7 @@ class Tools {
         await Promise.all(
           batches.map((batch) =>
             this.client
-              .query([verifiedProfileFilter(relay, batch)])
+              .query([verifiedProfileFilter(authority.pubkey, batch)])
               .catch(() => {
                 failed = true;
                 return [];
@@ -2886,6 +2899,11 @@ const NAME_WEIGHT = {
 } as const;
 
 const HEX_KEY = /^[0-9a-f]{64}$/;
+
+const relayAuthorityOf = (relay: string | undefined) =>
+  relay && HEX_KEY.test(relay)
+    ? { pubkey: relay, multipleIssuers: false }
+    : undefined;
 
 /** Every name a verified person goes by: what a search for them may type. */
 const verifiedAliases = (verified: VerifiedProfile | undefined) =>

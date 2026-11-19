@@ -271,6 +271,12 @@ describe("relayAuthority", () => {
     ],
     ["a malformed key", async () => Response.json({ self: "A".repeat(64) })],
     ["a non-object", async () => Response.json(null)],
+  ])("learns there is no key from %s", async (_, answer) => {
+    relay(answer);
+    expect(await relayAuthority("wss://relay.test")).toBeUndefined();
+  });
+
+  it.each([
     ["a failed answer", async () => new Response("no", { status: 503 })],
     ["unreadable JSON", async () => new Response("<html>")],
     [
@@ -279,15 +285,15 @@ describe("relayAuthority", () => {
         throw new TypeError("fetch failed: redirect mode is set to error");
       },
     ],
-  ])("learns nothing from %s", async (_, answer) => {
+  ])("fails, rather than finding no key, on %s", async (_, answer) => {
     relay(answer);
-    expect(await relayAuthority("wss://relay.test")).toBeUndefined();
+    await expect(relayAuthority("wss://relay.test")).rejects.toThrow();
   });
 
   it("asks again after a failed lookup and keeps the key it learns", async () => {
     const fetch = relay(async () => new Response("no", { status: 503 }));
     const lookup = relayAuthorityLookup("wss://relay.test");
-    expect(await lookup()).toBeUndefined();
+    await expect(lookup()).rejects.toThrow("503");
     fetch.mockImplementation(async () => Response.json({ self: key }));
     expect(await lookup()).toBe(key);
     expect(await lookup()).toBe(key);

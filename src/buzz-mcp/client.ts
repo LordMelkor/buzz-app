@@ -141,8 +141,9 @@ export interface BuzzClient {
   /** Trusted connection authorities, never inferred from query results. */
   readonly relayAuthor?: string | undefined;
   /** Without `relayAuthor`: learns the relay's key when a people search first
-   * needs it for verified names, so no other tool waits for it. */
-  readonly relayAuthority?: () => Promise<string | undefined>;
+   * needs it for verified names, so no other tool waits for it. `undefined`
+   * when the relay has no key; rejects when the key cannot be learned. */
+  readonly relayAuthorLookup?: () => Promise<string | undefined>;
   readonly signingAuthority?: string | undefined;
   /** Reads the community as the agent. Every filter names its kinds. */
   query(filters: readonly Filter[]): Promise<readonly BuzzEvent[]>;

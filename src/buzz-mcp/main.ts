@@ -56,13 +56,16 @@ serveStdio(() => {
             content: content(
               await (isSoloWorkerTool(tool.name)
                 ? callSoloWorkerTool(
-                    { ...client, relayAuthor: await relayAuthor() },
+                    {
+                      ...client,
+                      relayAuthor: await relayAuthor().catch(() => undefined),
+                    },
                     tool.name,
                     args,
                   )
                 : callTool(
                     // Only people searches wait for the relay's key.
-                    { ...client, relayAuthority: relayAuthor },
+                    { ...client, relayAuthorLookup: relayAuthor },
                     context,
                     tool.name,
                     args,

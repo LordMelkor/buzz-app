@@ -3898,10 +3898,10 @@ it("learns the relay's key only when a people search needs it", async () => {
   const { client: known, carol } = verifiedPeople();
   // A standalone server learns the key from the relay, not from its host.
   const { relayAuthor, ...client } = known;
-  const relayAuthority = vi.fn(async () => relayAuthor);
-  const lazy = { ...client, relayAuthority };
+  const relayAuthorLookup = vi.fn(async () => relayAuthor);
+  const lazy = { ...client, relayAuthorLookup };
   await callTool(lazy, {}, "channel_list", {});
-  expect(relayAuthority).not.toHaveBeenCalled();
+  expect(relayAuthorLookup).not.toHaveBeenCalled();
   const found = await callTool(lazy, {}, "users", { q: "Jordan Rivera" });
   expect(found).toBe(
     [
@@ -3914,14 +3914,53 @@ it("learns the relay's key only when a people search needs it", async () => {
 it("asks for the relay's key once per people search", async () => {
   const { client: known } = verifiedPeople();
   const { relayAuthor: _, ...client } = known;
-  // Discovery fails for this search.
-  const relayAuthority = vi.fn(async () => undefined);
-  const found = await callTool({ ...client, relayAuthority }, {}, "users", {
+  const relayAuthorLookup = vi.fn(async () => {
+    throw new Error("offline");
+  });
+  const found = await callTool({ ...client, relayAuthorLookup }, {}, "users", {
     q: "Jordan Rivera",
   });
-  expect(relayAuthority).toHaveBeenCalledOnce();
-  // Without the key, the whole search keeps profile names.
+  expect(relayAuthorLookup).toHaveBeenCalledOnce();
   expect(found).toBe(`${alice} "Alice Smith"`);
+});
+
+it("names no author while the relay's key can't be learned, then asks which one is meant", async () => {
+  const { client: known } = verifiedPeople([note(alice, "recipe", 200)]);
+  const { relayAuthor, ...client } = known;
+  const search = client.searchProfiles;
+  client.searchProfiles = vi.fn(async () => [
+    profile("f".repeat(64), "Jordan Rivera"),
+    ...(await search()),
+  ]);
+  const relayAuthorLookup = vi.fn<() => Promise<string | undefined>>(
+    async () => {
+      throw new Error("offline");
+    },
+  );
+  const read = () =>
+    callTool({ ...client, relayAuthorLookup }, {}, "notes_get", {
+      name: "recipe",
+      author: "Jordan Rivera",
+    });
+  await expect(read()).rejects.toThrow(
+    "Couldn't check verified names; try again.",
+  );
+  relayAuthorLookup.mockImplementation(async () => relayAuthor);
+  await expect(read()).rejects.toThrow(
+    "2 people are named Jordan Rivera; give their npub.",
+  );
+});
+
+it("names an author by profile name where the relay has no key", async () => {
+  const { client: known } = verifiedPeople([note(alice, "recipe", 200)]);
+  const { relayAuthor: _, ...client } = known;
+  const relayAuthorLookup = vi.fn(async () => undefined);
+  await expect(
+    callTool({ ...client, relayAuthorLookup }, {}, "notes_get", {
+      name: "recipe",
+      author: "asmith",
+    }),
+  ).resolves.toMatch(/\nrecipe by a$/);
 });
 
 it("quotes a profile's own name, so it can't pass for a verified label", async () => {
