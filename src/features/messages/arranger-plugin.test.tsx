@@ -451,7 +451,10 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
       const target = event.tags.find(([name]) => name === "e")?.[1] as string;
       counts.set(target, (counts.get(target) ?? 0) + 1);
     }
-  const [most] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [];
+  const [most] =
+    [...counts]
+      .filter(([id]) => id !== best.id && id !== next.id)
+      .sort((a, b) => b[1] - a[1])[0] ?? [];
   const gone = await prove(
     page
       .filter(
