@@ -1,3 +1,4 @@
+import { useToastClearance } from "../../shared/design-system/ui/Toast";
 import { ActivityNavigationProvider } from "./ActivityNavigation";
 import { PageNavigation } from "./PageNavigation";
 import {
@@ -146,6 +147,7 @@ function AppShellContent({
   children: ReactNode;
 }) {
   const header = useRef<HTMLElement>(null);
+  useToastClearance(header);
   const historyRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -309,6 +311,9 @@ function AppShellContent({
       </a>
       <header
         ref={header}
+        data-integrated-window-controls={
+          hasIntegratedWindowControls() || undefined
+        }
         data-buzz-window-drag={
           macDesktop || hasIntegratedWindowControls() || undefined
         }

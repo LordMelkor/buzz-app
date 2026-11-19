@@ -1,4 +1,5 @@
 import { openChannelDetails } from "./channel-details.mjs";
+import { animationsSettled } from "./animations.mjs";
 import { openPage, settlePanelMotion } from "./navigation.mjs";
 import { frames } from "./timeline.mjs";
 import { test, expect } from "./fixture.mjs";
@@ -547,6 +548,7 @@ test("pending toast in narrow navigation preserves visible recovery after uncert
   await expect(
     failure.getByRole("button", { name: "Archive channel", exact: true }),
   ).toHaveCount(0);
+  await failure.hover();
   await failure.getByRole("button", { name: "Dismiss notification" }).click();
   await expect(failure).toHaveCount(0);
   // Recovery must leave the page usable, not silently inert under a hidden modal.
@@ -856,6 +858,12 @@ test.describe("remote archive focus", () => {
             exact: true,
           });
           await expect(success).toBeVisible();
+          const successToast = page
+            .locator("[data-sonner-toast]")
+            .filter({ has: success });
+          await expect(successToast).toHaveAttribute("data-mounted", "true");
+          await animationsSettled(successToast, { subtree: true });
+          await success.hover();
           await success
             .getByRole("button", { name: "Dismiss notification", exact: true })
             .click();

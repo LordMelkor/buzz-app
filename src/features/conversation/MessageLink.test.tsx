@@ -341,7 +341,9 @@ it("reports a failed desktop browser open and clears the error on retry", async 
   ).toBeInTheDocument();
   fireEvent.click(anchor, { metaKey: true });
   expect(
-    screen.queryByText("Couldn’t open the link in your browser."),
+    screen.queryByRole("dialog", {
+      name: "Couldn’t open the link in your browser.",
+    }),
   ).not.toBeInTheDocument();
   expect(invoke).toHaveBeenCalledTimes(2);
   expect(onOpenLink).not.toHaveBeenCalled();

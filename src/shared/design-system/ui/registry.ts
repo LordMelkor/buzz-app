@@ -176,7 +176,7 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
     purpose:
       "Compact feedback without moving the page or hiding recovery actions.",
     behavior:
-      "Sonner owns bottom-right placement, announcements, expiry and swipe dismissal. Buzz supplies themed content and an expanded, scrollable recovery stack. F6 focuses notifications.",
+      "Sonner owns top-right stacking, hover expansion, announcements, expiry and swipe dismissal. Buzz supplies themed content with trailing actions and hover/focus dismissal. F6 focuses notifications.",
     variants: ["transient", "actionable", "dismissible", "navigable"],
     status: "core",
     collection: "components",

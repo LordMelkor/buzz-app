@@ -7,7 +7,7 @@ settings:
 patchedDependencies:
   '@base-ui/react@1.9.0': 958237d028ca73b236150c1367b09699dd0d42738be177382595af9b5fd91709
   '@dnd-kit/core@6.3.1': 5574bf49bcc2d7dedd0b2b177d78447eaefecccddd2097929a7a6ecb42450623
-  sonner@2.0.8: 5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28
+  sonner@2.0.8: 8681d29d772a4e0298fa11354cc8c373866fe16d16368011712e7fa448db973f
   virtua@0.53.5: 2ec4aead43edeae07a52fd481d2db8a46ac16e2a98f13d0c2f1a5e543e208ce8
 
 importers:
@@ -163,7 +163,7 @@ importers:
         version: 4.0.1
       sonner:
         specifier: 2.0.8
-        version: 2.0.8(patch_hash=5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 2.0.8(patch_hash=8681d29d772a4e0298fa11354cc8c373866fe16d16368011712e7fa448db973f)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       virtua:
         specifier: 0.53.5
         version: 0.53.5(patch_hash=2ec4aead43edeae07a52fd481d2db8a46ac16e2a98f13d0c2f1a5e543e208ce8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -4254,7 +4254,7 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  sonner@2.0.8(patch_hash=5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  sonner@2.0.8(patch_hash=8681d29d772a4e0298fa11354cc8c373866fe16d16368011712e7fa448db973f)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

@@ -652,3 +652,25 @@
     display: none;
   }
 }
+
+body:has(.shell-header-mac) .buzz-toast-viewport {
+  --buzz-toast-top-offset: calc(var(--space-3) - var(--space-2));
+}
+
+/* Keep window controls and the workspace header usable during recovery. */
+body:has(.shell-header:not(.shell-header-mac)) .buzz-toast-viewport {
+  --buzz-toast-top-offset: calc(
+    var(--buzz-toast-top-clearance, 0px) +
+    var(--size-panel-header) +
+    var(--space-2)
+  );
+}
+
+/* Integrated window chrome: align the card with the content divider. */
+body:has(.shell-header[data-integrated-window-controls]) .buzz-toast-viewport {
+  --buzz-toast-top-offset: calc(
+    var(--buzz-toast-top-clearance, 0px) +
+    var(--size-panel-header) -
+    var(--space-2)
+  );
+}

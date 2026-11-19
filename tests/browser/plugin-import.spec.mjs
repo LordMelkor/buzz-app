@@ -2413,6 +2413,10 @@ test("a policy's automatic install is noted once and labelled in Settings", asyn
     await page.screenshot({
       path: info.outputPath(`automatic-notice-${mode}.png`),
     });
+    const toast = page.locator("[data-sonner-toast]").filter({ has: notice });
+    await expect(toast).toHaveAttribute("data-mounted", "true");
+    await animationsSettled(toast, { subtree: true });
+    await toast.hover();
     await button(page, "Dismiss automatic plugin changes").click();
     await expect(notice).toBeHidden();
     await openSettings(page);

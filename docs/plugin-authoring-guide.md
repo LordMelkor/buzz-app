@@ -228,9 +228,13 @@ Add `"host"` to `inject`, then:
   Check that it exists before use. Channels supplies it through
   `registerWorkspace`, with the same provider lifetime as `ui.Tabs`.
   Set the page's `layout` to `"workspace"`. Pass
-  `{ id, session, scope, target, label, intro?, actions?, detail? }`.
+  `{ id, session, scope, target, label, intro?, actions?, detail?, latestRequest? }`.
   `target` is `{ channelId, threadId?, messageId? }`: omit `threadId` for the
   channel timeline, or supply it for a thread. `messageId` selects a message.
+  Pass a fresh `AbortSignal` as `latestRequest` to open the transcript at the
+  latest message, including when selecting the same conversation again. Scope
+  the signal to that opening. Omit it on Back or Forward. An aborted signal is
+  ignored, and an explicit `target.messageId` takes precedence.
   `intro` supplies content at the start of history. It scrolls with the messages.
   `actions` supplies
   entries in the header's three-dot menu and the tab's context menu, with
