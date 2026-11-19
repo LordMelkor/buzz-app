@@ -800,6 +800,24 @@ it("says what it could not count instead of counting it as zero", async () => {
   expect(table.className).not.toBe("sr-only");
 });
 
+it("says a session was partly read, to screen readers too", async () => {
+  render(
+    <UsagePage
+      agents={host([agent("Sol")], async () => [
+        {
+          ...session("a", 1000, "Fix the build", "acme-1"),
+          limits: ["No per-model split"],
+        },
+      ])}
+      open={vi.fn()}
+    />,
+  );
+  const row = await screen.findByRole("button", {
+    name: "Fix the build, Sol, cost unavailable, partly read. Open conversation",
+  });
+  expect(row.textContent).toContain("partly read");
+});
+
 it("keeps a day unknown when the only harness active then is unpriced", async () => {
   render(
     <UsagePage

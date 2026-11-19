@@ -836,7 +836,7 @@ function Dashboard({
                           <NavigationItem
                             label={label}
                             trailing={<Amount total={total} />}
-                            aria-label={`${name}, ${agent.name}, ${costLabel(total)}. Open conversation`}
+                            aria-label={`${name}, ${agent.name}, ${costLabel(total)}${incomplete(session) ? ", partly read" : ""}. Open conversation`}
                             onClick={() =>
                               void open({
                                 version: 1,

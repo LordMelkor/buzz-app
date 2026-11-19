@@ -456,7 +456,9 @@ export type TokenCounts = Readonly<{
   /** Of `cacheWrite`, those cached for an hour rather than five minutes. */
   cacheWrite1h?: number;
 }>;
-/** One model request of a session, as the harness recorded it. */
+/** One model request of a session, as the harness recorded it. A harness
+ * that reports only running totals sends what they grew by instead, with a
+ * `model` that names no model (see `SessionUsage.limits`). */
 export type UsageObservation = Readonly<{
   /** The harness's id for the request, when it records one; unique within
    * the session. */

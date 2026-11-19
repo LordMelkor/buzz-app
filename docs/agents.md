@@ -1896,6 +1896,13 @@ is unknown, not zero; `input` excludes cache counts, and `cacheWrite1h` is the
 subset of `cacheWrite` cached for an hour. Usage groups the observations into
 days itself. Reading never starts, stops or changes a session.
 
+A harness that reports only running totals sends what they grew by since the
+previous observation, with no request id, and a `model` that names no model,
+such as "Session totals (model unknown)". Usage adds up a session's
+observations, so a running total sent as is would count earlier usage again. A
+`model` with no published prices leaves the cost unavailable, unless the
+harness recorded one. The harness names the split it lacks in `limits`.
+
 A snapshot covers the session's descendants too, such as Claude Code and Codex
 subagents, so a consumer never adds a child session again. It also carries:
 
