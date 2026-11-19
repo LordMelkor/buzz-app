@@ -404,15 +404,20 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
       }),
     ),
   );
-  const best = oracle(thread.events, root.id).top[0] as RelayEvent;
-  const unscoped = await prove([
-    mint(authors.find((key) => key.pubkey === best.pubkey) as never, {
-      kind: DELETION,
-      content: "",
-      created_at: T + 20_000,
-      tags: [["e", best.id]],
-    }),
-  ]);
+  const [best, next] = oracle(thread.events, root.id).top.slice(0, 2) as [
+    RelayEvent,
+    RelayEvent,
+  ];
+  const unscoped = await prove(
+    [best, next].map((row, i) =>
+      mint(authors.find((key) => key.pubkey === row.pubkey) as never, {
+        kind: i ? 9005 : DELETION,
+        content: "",
+        created_at: T + 20_000,
+        tags: [["e", row.id]],
+      }),
+    ),
+  );
   const heavy = {
     ...thread,
     events: [...thread.events, ...onRoot, ...unscoped],
@@ -500,6 +505,7 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
     oracle(heavy.events, root.id).top.slice(0, 200),
   );
   expect(h.shown()).not.toContain(best.id);
+  expect(h.shown()).not.toContain(next.id);
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
   expect(want.score(h.shown()[0] as string)).toBe(20);
 });

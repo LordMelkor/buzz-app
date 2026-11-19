@@ -91,7 +91,7 @@ export type ReadRecord = {
   priority: string | undefined;
 };
 
-const auxKinds = new Set([REACTION, EDIT, DELETION]);
+const auxKinds = new Set([REACTION, EDIT, DELETION, 9005]);
 const WINDOW_ROWS = 8192;
 const targetsOf = (event: EventData) =>
   event.tags.flatMap(([name, id]) => (name === "e" && id ? [id] : []));
