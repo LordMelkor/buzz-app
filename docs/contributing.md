@@ -804,8 +804,8 @@ across cached, parallel jobs rather than running the entire recipe several times
 [Three documented WebKit cases remain local-only](browser-testing.md#ci-coverage-and-local-only-webkit-checks);
 the complete correctness suite still runs with `pnpm test` / `just scan`:
 
-- **JavaScript:** eight runners, each with Biome, one TypeScript check and a frontend
-  build. Vitest splits all test files across the runners, with two workers each;
+- **JavaScript:** one runner runs Biome, one TypeScript check and a frontend build.
+  Vitest splits all test files across eight runners, with two workers each;
   every shard must succeed. Timing artifacts include the shard number.
 - **Rust and tool integration:** workspace formatting, Clippy, all Rust tests and
   doctests (including Tauri), and every Node integration test. The CLI integration

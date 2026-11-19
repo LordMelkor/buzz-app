@@ -64,7 +64,7 @@ import {
   UrlPluginInstallReview,
   UrlPluginDetails,
 } from "./ManagedPlugins";
-import { managedBy, pendingManaged } from "../plugins/managed";
+import { managedBy, managedLabel, pendingManaged } from "../plugins/managed";
 import { RecommendationCount } from "./RecommendationCount";
 import {
   isUrlInstallSource,
@@ -430,7 +430,7 @@ function PluginDetails({
           </span>
           {managed && (
             <span className={styles.pluginInstallBadge}>
-              Managed by {managed.source}
+              Managed by {managedLabel(managed)}
             </span>
           )}
           <span
@@ -1315,7 +1315,7 @@ export function Settings({
                           <PluginProvenance
                             source={plugin.source}
                             publisher={plugin.publisher}
-                            managedBy={managedBy(managed, id)?.source}
+                            managedBy={managedLabel(managedBy(managed, id))}
                             className={styles.pluginRowAuthor}
                           />
                         </span>

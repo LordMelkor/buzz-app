@@ -26,7 +26,9 @@ const nonIconDependencies = new Set([
   "@modelcontextprotocol/server", // The standalone Buzz MCP server.
   "@noble/curves",
   "@playwright/test",
+  "@pierre/diffs", // Diff renderer and syntax highlighting, not an icon catalog.
   "@pydantic/genai-prices", // LLM price data for Usage estimates.
+  "@shikijs/langs", // Syntax grammars for diff highlighting, not an icon catalog.
   "@tailwindcss/postcss",
   "@tanstack/react-router",
   "@tauri-apps/api",
@@ -54,6 +56,7 @@ const nonIconDependencies = new Set([
   "emoji-mart",
   "flexlayout-react",
   "github-slugger", // Heading IDs; not an icon library.
+  "gitdiff-parser", // Validates patch structure before rendering, not an icon library.
   "hast", // Type-only module supplied by @types/hast.
   "highlight.js", // Code highlighting grammars; not an icon library.
   "jsdom",
@@ -80,7 +83,6 @@ const nonIconDependencies = new Set([
   "prosemirror-view",
   "react",
   "react-day-picker", // Calendar behavior; navigation icons use our Tabler gateway.
-  "react-diff-view", // Patch tables/parser, not an icon library.
   "react-dom",
   "react-markdown",
   "remark-breaks",

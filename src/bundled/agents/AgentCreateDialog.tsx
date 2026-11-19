@@ -19,6 +19,7 @@ import {
   UsesLine,
 } from "../../features/agents/AISettings";
 import {
+  bounded,
   followRecommended,
   recommendedCandidates,
   withRecommended,
@@ -188,7 +189,10 @@ export function AgentCreateDialog({
   };
   const [config, setConfig] = useState(() => seed(type));
   const [automatic, setAutomatic] = useState(recommendable);
-  const recommendation = useRecommendedPick(types, recommendable);
+  // Asked again when Automatic is chosen again, or its pick stopped being
+  // ready: a harness may have been signed in or out since the dialog opened.
+  const [asked, setAsked] = useState(0);
+  const recommendation = useRecommendedPick(types, recommendable, asked);
   const { pick } = recommendation.status === "found" ? recommendation : {};
   // No local harness can run an Automatic agent here: one thing to set up.
   const nothingSetUp =
@@ -234,7 +238,10 @@ export function AgentCreateDialog({
       ?.focus();
   }, [harnessId, type?.key]);
   const CreateAction = type?.CreateAction;
-  const canCreate = !Configuration || configurationReady;
+  // The harness's own setup rows say when it is ready. Automatic shows none:
+  // its pick already found the harness ready, and `waiting` covers no pick.
+  const picked = automatic && !!pick && pick.type.key === type?.key;
+  const canCreate = !Configuration || configurationReady || picked;
   const close = () => setOpen(false);
   const chooseModel = (
     item: RegisteredAgentType,
@@ -280,6 +287,7 @@ export function AgentCreateDialog({
   const chooseAutomatic = (on: boolean) => {
     if (on === automatic) return;
     setAutomatic(on);
+    if (on) setAsked((count) => count + 1);
     setDirty(true);
     setError("");
     // While the pick runs, its effect takes the harness once known.
@@ -310,6 +318,14 @@ export function AgentCreateDialog({
     setPending(true);
     setError("");
     try {
+      // The pick was ready when found; it may have been signed out since.
+      // A check that fails or takes too long counts as not ready.
+      if (picked && !(await bounded(pick.type.recommends?.(pick.candidate)))) {
+        setAsked((count) => count + 1);
+        setError(`${pick.type.title} isn’t ready on this computer.`);
+        setPending(false);
+        return;
+      }
       const picture =
         (await avatarRef.current?.prepare()) ??
         (avatar.kind === "emoji" ? "" : avatar.picture);
@@ -590,7 +606,23 @@ export function AgentCreateDialog({
                     )
                   }
                 >
-                  {localRows}
+                  {Configuration ? (
+                    // Its own Model and Thinking rows, which wait on its
+                    // setup, such as a sign-in, and report when it is ready.
+                    <Configuration
+                      key={type.key}
+                      rowsOnly
+                      config={config}
+                      disabled={pending}
+                      harnessControl={harnessControl}
+                      onReadyChange={setConfigurationReady}
+                      onChange={(next, options) =>
+                        chooseModel(type, next, options)
+                      }
+                    />
+                  ) : (
+                    localRows
+                  )}
                 </AISettings>
                 {nothingSetUp && (
                   <PreferenceRow

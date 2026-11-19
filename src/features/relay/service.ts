@@ -34,6 +34,10 @@ export type RelaySnapshot = Readonly<{
   origin?: string;
   session: RelaySession;
   viewer?: string;
+  /** The community UUID this session's transport read from the relay's NIP-11
+   * document when it was created, if it advertised one. A socket reconnect
+   * keeps it; a new session reads it again. */
+  communityId?: string;
   error?: string;
   /** A usable device snapshot while the real transport is connecting/unavailable. */
   cached?: true;
@@ -398,6 +402,9 @@ export function provideRelay(
             origin: transportOrigin(transport),
             scope: transportPartition(transport),
             session: store.session,
+            ...(transport.readState?.communityId
+              ? { communityId: transport.readState.communityId }
+              : {}),
           });
           ready = true;
           store.session.channels.ensureList();

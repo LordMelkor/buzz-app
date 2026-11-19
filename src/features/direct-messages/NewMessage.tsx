@@ -3,6 +3,7 @@ import { agentUnavailable, canMessageAgent } from "../agents/choices";
 import { avatarMedia } from "../../shared/avatar-source";
 import { useChannelWindow } from "../relay/react";
 import type { ChannelSummary } from "../relay/contracts";
+import { sameDirectMessage } from "../relay/direct-message-policy";
 import {
   ConversationChannel,
   ConversationTimeline,
@@ -30,11 +31,13 @@ import {
 import { MessageComposer } from "../messages/MessageComposer";
 import { mentionDraft, type MentionDraft } from "../messages/mention-draft";
 import { clearView, readView, writeView } from "../../shared/view-state";
+import type { MessageIntent } from "../channel-navigation/routes";
 import { Button } from "../../shared/design-system/ui/Button";
 import {
   useVerifiedNames,
   withVerifiedNames,
 } from "../profiles/useVerifiedNames";
+import { abbreviatedPublicKey } from "../../shared/identity/public-key";
 import { RecipientPicker } from "./RecipientPicker";
 import type { Recipient } from "./usePeople";
 import { usePassThroughUntilDrafted } from "../messages/draft-visit";
@@ -47,6 +50,7 @@ const recoveryKey = "direct-message:new";
 type Pending = {
   id: string;
   channelId: string;
+  workspace?: string;
   recipients: string;
   draft: MentionDraft;
   attachments: readonly (readonly string[])[];
@@ -124,6 +128,11 @@ function recovered(operations: readonly OutgoingEvent[], viewer?: string) {
   return {
     id: item.event.id,
     channelId,
+    ...(typeof value.workspace === "string" &&
+    value.workspace.trim() &&
+    value.workspace.length <= 256
+      ? { workspace: value.workspace }
+      : {}),
     recipients: keyFor(people),
     draft: mentionDraft(value.draft),
     attachments: item.event.tags.filter(([name]) => name === "imeta"),
@@ -142,9 +151,14 @@ export function NewMessage({
   onOpenThread,
   onStarted,
   visit,
+  intent,
+  workspace,
 }: {
   session: RelaySession;
   scope: string;
+  /** The person this visit was opened from, such as by their profile's Message. */
+  intent?: MessageIntent | undefined;
+  workspace?: string | undefined;
   /** The visit presenting this composer, a Back stop only once drafted. */
   visit?: PageNavigation | undefined;
   extensions?: ConversationExtensions | undefined;
@@ -217,7 +231,6 @@ export function NewMessage({
   const [uploadFailed, setUploadFailed] = useState(false);
   const [draftChannel] = useState(() => crypto.randomUUID());
   const attempt = useRef<AbortController | null>(null);
-  const prepared = useRef<{ key: string; id: string } | undefined>(undefined);
   const outbox = session.outbox;
   const operations = useSyncExternalStore(
     outbox?.subscribe ?? noSubscribe,
@@ -237,7 +250,6 @@ export function NewMessage({
   const retire = useCallback(() => {
     clearAttachmentDraft(session, `${scope}:${draftKey}`);
     retiring.current = undefined;
-    prepared.current = undefined;
     draftEdited(undefined);
     setRecipients([]);
     setRestoredDraft(mentionDraft(""));
@@ -322,12 +334,36 @@ export function NewMessage({
   }
   function change(people: Recipient[]) {
     if (locked || attempt.current) return;
-    prepared.current = undefined;
     setRecipients(people);
     writeView(scope, "direct-message:recipients", people.map(recipientView));
     setError("");
     setUploadFailed(false);
   }
+  // Opened from a person, the restored draft is addressed to them as if they
+  // were chosen in To. Only a choice newer than the last one taken addresses
+  // it, so returning to a visit (Back, reload, closing Settings) keeps the
+  // recipients chosen since, and choosing someone again addresses it anew. A
+  // message held for delivery, even a failed one, keeps its recipients, so a
+  // retry never reaches someone new. A choice made while a send is under way
+  // waits for it, so the send keeps its recipients and the choice is not lost.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Each choice addresses the draft once, after its restore and any send under way.
+  useEffect(() => {
+    if (!ready || !intent || busy) return;
+    const taken = readView<unknown>(scope, "direct-message:addressed-at", 0);
+    if (typeof taken === "number" && intent.at <= taken) return;
+    writeView(scope, "direct-message:addressed-at", intent.at);
+    const { to } = intent;
+    if (pending || to === session.viewer) return;
+    const profile = session.profiles.snapshot().get(to);
+    void session.profiles.ensure([to]).catch(() => {});
+    change([
+      {
+        pubkey: to,
+        name: profile?.name ?? abbreviatedPublicKey(to) ?? "",
+        ...(profile?.isAgent ? { isAgent: true } : {}),
+      },
+    ]);
+  }, [ready, busy, intent?.to, intent?.at]);
   async function send(draft: MentionDraft, files?: AttachmentDraft) {
     const content = composerMarkdown(draft);
     if (
@@ -390,15 +426,16 @@ export function NewMessage({
       if (!current) {
         validateAgents();
         onPreparing?.(recipients.map((person) => person.pubkey));
-        const id =
-          prepared.current?.key === key
-            ? prepared.current.id
-            : await session.directMessages.open(
-                recipients.map((person) => person.pubkey),
-                controller.signal,
-              );
+        // The relay picks the DM of these people, which can differ from the
+        // one shown, and named agents join it with its history. The message
+        // goes where the relay says now: someone may have joined the DM it
+        // gave an earlier attempt, so every new message asks again.
+        const id = await session.directMessages.open(
+          recipients.map((person) => person.pubkey),
+          controller.signal,
+          true,
+        );
         controller.signal.throwIfAborted();
-        prepared.current = { key, id };
         validateAgents();
         const messageId = session.messages.send(
           id,
@@ -410,12 +447,14 @@ export function NewMessage({
             value: JSON.stringify({
               people: recipients.map(recipientView),
               draft,
+              ...(workspace ? { workspace } : {}),
             }),
           },
         );
         current = {
           id: messageId,
           channelId: id,
+          ...(workspace ? { workspace } : {}),
           recipients: key,
           draft,
           attachments,
@@ -427,11 +466,18 @@ export function NewMessage({
         controller.signal,
       );
       controller.signal.throwIfAborted();
+      if (current.workspace) {
+        // Placement can recover through the sidebar without repeating delivery.
+        void session.sidebarPreferences
+          .assign(current.channelId, current.workspace)
+          .catch(() => {});
+      }
       // Clear disposable views before releasing durable recovery. A failed clear
       // retains the operation for confirmation-only retry, even across unmount.
       clearView(
         scope,
         draftKey,
+        `${draftKey}:files`,
         "direct-message:pending",
         "direct-message:recipients",
       );
@@ -456,7 +502,12 @@ export function NewMessage({
     }
   }
   const existing = useMemo(() => {
-    if (!recipients.length) return undefined;
+    if (!recipients.length || !session.viewer) return undefined;
+    const agents = new Set(
+      recipients
+        .filter((person) => person.isAgent)
+        .map((person) => person.pubkey),
+    );
     const members = new Set([
       session.viewer,
       ...recipients.map((person) => person.pubkey),
@@ -470,8 +521,12 @@ export function NewMessage({
         channel.readOnly ||
         channel.pending ||
         channel.huddle ||
-        channel.members?.length !== members.size ||
-        !channel.members.every((member) => members.has(member))
+        !channel.members ||
+        !sameDirectMessage(
+          channel.members,
+          members,
+          (key) => agents.has(key) || !!profiles.get(key)?.isAgent,
+        )
       )
         continue;
       const activity = channel.lastActivityAt ?? 0;
@@ -484,7 +539,11 @@ export function NewMessage({
         match = channel;
     }
     return match;
-  }, [channels, recipients, session.viewer]);
+  }, [channels, recipients, session.viewer, profiles]);
+  // Agents named for an existing DM of these people join it, with its history.
+  const joining = existing
+    ? named.filter((person) => !existing.members?.includes(person.pubkey))
+    : [];
   return (
     <section
       className={styles.page}
@@ -532,6 +591,16 @@ export function NewMessage({
         ) : null}
       </div>
       <div className={styles.feedback}>
+        {joining.length > 0 && (
+          <p role="status">
+            Sending adds{" "}
+            {new Intl.ListFormat(undefined, { type: "conjunction" }).format(
+              joining.map((person) => person.name),
+            )}{" "}
+            to this DM. {joining.length === 1 ? "It" : "They"} can read its
+            earlier messages.
+          </p>
+        )}
         {busy && (
           <p role="status">
             {busy === "uploading" ? "Uploading files…" : "Sending message…"}

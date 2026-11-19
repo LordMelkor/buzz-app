@@ -165,6 +165,27 @@ it("marks a withheld channel private and keeps an authored label beside the lock
   expect(authored?.getAttribute("title")).toContain("aren’t a member");
 });
 
+it("does not open a withheld channel link, and keeps its href for copying", () => {
+  const t = fixture();
+  const open = vi.fn(() => true);
+  render(
+    <MessageLink
+      url="buzz://channel/secret"
+      registry={undefined}
+      onOpenLink={open}
+      session={t.session}
+    />,
+  );
+  t.answer("secret", { state: "withheld" });
+  const raw = screen.getByRole("link", { name: "Private channel" });
+  expect(raw.getAttribute("aria-disabled")).toBe("true");
+  expect(raw.getAttribute("href")).toBe("buzz://channel/secret");
+  fireEvent.click(raw);
+  fireEvent(raw, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+  expect(open).not.toHaveBeenCalled();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
 it("keeps the authored label while the answer is unknown", async () => {
   const t = fixture();
   render(link(t.session, "flaky"));

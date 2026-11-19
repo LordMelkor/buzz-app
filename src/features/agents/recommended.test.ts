@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  awaitRecommendation,
   CHECK_MS,
   followRecommended,
   offRecommended,
@@ -13,6 +14,7 @@ import {
   recommendedRun,
   recommendedNote,
   setRuntimeRecommendation,
+  SOURCE_MS,
   withRecommended,
 } from "./recommended";
 
@@ -427,5 +429,85 @@ it("ignores an invalid list set at run time, keeping the last good one", () => {
   } finally {
     setRuntimeRecommendation(undefined);
     vi.unstubAllEnvs();
+  }
+});
+
+it("waits for a plugin's setup, then finds and picks with it", async () => {
+  recommend(CODEX);
+  try {
+    let give!: (setup: unknown) => void;
+    const ready = awaitRecommendation(
+      () =>
+        new Promise((resolve) => {
+          give = resolve;
+        }),
+    );
+    const goose = harness("goose", true);
+    const picking = pickRecommended([goose]);
+    const offered = vi.fn(async () => true);
+    const finding = recommendedRun("goose", offered).find();
+    await Promise.resolve();
+    expect(goose.recommends).not.toHaveBeenCalled();
+    expect(offered).not.toHaveBeenCalled();
+    give({
+      recommendedBy: "Example Org",
+      description: "Org pick.",
+      candidates: [GOOSE],
+    });
+    await ready;
+    expect(recommendedSetup()).toEqual({
+      recommendedBy: "Example Org",
+      description: "Org pick.",
+      candidates: [GOOSE],
+    });
+    expect((await picking)?.candidate).toEqual(GOOSE);
+    expect(await finding).toEqual(GOOSE);
+  } finally {
+    setRuntimeRecommendation(undefined);
+  }
+});
+
+it("keeps the build's setup when a plugin gives nothing, fails, gives an invalid setup or is late", async () => {
+  recommend(CODEX);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const answer of [
+      () => undefined,
+      () => null,
+      () => ({ candidates: [] }),
+      () => Promise.reject(new Error("offline")),
+      () => {
+        throw new Error("broken");
+      },
+      () => ({ candidates: [{ ...GOOSE, model: " secret-model " }] }),
+      () => ({ candidates: [GOOSE], secret: "field" }),
+      () => [GOOSE],
+      () => [],
+      () => "secret-text",
+    ]) {
+      await awaitRecommendation(answer);
+      expect(recommendedSetup()).toEqual({ candidates: [CODEX] });
+    }
+    expect(warn).toHaveBeenCalledTimes(7);
+    for (const [, message] of warn.mock.calls)
+      expect(String(message)).not.toMatch(/secret/);
+
+    vi.useFakeTimers();
+    let signal!: AbortSignal;
+    const late = awaitRecommendation((given) => {
+      signal = given;
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ candidates: [GOOSE] }), SOURCE_MS + 1),
+      );
+    });
+    await vi.advanceTimersByTimeAsync(SOURCE_MS);
+    await late;
+    expect(signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(recommendedCandidates()).toEqual([CODEX]);
+  } finally {
+    vi.useRealTimers();
+    warn.mockRestore();
+    setRuntimeRecommendation(undefined);
   }
 });

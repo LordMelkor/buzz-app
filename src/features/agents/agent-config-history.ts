@@ -1,6 +1,7 @@
 // NIP-AP config history (plan §7): offset pages of one artifact's revisions,
 // every chain segment they form, the cause of each gap, diffs and revert.
 // Display only: history never decides artifact state (§3.2).
+import { notesOf } from "./plugin-notes";
 import { retryRead } from "../relay/read-retry";
 import type { EventData, RelayEvent } from "../relay/events";
 import { type SettingsSchema, syncedSettings } from "./agent-config";
@@ -326,6 +327,16 @@ export function revertTemplate(
       ...parse(target.content),
       name: parse(base.content)?.name,
     });
+  // Going back keeps the head's plugin notes: a plugin's memory of the agent
+  // isn't a setting to undo.
+  const reverted = parse(content);
+  if (expected.type === "buzz.agent.settings" && reverted) {
+    const { pluginNotes: _, ...rest } = reverted;
+    // A deleted or unreadable head has none to keep: the target's stay.
+    const current = restore ? undefined : parse(head.content);
+    const notes = notesOf(current ?? reverted);
+    content = JSON.stringify(notes ? { ...rest, pluginNotes: notes } : rest);
+  }
   const template = artifactTemplate({
     ...expected,
     op: restore ? "restore" : "update",

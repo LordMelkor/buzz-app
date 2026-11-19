@@ -265,6 +265,16 @@ export function BestieConversation({
       }),
     );
   };
+  const openLink = (url: string) => {
+    if (!session.viewer) return false;
+    const target = buzzLinkTarget(url, {
+      viewer: session.viewer,
+      communityOrigin: scope.slice(0, -65),
+    });
+    if (!target || !ownsCurrentVisit()) return false;
+    void navigator.open(target);
+    return true;
+  };
   const secondary = useConversationTabs({
     state,
     relay: host.relay,
@@ -284,16 +294,7 @@ export function BestieConversation({
     isLive: ownsCurrentVisit,
     fallbackFocus: main,
     mainPane: true,
-    openLink: (url) => {
-      if (!session.viewer) return false;
-      const target = buzzLinkTarget(url, {
-        viewer: session.viewer,
-        communityOrigin: scope.slice(0, -65),
-      });
-      if (!target || !ownsCurrentVisit()) return false;
-      void navigator.open(target);
-      return true;
-    },
+    openLink,
     routed:
       routed?.channelId === channel.id && navigation && !preserveNavigation
         ? { channelId: channel.id, messageId: routed.messageId, navigation }
@@ -665,6 +666,8 @@ export function BestieConversation({
                 onOpenLink={(target) =>
                   secondary.openConversationLink(channel.id, target)
                 }
+                // Adding someone can start or open another DM: go there.
+                onOpenMessage={openLink}
               />
             )}
             {secondary.drag.feedback}

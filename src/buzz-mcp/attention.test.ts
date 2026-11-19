@@ -844,3 +844,22 @@ it.each(["event", "timer", "source"])(
     expect(saved.object).toMatchObject(storedFields);
   },
 );
+
+it("clears conversation policy when a shared session changes to an unconfigured source", () => {
+  const client = {
+    conversationInstructions: (channel: string) =>
+      channel === "configured"
+        ? { plugin: "acme.tasks", text: "SOURCE_ONLY" }
+        : undefined,
+  };
+  expect(turnNote(client, "configured", undefined, true)).toContain(
+    "SOURCE_ONLY",
+  );
+  expect(turnNote(client, "other", undefined, true)).toContain(
+    "Disregard any earlier <owner-instructions>",
+  );
+  expect(turnNote(client, undefined, undefined, true)).toContain(
+    "Disregard any earlier <owner-instructions>",
+  );
+  expect(turnNote(client, "other")).toBeUndefined();
+});

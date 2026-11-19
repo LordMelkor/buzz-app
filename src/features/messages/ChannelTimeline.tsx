@@ -5,7 +5,6 @@ import { ActivityGroupPreview } from "./ActivityGroupPreview";
 import { ActivityExpansion } from "./ActivityExpansion";
 import { useChannelIdentityNames } from "../identity-names/react";
 import { useMessageSelectionCopy } from "./selection-copy";
-import { SelectionQuote } from "./SelectionQuote";
 import { Button } from "../../shared/design-system/ui/Button";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { ChatCircleIcon } from "../../shared/design-system/icons";
@@ -55,6 +54,7 @@ import { geometryFor, geometrySignature } from "./geometry";
 import { readView, writeView } from "../../shared/view-state";
 import styles from "./Messages.module.css";
 import { correctScrollTop } from "./scroll-correction";
+import { contentSelector } from "./useFloatingActionBar";
 import {
   readingDocumentActive,
   readingPositioned,
@@ -155,6 +155,18 @@ function subscribeDocumentActive(listener: () => void) {
 const TIMELINE_PLACE = "timeline";
 // Older pages a visit reads unasked to fill a screen its head leaves empty.
 const FILL_PAGES = 5;
+// A row's content sits below its day divider and byline, and its virtual item
+// adds group spacing. All depend on the row before it, so older rows landing
+// above can remove them. Offsets of the content from the row and item tops.
+function contentInset(row: Element) {
+  const content = (
+    row.querySelector(contentSelector) ?? row
+  ).getBoundingClientRect().top;
+  return {
+    row: content - row.getBoundingClientRect().top,
+    item: content - (row.closest("li") ?? row).getBoundingClientRect().top,
+  };
+}
 function positionAt(
   element: HTMLElement,
   restoredAnchor?: string,
@@ -907,7 +919,7 @@ function Timeline({
     observer.observe(tail);
     return () => observer.disconnect();
   }, []);
-  useMessageSelection(scroller, rows, queries);
+  useMessageSelection(scroller, rows, queries, channelId);
   // While the connection recovers, its notice is the one report, so the
   // history edge does not repeat the reason. Recovery does not retry older
   // history, and paging stops on a failed read, so Retry stays either way.
@@ -946,11 +958,13 @@ function Timeline({
     paging: false,
   });
   // The reader's anchor row and its offset before this render's rows.
-  const reader = useRef<{ id: string | undefined; top: number; y: number }>({
-    id: undefined,
-    top: 0,
-    y: 0,
-  });
+  const reader = useRef<{
+    id: string | undefined;
+    top: number;
+    y: number;
+    /** Unmeasured while the row is not mounted. */
+    inset: ReturnType<typeof contentInset> | undefined;
+  }>({ id: undefined, top: 0, y: 0, inset: undefined });
   const heldReader = useRef<
     { id: string; y: number; intent: number; ended: boolean } | undefined
   >(undefined);
@@ -977,6 +991,9 @@ function Timeline({
   const layoutCorrection = useRef(false);
   // A held pointer can drag the scrollbar without directional input events.
   const pointerHeld = useRef(false);
+  // The intent under which reader input last ended: a press in history was
+  // released, or scrolling finished with no press held.
+  const inputEnded = useRef<number | undefined>(undefined);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const recordPosition = useCallback(
@@ -1320,10 +1337,20 @@ function Timeline({
   const held = previous.indexOf(
     edges.current.containedOwners.get(heldId ?? "") ?? heldId ?? "",
   );
+  // Measured before commit: this render's rows can change the row's top.
+  const readerRow =
+    held < 0
+      ? undefined
+      : Array.from(
+          scroller.current?.querySelectorAll<HTMLElement>(
+            "[data-message-id]",
+          ) ?? [],
+        ).find((row) => row.dataset.messageId === heldId);
   reader.current = {
     id: held < 0 ? undefined : heldId,
     top: held < 0 ? 0 : (handle.current?.getItemOffset(held) ?? 0),
     y: retained?.y ?? savedPosition.current?.anchor?.y ?? 0,
+    inset: readerRow && contentInset(readerRow),
   };
   const prepend =
     !!previous.length &&
@@ -1377,12 +1404,18 @@ function Timeline({
     );
     // A divider changes the anchor's inset inside its virtual item before
     // Virtua commits the new item height. Hold the same message through both.
+    // Rows landing above can also take the row's day divider, byline and
+    // group spacing. Keep its content in place, and hold the row there.
+    // Offsets unmeasured on one side are taken as unchanged.
+    const now = row ? contentInset(row) : reader.current.inset;
+    const was = reader.current.inset ?? now;
+    const y = reader.current.y + (was?.row ?? 0) - (now?.row ?? 0);
     const delta =
       boundaryChanged && row
         ? row.getBoundingClientRect().top -
           element.getBoundingClientRect().top -
-          reader.current.y
-        : moved;
+          y
+        : moved + (now?.item ?? 0) - (was?.item ?? 0);
     // WebKit truncates fractional scrollTop writes; use the nearest pixel
     // when a caption's fractional line height changes the message inset.
     correctScrollTop(element, boundaryChanged ? Math.round(delta) : delta);
@@ -1390,14 +1423,16 @@ function Timeline({
     // A live append must not choose a newly inserted row while the older
     // page is still measuring; keep the reader's original row and offset.
     // A later render holds the row again under the same input. Input that
-    // ended during an earlier hold sends no further pointerup to end this one.
+    // ended during an earlier hold, or before any hold, sends no further
+    // pointerup or scrollend to end this one.
     const anchor = {
       id,
-      y: reader.current.y,
+      y,
       intent: intent.current,
       ended:
-        heldReader.current?.intent === intent.current &&
-        heldReader.current.ended,
+        inputEnded.current === intent.current ||
+        (heldReader.current?.intent === intent.current &&
+          heldReader.current.ended),
     };
     heldReader.current = anchor;
     const top = () =>
@@ -1810,7 +1845,10 @@ function Timeline({
       }
       settled.current = true;
       readingPositioned(scroller.current);
-      if (scroller.current) updateJumpToLatest(scroller.current);
+      // Virtua may apply the scroll just requested after this frame, so a
+      // reader following the latest message is still at its bottom.
+      if (follow.current) setShowJumpToLatest(false);
+      else if (scroller.current) updateJumpToLatest(scroller.current);
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -2007,6 +2045,7 @@ function Timeline({
         const document = scroller.current?.ownerDocument;
         const up = () => {
           pointerHeld.current = false;
+          inputEnded.current = intent.current;
           document?.removeEventListener("pointerup", up);
           document?.removeEventListener("pointercancel", up);
         };
@@ -2034,6 +2073,7 @@ function Timeline({
             layoutCorrection.current && !pointerHeld.current,
           );
         upwardGesture.current = false;
+        if (!pointerHeld.current) inputEnded.current = intent.current;
         savePosition();
       }}
       onFocus={(event) => {
@@ -2300,6 +2340,22 @@ function Timeline({
           })}
         </Virtualizer>
       )}
+      {!rows.length &&
+        !shownIntro &&
+        !window.hasMore &&
+        window.status === "ready" &&
+        !window.error &&
+        !window.loadingOlder && (
+          <div className={styles.emptyConversation}>
+            <EmptyState
+              icon={<ChatCircleIcon />}
+              title="No messages yet."
+              description={
+                composerless ? undefined : "Start the conversation below."
+              }
+            />
+          </div>
+        )}
       <div ref={activityTail}>
         <AgentConnectionSetup
           key={channelId}
@@ -2322,23 +2378,6 @@ function Timeline({
         />
         <div className={styles.timelineEnd} aria-hidden="true" />
       </div>
-      {!rows.length &&
-        !shownIntro &&
-        !window.hasMore &&
-        window.status === "ready" &&
-        !window.error &&
-        !window.loadingOlder && (
-          <div className={styles.emptyConversation}>
-            <EmptyState
-              icon={<ChatCircleIcon />}
-              title="No messages yet."
-              description={
-                composerless ? undefined : "Start the conversation below."
-              }
-            />
-          </div>
-        )}
-      <SelectionQuote list={scroller} />
     </section>
   );
   return <MessageContextMenus>{feed}</MessageContextMenus>;

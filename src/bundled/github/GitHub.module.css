@@ -245,6 +245,11 @@
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-standard);
 }
+/* GitHub gives an image's authored width but not its height; holding the
+   frame to that width keeps it near its final size before the image loads. */
+.attachment [data-media-preview] {
+  max-width: min(100%, var(--attachment-width, 100%));
+}
 /* Paint above the image: matching-color content cannot cover its edge. */
 .attachment [data-image-preview]::after {
   content: "";

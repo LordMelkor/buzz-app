@@ -145,6 +145,7 @@ export function turnNote(
     Pick<AgentHandle, "instructions" | "conversationInstructions">,
   channelId?: string,
   root?: string,
+  clearAbsent = false,
 ) {
   const attention = client?.attention;
   const review = !attention
@@ -156,8 +157,12 @@ export function turnNote(
         : ATTENTION_NONE;
   const notes = [
     pluginInstructions(client?.instructions?.()),
-    channelId &&
-      ownerInstructions(client?.conversationInstructions?.(channelId, root)),
+    ownerInstructions(
+      channelId
+        ? client?.conversationInstructions?.(channelId, root)
+        : undefined,
+      clearAbsent,
+    ),
     review,
   ].filter(Boolean);
   return notes.length ? notes.join("\n\n") : undefined;

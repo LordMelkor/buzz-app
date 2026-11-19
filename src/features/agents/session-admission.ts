@@ -8,6 +8,8 @@ import type { AgentStore } from "./store";
 export type AgentSessionSource = Readonly<{
   channelId: string;
   root?: string;
+  /** One session across every conversation in this agent membership. */
+  community?: true;
 }>;
 
 export type AgentSessionAdmission = Readonly<{
@@ -84,8 +86,8 @@ const keyFor = (agent: AgentKey, harness: string, source: AgentSessionSource) =>
     "source",
     agent,
     harness,
-    source.channelId,
-    source.root ?? null,
+    source.community ? "@community" : source.channelId,
+    source.community ? null : (source.root ?? null),
   ]);
 const savedKey = (sessionKey: string) =>
   SESSION_ADMISSION_PREFIX + JSON.stringify(["session", sessionKey]);

@@ -120,6 +120,14 @@ it("observes saved sessions with the live status of running ones", () => {
     },
     { key: "dm", agent, sessionId: "s2", channelId: "dm", at: 2 },
     { key: "old", agent, sessionId: "s3", channelId: "old", at: 1 },
+    {
+      key: "@community",
+      agent,
+      sessionId: "shared",
+      channelId: "old",
+      community: true,
+      at: 4,
+    },
   ]);
   vi.spyOn(ClaudeRuntime.prototype, "sessions").mockReturnValue([
     { key: "room/r", busy: true },
@@ -144,6 +152,7 @@ it("observes saved sessions with the live status of running ones", () => {
     { channelId: "dm", at: 2, status: "Idle" },
     // A conversation with no running process is unobserved, not idle.
     { channelId: "old", at: 1 },
+    { channelId: "old", community: true, at: 4 },
   ]);
 });
 

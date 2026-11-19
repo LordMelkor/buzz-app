@@ -39,6 +39,7 @@ import { safeLinkUrl } from "../relay/message-content";
 import {
   LinkChannelPrivateContext,
   LinkDescriptionContext,
+  LinkAccessibleNameContext,
   LinkInteractiveContext,
   LinkLabelContext,
   LinkContentContext,
@@ -122,6 +123,7 @@ export function MessageLink({
   const [unavailable, setUnavailable] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [description, setDescription] = useState<string>();
+  const [accessibleName, setAccessibleName] = useState<string>();
   // A renderer's own hover card, such as an agent card's Add to Buzz.
   const [offered, setOffered] = useState<LinkPreview>();
   const offeredAction = useRef<HTMLDivElement>(null);
@@ -242,7 +244,8 @@ export function MessageLink({
     target: "_blank",
     rel: "noopener noreferrer",
     onClick: (event: MouseEvent<HTMLAnchorElement>) => {
-      if (!active) {
+      // A withheld link has nowhere to go until its recheck admits it.
+      if (!active || withheld) {
         event.preventDefault();
         return;
       }
@@ -274,7 +277,7 @@ export function MessageLink({
     },
     onAuxClick: internal
       ? (event: MouseEvent<HTMLAnchorElement>) => {
-          if (!active) {
+          if (!active || withheld) {
             event.preventDefault();
             return;
           }
@@ -320,13 +323,14 @@ export function MessageLink({
             ? withheld
               ? `${chatLabel}, unavailable`
               : `Open ${chatLabel}`
-            : display
+            : (accessibleName ?? display)
         }
         aria-description={
           chatChip && withheld
             ? "Chat unavailable. You don’t have access, or it no longer exists."
             : description
         }
+        aria-disabled={withheld || undefined}
         data-link-label={label ?? ""}
         data-panel-target={panelTarget ? url : undefined}
         data-solo-link={chatChip ? "" : undefined}
@@ -543,7 +547,11 @@ export function MessageLink({
               <LinkPreviewContext
                 value={interactive && host ? setOffered : undefined}
               >
-                {result}
+                <LinkAccessibleNameContext
+                  value={interactive ? setAccessibleName : undefined}
+                >
+                  {result}
+                </LinkAccessibleNameContext>
               </LinkPreviewContext>
             </LinkDescriptionContext>
           </LinkInteractiveContext>

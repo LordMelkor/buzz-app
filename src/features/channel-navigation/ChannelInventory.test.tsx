@@ -1,3 +1,7 @@
+import { useDndContext, useDraggable } from "@dnd-kit/core";
+import { ChannelSidebarRows } from "./ChannelSidebarRows";
+import { teamSidebarSource } from "../../bundled/channels/TeamSidebarSource";
+import type { RegisteredSidebarSectionSource } from "./sidebar-section-components";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
@@ -10,6 +14,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi, assert } from "vitest";
+import { webcrypto } from "node:crypto";
 import { Context } from "@deepseek-ai/cordis";
 import { PluginRuntime } from "../../plugins/runtime";
 import { SIDEBAR_REVEAL_BUDGET_MS } from "../../bundled/channels/useSidebarStartup";
@@ -45,17 +50,23 @@ import type {
   SidebarRow,
 } from "./sidebar-rows-service";
 import { SidebarRowsService } from "./sidebar-rows-service";
-import { createRef, useState, type ReactNode, type ReactElement } from "react";
+import {
+  createRef,
+  useState,
+  useLayoutEffect,
+  type ReactNode,
+  type ReactElement,
+  type ComponentProps,
+} from "react";
 import userEvent from "@testing-library/user-event";
 import { ChannelHeaderMenu } from "../../bundled/channels/ChannelHeaderMenu";
-import { PrimarySidebar } from "../../app/shell/PrimarySidebar";
+import { PrimarySidebar } from "../../app/shell/sidebar-section-testing";
 import { buzzLinkTarget } from "../navigation/buzz-links";
 import {
   ChannelNavigationProvider,
   useChannelNavigation,
 } from "./ChannelNavigationState";
 import { readView, writeView } from "../../shared/view-state";
-import styles from "../../app/shell/PrimarySidebar.module.css";
 import { BestieNavigationProvider } from "../../app/shell/BestieNavigation";
 import { PageNavigation } from "../../app/shell/PageNavigation";
 import { createAgentChoices } from "../agents/choices";
@@ -118,6 +129,12 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
+
+const defaultPages = (
+  <nav aria-label="Pages">
+    <button type="button">Projects</button>
+  </nav>
+);
 
 function fixture(
   sidebarPreferences?: ReturnType<
@@ -219,17 +236,15 @@ function fixture(
       attempt: { id: "visit" },
     }),
   } as unknown as Navigation;
+  /** Any `controls` other than the default page navigation mount beside the sidebar. */
   const view = (
     id: string,
-    pages: ReactNode = (
-      <nav aria-label="Pages">
-        <button type="button">Projects</button>
-      </nav>
-    ),
+    controls: ReactNode = defaultPages,
     sidebarVisible = true,
   ) => (
     <ToastProvider>
       <ChannelNavigationProvider relay={relay}>
+        {controls !== defaultPages && controls}
         {sidebarVisible && (
           <PrimarySidebar
             relay={relay}
@@ -246,7 +261,7 @@ function fixture(
             sidebarSections={sidebarSections}
             sidebarRows={sidebarRows}
           >
-            {pages}
+            {controls === defaultPages ? controls : null}
           </PrimarySidebar>
         )}
       </ChannelNavigationProvider>
@@ -261,6 +276,12 @@ function fixture(
     publish,
     commit,
     drop,
+    roster(change: Partial<ChannelList>) {
+      act(() => {
+        list = { ...list, ...change };
+        for (const listener of listeners) listener();
+      });
+    },
     connection(next: RelaySnapshot) {
       act(() => {
         snapshot = next;
@@ -487,8 +508,8 @@ it("keeps a roster failure quiet while recovery retries it, but not a denial whi
     expect(
       screen.queryByText("Channels could not be loaded."),
     ).not.toBeInTheDocument();
-    // A denial is not recovery's to retry: the channel and Solo inventories
-    // each report it at once, though recovery still runs for the other read.
+    // A denial is not recovery's to retry: the unified inventory
+    // reports it at once, though recovery still runs for the other read.
     view = { ...view, roster: { state: "error" } };
     act(() => {
       for (const listener of liveListeners) listener();
@@ -498,7 +519,7 @@ it("keeps a roster failure quiet while recovery retries it, but not a denial whi
       shown: false,
     });
     const alerts = screen.getAllByText("Channels could not be loaded.");
-    expect(alerts).toHaveLength(2);
+    expect(alerts).toHaveLength(1);
     for (const alert of alerts) expect(alert).toHaveAttribute("role", "alert");
   } finally {
     cleanup();
@@ -638,7 +659,7 @@ it("uses relay section filters across navigation and remount, and offers only hi
   const mounted = render(h.view("alpha"));
   await screen.findByRole("button", { name: "gamma" });
   await user.click(
-    screen.getByRole("button", { name: "More actions for Channels" }),
+    screen.getByRole("button", { name: "More actions for Team" }),
   );
   expect(screen.queryByRole("menuitem", { name: "View All" })).toBeNull();
   await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
@@ -648,7 +669,7 @@ it("uses relay section filters across navigation and remount, and offers only hi
   expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
   await user.click(
-    screen.getByRole("button", { name: "More actions for Channels" }),
+    screen.getByRole("button", { name: "More actions for Team" }),
   );
   await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
   const betaChoice = await screen.findByRole("menuitem", { name: "beta" });
@@ -670,9 +691,7 @@ it("uses relay section filters across navigation and remount, and offers only hi
   mounted.rerender(h.view("not-in-this-section"));
   expect(screen.queryByText("0 matches")).toBeNull();
   expect(
-    screen
-      .getByLabelText("Channels", { selector: "summary" })
-      .closest("details"),
+    screen.getByLabelText("Team", { selector: "summary" }).closest("details"),
   ).toHaveAttribute("open");
   expect(screen.queryByText("No channels match this filter.")).toBeNull();
   mounted.unmount();
@@ -690,7 +709,7 @@ it("uses relay section filters across navigation and remount, and offers only hi
   );
   expect(screen.queryByRole("button", { name: "gamma" })).toBeNull();
   await user.click(
-    screen.getByRole("button", { name: "More actions for Channels" }),
+    screen.getByRole("button", { name: "More actions for Team" }),
   );
   await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
   fireEvent.click(await screen.findByRole("menuitemradio", { name: "All" }));
@@ -699,7 +718,7 @@ it("uses relay section filters across navigation and remount, and offers only hi
     expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
   });
   await user.click(
-    screen.getByRole("button", { name: "More actions for Channels" }),
+    screen.getByRole("button", { name: "More actions for Team" }),
   );
   expect(screen.queryByRole("menuitem", { name: "View All" })).toBeNull();
   restored.unmount();
@@ -907,10 +926,19 @@ it("rebuilds only the changed row on a list publish", async () => {
   render(h.view("alpha"));
   await screen.findByRole("button", { name: "gamma" });
   rowRender.mockClear();
-  h.publish("beta", { preview: "hello" });
+  h.publish("beta", { name: "beta renamed" });
   expect(rowRender.mock.calls.map(([props]) => props.channel.id)).toEqual([
     "beta",
   ]);
+});
+
+it("rebuilds no host row when only a message preview changes", async () => {
+  const h = fixture();
+  render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  rowRender.mockClear();
+  h.publish("beta", { preview: "hello", lastActivityAt: 99 });
+  expect(rowRender).not.toHaveBeenCalled();
 });
 
 it("closes a removed DM's menu and focuses its neighbor before the exit ends", async () => {
@@ -1068,9 +1096,7 @@ it("offers DMs a Move conversation menu and relocates them into a saved group", 
     await screen.findByRole("button", { name: "Alice" });
     const row = screen.getByRole("button", { name: "Alice" });
     fireEvent.keyDown(row, { key: "ContextMenu" });
-    await user.hover(
-      await screen.findByRole("menuitem", { name: "Move conversation" }),
-    );
+    await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
     expect(
       await screen.findByRole("menuitemradio", { name: "Direct messages" }),
     ).toBeChecked();
@@ -1093,9 +1119,7 @@ it("offers DMs a Move conversation menu and relocates them into a saved group", 
     fireEvent.keyDown(screen.getByRole("button", { name: "Alice" }), {
       key: "ContextMenu",
     });
-    await user.hover(
-      await screen.findByRole("menuitem", { name: "Move conversation" }),
-    );
+    await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
     expect(
       await screen.findByRole("menuitemradio", { name: "Work" }),
     ).toBeChecked();
@@ -1182,21 +1206,56 @@ it("explains and disables unavailable move retries, then enables them after pref
 });
 
 it.each(["ready", "error"] as const)(
-  "keeps the supplied page navigation while the relay is %s",
-  (status) => {
-    const h = fixture(undefined, status);
-    render(h.view("alpha"));
-    const pages = screen.getByRole("navigation", { name: "Pages" });
-    expect(
-      within(pages).getByRole("button", { name: "Projects" }),
-    ).toBeVisible();
-    expect(pages.closest(`.${styles.destinations}`)).not.toBeNull();
+  "keeps plugin pages above the conversation list while the relay is %s",
+  async (status) => {
+    const data = {
+      sections: [],
+      assignments: {},
+      sectionOrder: ["solo", "channels", "pages", "starred"],
+      starred: [],
+      muted: [],
+    };
+    const preferences = createSidebarPreferencesStore({
+      read: async () => data,
+      available: true,
+      write: async () => data,
+      writeStar: async () => [],
+      writeOrder: async () => data,
+    });
+    try {
+      await preferences.queries.ensure();
+      const h = fixture(preferences.queries, status);
+      render(h.view("alpha"));
+      const pages = screen.getByRole("navigation", { name: "Pages" });
+      expect(
+        screen.queryByText("Plugins", { exact: true }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(pages).getByRole("button", { name: "Projects" }),
+      ).toBeVisible();
+      if (status === "ready") {
+        await screen.findByRole("button", { name: "alpha" });
+        const conversations = screen.getByRole("navigation", {
+          name: "Subscribed channels",
+        });
+        expect(conversations).not.toContainElement(pages);
+        expect(pages.compareDocumentPosition(conversations)).toBe(
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+        expect(
+          screen.queryByRole("button", { name: "More actions for Plugins" }),
+        ).not.toBeInTheDocument();
+      }
+    } finally {
+      preferences.dispose();
+    }
   },
 );
 
-it.each(["Laptop", "Channels", "Starred"])(
+it.each(["Laptop", "Team", "Starred"])(
   "uses only the invoking section for placement (%s)",
   async (section) => {
+    vi.stubGlobal("crypto", webcrypto);
     const fromGroup = section === "Laptop";
     const fromStarred = section === "Starred";
     const preferences = createSidebarPreferencesStore({
@@ -1216,10 +1275,13 @@ it.each(["Laptop", "Channels", "Starred"])(
     await preferences.queries.ensure();
     const h = fixture(preferences.queries);
     const create = vi.fn(async () => "new-channel");
+    const kit = { status: "ready", entries: [] } as const;
     h.session.channelKit = {
       ...h.session.channelKit,
       available: true,
       ensure() {},
+      refresh: async () => {},
+      snapshot: () => kit,
     };
     h.session.channelCreation = {
       ...h.session.channelCreation,
@@ -1228,7 +1290,7 @@ it.each(["Laptop", "Channels", "Starred"])(
     };
     try {
       render(h.view("beta"));
-      await screen.findByRole("button", { name: /Laptop/ });
+      await screen.findByRole("button", { name: "More actions for Laptop" });
       // An active grouped channel must not make the general Channels + inherit it.
       const header = screen.getByRole("button", {
         name: `More actions for ${section}`,
@@ -1248,12 +1310,23 @@ it.each(["Laptop", "Channels", "Starred"])(
         expect(icon.querySelector("svg")).toBeInTheDocument();
         expect(icon).not.toHaveTextContent("★");
       }
-      fireEvent.click(
-        within(header).getByRole("button", { name: "Create channel" }),
-      );
-      expect(
-        screen.queryByRole("combobox", { name: "Destination group" }),
-      ).not.toBeInTheDocument();
+      if (fromGroup) {
+        fireEvent.click(
+          within(header).getByRole("button", { name: "New options in Laptop" }),
+        );
+        fireEvent.click(
+          await screen.findByRole("menuitem", { name: "New channel" }),
+        );
+      } else {
+        fireEvent.click(
+          within(header).getByRole("button", { name: "Create channel" }),
+        );
+      }
+      const destination = screen.queryByRole("combobox", {
+        name: "Destination workspace",
+      });
+      if (fromGroup) expect(destination).toHaveTextContent("Laptop");
+      else expect(destination).not.toBeInTheDocument();
       const title = fromGroup
         ? "Create a channel in Laptop"
         : fromStarred
@@ -1269,14 +1342,11 @@ it.each(["Laptop", "Channels", "Starred"])(
       fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
         target: { value: "New laptop channel" },
       });
-      fireEvent.click(
-        within(screen.getByRole("dialog", { name: title })).getByRole(
-          "button",
-          {
-            name: "Create channel",
-          },
-        ),
-      );
+      const submit = within(
+        screen.getByRole("dialog", { name: title }),
+      ).getByRole("button", { name: "Create channel" });
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
       await waitFor(() =>
         expect(create).toHaveBeenCalledWith({
           name: "New laptop channel",
@@ -1464,9 +1534,7 @@ it("rejects a deferred header Create section after its navigation origin retires
     ),
   );
   await user.click(screen.getByRole("button", { name: "Channel actions" }));
-  await user.hover(
-    await screen.findByRole("menuitem", { name: "Move channel" }),
-  );
+  await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
   const create = await screen.findByRole("menuitem", { name: "Create new…" });
   // Hold only the deferred handoff after the menu is ready, not a timing delay.
   const frames: FrameRequestCallback[] = [];
@@ -1481,7 +1549,7 @@ it("rejects a deferred header Create section after its navigation origin retires
     for (const frame of frames.splice(0)) frame(0);
   });
   expect(
-    screen.queryByRole("dialog", { name: "Move to new section" }),
+    screen.queryByRole("dialog", { name: "Move to new workspace" }),
   ).not.toBeInTheDocument();
   expect(preferences.queries.snapshot().data?.sections).toEqual([]);
   preferences.dispose();
@@ -1554,7 +1622,7 @@ it("offers only Copy link for a not-joined preview, keeping sidebar actions for 
   expect(
     screen.getByRole("menuitem", { name: "View channel details" }),
   ).toBeVisible();
-  expect(screen.queryByRole("menuitem", { name: "Move channel" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Move to…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Mute" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /^Mark as/ })).toBeNull();
   await user.keyboard("{Escape}");
@@ -1562,7 +1630,7 @@ it("offers only Copy link for a not-joined preview, keeping sidebar actions for 
   mounted.rerender(header({ ...preview, viewerRole: "guest" }));
   await user.click(screen.getByRole("button", { name: "Channel actions" }));
   expect(
-    await screen.findByRole("menuitem", { name: "Move channel" }),
+    await screen.findByRole("menuitem", { name: "Move to…" }),
   ).toBeVisible();
   expect(screen.getByRole("menuitem", { name: "Mute" })).toBeVisible();
   expect(
@@ -1603,9 +1671,7 @@ it("gates all creation entry points while uncertain creation reconciles, preserv
     const row = await screen.findByRole("button", { name: "beta" });
     expect(document.querySelector("[data-create-section-trigger]")).toBeNull();
     fireEvent.keyDown(row, { key: "ContextMenu" });
-    await user.hover(
-      await screen.findByRole("menuitem", { name: "Move channel" }),
-    );
+    await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
     expect(
       await screen.findByRole("menuitem", { name: "Create new…" }),
     ).toHaveAttribute("aria-disabled", "true");
@@ -1668,13 +1734,13 @@ it("clears only the removed section's collapsed intent after confirmation, never
         await screen.findByRole("button", { name: "More actions for Work" }),
       );
       await user.click(
-        await screen.findByRole("menuitem", { name: "Remove section" }),
+        await screen.findByRole("menuitem", { name: "Remove workspace" }),
       );
       return screen.getByRole("dialog", { name: "Remove Work?" });
     };
     let dialog = await open();
     expect(dialog).toHaveAccessibleDescription(
-      "1 channel will move back to Channels. This does not delete any channels.",
+      "1 conversation will return to their default sections.",
     );
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(remove).not.toHaveBeenCalled();
@@ -1683,7 +1749,7 @@ it("clears only the removed section's collapsed intent after confirmation, never
     ).not.toHaveAttribute("open");
     dialog = await open();
     await user.click(
-      within(dialog).getByRole("button", { name: "Remove section" }),
+      within(dialog).getByRole("button", { name: "Remove workspace" }),
     );
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "offline",
@@ -1697,7 +1763,7 @@ it("clears only the removed section's collapsed intent after confirmation, never
     const retry = render(h.view("alpha"));
     dialog = await open();
     await user.click(
-      within(dialog).getByRole("button", { name: "Remove section" }),
+      within(dialog).getByRole("button", { name: "Remove workspace" }),
     );
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
     expect(dialog).toBeVisible();
@@ -2405,11 +2471,22 @@ it("keeps owned and unfiled shared Solo chats out of Team without removing acces
     creator: "a".repeat(64),
   });
   render(h.view("alpha", undefined, true));
-  await userEvent.click(screen.getByRole("tab", { name: "Team" }));
   await screen.findByRole("button", { name: "gamma" });
-  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  const team = screen
+    .getByLabelText("Team", { selector: "summary" })
+    .closest("[data-sidebar-section]");
+  const solo = screen
+    .getByLabelText("Solo", { selector: "summary" })
+    .closest("[data-sidebar-section]");
+  expect(solo).toContainElement(screen.getByRole("button", { name: "beta" }));
+  expect(team).not.toContainElement(
+    screen.getByRole("button", { name: "beta" }),
+  );
   h.publish("beta", { creator: "b".repeat(64) });
-  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  expect(solo).toContainElement(screen.getByRole("button", { name: "beta" }));
+  expect(team).not.toContainElement(
+    screen.getByRole("button", { name: "beta" }),
+  );
   expect(
     h.session.channels.list().channels.find((channel) => channel.id === "beta"),
   ).toMatchObject({ channelType: "solo", creator: "b".repeat(64) });
@@ -2428,12 +2505,9 @@ it("moves a saved group from its menu, rolls back a failed save, and retries it"
   };
   const order = vi
     .fn(async (ids: readonly string[]) => ({
-      sections: ids.map((id, index) => ({
-        id,
-        name: id === "work" ? "Work" : "Later",
-        order: index,
-      })),
+      sections: data.sections,
       assignments: data.assignments,
+      sectionOrder: ids,
     }))
     .mockRejectedValueOnce(new Error("offline"));
   const read = vi.fn(async () => data);
@@ -2501,7 +2575,16 @@ it("moves a saved group from its menu, rolls back a failed save, and retries it"
       ),
     ).toHaveAttribute("data-sidebar-section", "group:later");
     expect(order).toHaveBeenLastCalledWith(
-      ["later", "work"],
+      [
+        "pages",
+        "starred",
+        "group:later",
+        "group:work",
+        "solo",
+        "channels",
+        "forums",
+        "dms",
+      ],
       expect.any(AbortSignal),
     );
     expect(screen.queryByRole("button", { name: "Retry move" })).toBeNull();
@@ -2540,10 +2623,16 @@ it.each(["star", "section", "unfiled"])(
     ]);
     render(h.view("alpha"));
     await screen.findByRole("button", { name: "Team channel" });
-    // One row, in the Solo list (which the sidebar navigation contains).
     const rows = screen.getAllByRole("button", { name: "Shared work" });
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.closest("nav")).toHaveAccessibleName("Solo conversations");
+    expect(rows[0]?.closest("[data-sidebar-section]")).toHaveAttribute(
+      "data-sidebar-section",
+      placement === "star"
+        ? "starred"
+        : placement === "section"
+          ? "group:work"
+          : "solo",
+    );
   },
 );
 
@@ -2556,15 +2645,13 @@ it("opening a shared chat lists it once, with the viewer's chats", async () => {
   });
   const view = render(h.view("alpha"));
   await screen.findByRole("button", { name: "gamma" });
-  await userEvent.click(screen.getByRole("tab", { name: "Solo" }));
   view.rerender(h.view("beta"));
-  expect(screen.getByRole("tab", { name: "Solo" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
   const rows = await screen.findAllByRole("button", { name: "beta" });
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.closest("nav")).toHaveAccessibleName("Solo conversations");
+  expect(rows[0]?.closest("[data-sidebar-section]")).toHaveAttribute(
+    "data-sidebar-section",
+    "solo",
+  );
 });
 it("promotes exactly the Bestie DM, restores prior local removal, and releases it on replacement, deletion and plugin disable", async () => {
   const viewer = "a".repeat(64),
@@ -3093,7 +3180,7 @@ it("decorates live host rows and closes menus only when their row is hidden", as
   );
   await waitFor(() =>
     expect(
-      screen.getByLabelText("Channels", { selector: "summary" }),
+      screen.getByLabelText("Team", { selector: "summary" }),
     ).toHaveFocus(),
   );
 
@@ -3136,7 +3223,7 @@ it.each([
   {
     focused: "beta",
     hidden: ["alpha", "beta", "gamma"],
-    destination: "Channels",
+    destination: "Team",
   },
   {
     focused: "beta",
@@ -3171,8 +3258,8 @@ it.each([
 
     expect(screen.queryByRole("button", { name: focused })).toBeNull();
     const target =
-      destination === "Channels"
-        ? screen.getByLabelText("Channels", { selector: "summary" })
+      destination === "Team"
+        ? screen.getByLabelText("Team", { selector: "summary" })
         : screen.getByRole("button", { name: destination });
     expect(target).toHaveFocus();
   },
@@ -3390,7 +3477,7 @@ it("composes two plugins around the preceding result", async () => {
 });
 
 it.each([
-  { sectionKey: "channels", preferenceKey: "channels", label: "Channels" },
+  { sectionKey: "channels", preferenceKey: "channels", label: "Team" },
   { sectionKey: "group:work", preferenceKey: "section:work", label: "Work" },
 ])(
   "persists a plugin sort for $sectionKey across disable and re-enable",
@@ -3519,7 +3606,7 @@ it.each(["throw", "non-finite"] as const)(
       ).toEqual(["alpha", "beta", "gamma"]);
       const user = userEvent.setup();
       await user.click(
-        screen.getByRole("button", { name: "More actions for Channels" }),
+        screen.getByRole("button", { name: "More actions for Team" }),
       );
       await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
       expect(
@@ -3676,7 +3763,7 @@ it("updates decorated unread data and a selected unread sort without rewriting p
     expect(order()).toEqual(["alpha", "beta", "gamma"]);
     const user = userEvent.setup();
     await user.click(
-      screen.getByRole("button", { name: "More actions for Channels" }),
+      screen.getByRole("button", { name: "More actions for Team" }),
     );
     await user.click(await screen.findByRole("menuitem", { name: "Sort" }));
     fireEvent.click(
@@ -3765,4 +3852,490 @@ it("moves a mounted session-backed sidebar on a CLI hint without clearing stars 
     sidebar,
   );
   expect(reads).toHaveLength(2);
+});
+
+it("restores a cold saved scroll only after the new Team slots have connected rows", async () => {
+  const f = fixture();
+  const rows = f.list.channels;
+  f.roster({ status: "loading", channels: [] });
+  const scope = f.session.scope;
+  writeView(scope, "channel-sidebar", {
+    collapsed: [],
+    contributionOrder: [],
+    scrollTop: 120,
+    location: "conversation:alpha",
+  });
+  const writes: { top: number; rows: number }[] = [];
+  const offsets = new WeakMap<Element, number>();
+  const original = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "scrollTop",
+  );
+  Object.defineProperty(Element.prototype, "scrollTop", {
+    configurable: true,
+    get() {
+      return offsets.get(this) ?? 0;
+    },
+    set(top: number) {
+      const count = this.querySelectorAll("[data-channel-id]").length;
+      writes.push({ top, rows: count });
+      // Model the clamp only to check ordering. Real geometry belongs to the browser test.
+      offsets.set(this, count ? top : 0);
+    },
+  });
+  try {
+    render(f.view("alpha"));
+    expect(writes).toEqual([]);
+    f.roster({ status: "ready", channels: rows });
+    await screen.findByRole("button", { name: "alpha" });
+    await waitFor(() => expect(writes).toEqual([{ top: 120, rows: 3 }]));
+  } finally {
+    if (original)
+      Object.defineProperty(Element.prototype, "scrollTop", original);
+    else Reflect.deleteProperty(Element.prototype, "scrollTop");
+  }
+});
+
+it("restores saved scroll and completes focus recovery when the Team source throws, retaining Solo", async () => {
+  let failing = true;
+  const Component = teamSidebarSource.component;
+  const source = vi
+    .spyOn(teamSidebarSource, "component")
+    .mockImplementation((props: ComponentProps<typeof Component>) => {
+      if (failing) throw new Error("Team source failed");
+      return <Component {...props} />;
+    });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  let finish!: () => void;
+  const heldWrite = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const preferences = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+    }),
+    writeStar: async () => [],
+    write: async () => {
+      await heldWrite;
+      return { sections: [], assignments: {} };
+    },
+  });
+  const f = fixture(preferences.queries);
+  writeView(f.session.scope, "channel-sidebar", {
+    collapsed: [],
+    contributionOrder: [],
+    scrollTop: 120,
+    location: "conversation:alpha",
+  });
+  try {
+    render(f.view("alpha"));
+    await screen.findByRole("alert");
+    const viewport = screen.getByRole("navigation", {
+      name: "Subscribed channels",
+    });
+    // The source fallback is a settled inventory, even though its expected rows are absent.
+    await waitFor(() => expect(viewport?.scrollTop).toBe(120));
+    expect(screen.queryByRole("button", { name: "alpha" })).toBeNull();
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const row = await screen.findByRole("button", { name: "beta" });
+    const user = userEvent.setup();
+    row.focus();
+    fireEvent.keyDown(row, { key: "ContextMenu" });
+    await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Create new…" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Move to new workspace",
+    });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Name" }),
+      "Release",
+    );
+    const form = within(dialog)
+      .getByRole("textbox", { name: "Name" })
+      .closest("form");
+    assert(form);
+    // Lose the row while its optimistic move requests focus. Recovery must finish
+    // on the shell's fallback control after the failed source's slot commits.
+    failing = true;
+    act(() => fireEvent.submit(form));
+    await act(async () => finish());
+    const sidebar = await screen.findByRole("complementary", {
+      name: "Sidebar",
+    });
+    expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+    await waitFor(() => expect(sidebar.querySelector("button")).toHaveFocus());
+  } finally {
+    cleanup();
+    await act(async () => finish());
+    source.mockRestore();
+    error.mockRestore();
+    preferences.dispose();
+  }
+});
+
+it("restores saved scroll after reconnect only with the new generation's connected slots", async () => {
+  const f = fixture();
+  writeView(f.session.scope, "channel-sidebar", {
+    collapsed: [],
+    contributionOrder: [],
+    scrollTop: 120,
+    location: "conversation:alpha",
+  });
+  const writes: { top: number; rows: number }[] = [];
+  const offsets = new WeakMap<Element, number>();
+  const original = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "scrollTop",
+  );
+  Object.defineProperty(Element.prototype, "scrollTop", {
+    configurable: true,
+    get() {
+      return offsets.get(this) ?? 0;
+    },
+    set(top: number) {
+      const rows = this.querySelectorAll("[data-channel-id]").length;
+      writes.push({ top, rows });
+      // A disconnected portal cannot supply scroll height. This models ordering,
+      // while the browser regressions own actual layout and clamp measurements.
+      offsets.set(this, rows ? top : 0);
+    },
+  });
+  try {
+    render(f.view("alpha"));
+    await screen.findByRole("button", { name: "alpha" });
+    await waitFor(() => expect(writes).toEqual([{ top: 120, rows: 3 }]));
+    const previous = screen.getByRole("button", { name: "alpha" });
+    writes.length = 0;
+    f.connection({ ...f.snapshot, generation: f.snapshot.generation + 1 });
+    const current = screen.getByRole("button", { name: "alpha" });
+    expect(current).not.toBe(previous);
+    expect(previous.isConnected).toBe(false);
+    expect(writes).toEqual([{ top: 120, rows: 3 }]);
+  } finally {
+    cleanup();
+    if (original)
+      Object.defineProperty(Element.prototype, "scrollTop", original);
+    else Reflect.deleteProperty(Element.prototype, "scrollTop");
+  }
+});
+
+it("keeps launch pending across a generation change until its source slots commit", async () => {
+  const commits: { pending: string | null; rows: number }[] = [];
+  const Component = teamSidebarSource.component;
+  function ObservedTeam(props: ComponentProps<typeof Component>) {
+    useLayoutEffect(() => {
+      const sidebar = document.querySelector('aside[aria-label="Sidebar"]');
+      assert(sidebar);
+      commits.push({
+        pending: sidebar.getAttribute("data-buzz-launch-pending"),
+        rows: sidebar.querySelectorAll("[data-channel-id]").length,
+      });
+    });
+    return <Component {...props} />;
+  }
+  const source = vi
+    .spyOn(teamSidebarSource, "component")
+    .mockImplementation(ObservedTeam);
+  try {
+    const f = fixture();
+    render(f.view("alpha"));
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    await waitFor(() =>
+      expect(sidebar).not.toHaveAttribute("data-buzz-launch-pending"),
+    );
+    commits.length = 0;
+    f.connection({ ...f.snapshot, generation: f.snapshot.generation + 1 });
+    // The inventory is warm, but the new generation's portals must connect
+    // before launch.ts can treat this sidebar as ready to reveal.
+    const pending = commits.filter(({ rows }) => rows === 0);
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every(({ pending }) => pending === "required")).toBe(true);
+    expect(screen.getByRole("button", { name: "alpha" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "Sidebar" }),
+    ).not.toHaveAttribute("data-buzz-launch-pending");
+  } finally {
+    cleanup();
+    source.mockRestore();
+  }
+});
+
+it("keeps active Team drags out of the Solo row context", async () => {
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  function Probe({ scope }: { scope: string }) {
+    const { active } = useDndContext();
+    return (
+      <p>
+        {scope}: {active ? "dragging" : "idle"}
+      </p>
+    );
+  }
+  const team: RegisteredSidebarSectionSource = {
+    version: 2,
+    id: "drag-team",
+    context: "buzz.channels/messages",
+    key: "example.plugin/drag-team",
+    pluginId: "example.plugin",
+    revision: "bundled",
+    scope: "team",
+    component: function DragTeam({ render }) {
+      const drag = useDraggable({
+        id: "drag-row",
+        data: { rowKind: "channel" },
+      });
+      return render([
+        {
+          id: "drag-row",
+          defaultPosition: 0,
+          element: (
+            <>
+              <button
+                type="button"
+                ref={drag.setNodeRef}
+                {...drag.listeners}
+                {...drag.attributes}
+              >
+                Drag probe
+              </button>
+              <Probe scope="Team" />
+            </>
+          ),
+        },
+      ]);
+    },
+  };
+  const solo: RegisteredSidebarSectionSource = {
+    ...team,
+    id: "drag-solo",
+    key: "example.plugin/drag-solo",
+    scope: "solo",
+    component: ({ render }) =>
+      render([
+        {
+          id: "solo-row",
+          defaultPosition: 0,
+          element: (
+            <>
+              <Probe scope="Solo" />
+              <ChannelSidebarRows open>
+                {[
+                  <button type="button" key="solo">
+                    Solo probe row
+                  </button>,
+                ]}
+              </ChannelSidebarRows>
+            </>
+          ),
+        },
+      ]),
+  };
+  const sources = [solo, team];
+  const emptySections: readonly RegisteredSidebarSection[] = [];
+  const f = fixture(undefined, "ready", undefined, {
+    version: 1,
+    register() {},
+    snapshot: () => emptySections,
+    subscribe: () => () => {},
+    sourceSnapshot: () => sources,
+    sourceSubscribe: () => () => {},
+  });
+  render(f.view("alpha"));
+  const row = screen.getByRole("button", { name: "Drag probe" });
+  const down = new MouseEvent("pointerdown", {
+    bubbles: true,
+    button: 0,
+    clientX: 10,
+    clientY: 10,
+  });
+  Object.defineProperty(down, "isPrimary", { value: true });
+  fireEvent(row, down);
+  fireEvent.pointerMove(document, { clientX: 40, clientY: 40 });
+  await waitFor(() =>
+    expect(screen.getByText("Team: dragging")).toBeInTheDocument(),
+  );
+  expect(screen.getByText("Solo: idle")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Solo probe row" })).toBeVisible();
+  fireEvent.pointerUp(document);
+});
+
+it("keeps create-and-move focus pending until the new group slot commits", async () => {
+  let finish!: () => void;
+  const heldWrite = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let saved: SidebarPreferences = {
+    sections: [],
+    assignments: {},
+    starred: [],
+    muted: [],
+  };
+  const preferences = createSidebarPreferencesStore({
+    available: true,
+    read: async () => saved,
+    writeStar: async () => [],
+    write: async (intent) => {
+      assert(intent.createSection && intent.channelId);
+      await heldWrite;
+      saved = {
+        ...saved,
+        sections: [{ ...intent.createSection, order: 0 }],
+        assignments: { [intent.channelId]: intent.createSection.id },
+      };
+      return saved;
+    },
+  });
+  try {
+    const f = fixture(preferences.queries);
+    const user = userEvent.setup();
+    render(f.view("alpha"));
+    const row = await screen.findByRole("button", { name: "beta" });
+    row.focus();
+    fireEvent.keyDown(row, { key: "ContextMenu" });
+    await user.hover(await screen.findByRole("menuitem", { name: "Move to…" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Create new…" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Move to new workspace",
+    });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Name" }),
+      "Release",
+    );
+    const form = within(dialog)
+      .getByRole("textbox", { name: "Name" })
+      .closest("form");
+    assert(form);
+    act(() => {
+      fireEvent.submit(form);
+    });
+    // The dialog holds focus until the relay confirms the workspace and its placement.
+    expect(saved.sections).toEqual([]);
+    await act(async () => finish());
+    const moved = await screen.findByRole("button", { name: "beta" });
+    expect(moved.closest("[data-sidebar-section]")).toHaveAttribute(
+      "data-sidebar-section",
+      `group:${preferences.queries.snapshot().data?.sections[0]?.id}`,
+    );
+    await waitFor(() => expect(moved).toHaveFocus());
+  } finally {
+    await act(async () => finish());
+    preferences.dispose();
+  }
+});
+
+it("keeps a decorated DM's resolved name when its live activity changes", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "details",
+    render: (row, Default) => (
+      <div data-decoration={row.id}>
+        {Default}
+        <span>
+          {row.label} / {row.channel.name} / {row.channel.lastActivityAt}
+        </span>
+      </div>
+    ),
+  });
+  const h = fixture(
+    undefined,
+    "ready",
+    [
+      { id: "alpha", name: "alpha", channelType: "stream" },
+      {
+        id: "self",
+        name: "self-metadata",
+        channelType: "dm",
+        visibility: "private",
+        participants: [],
+        lastActivityAt: 12,
+      },
+    ],
+    undefined,
+    registry,
+  );
+  render(h.view("alpha"));
+  expect(
+    await screen.findByText("Notes to self / Notes to self / 12"),
+  ).toBeVisible();
+  h.publish("self", { lastActivityAt: 24, preview: "hello" });
+  expect(
+    await screen.findByText("Notes to self / Notes to self / 24"),
+  ).toBeVisible();
+  expect(screen.queryByText(/self-metadata/)).toBeNull();
+});
+
+it("re-sorts a plugin order that compares previews on a preview-only publish", async () => {
+  const registry = rowRegistry({
+    version: 1,
+    id: "order",
+    sortModes: [
+      {
+        id: "preview",
+        label: "Preview",
+        compare: (a, b) =>
+          (a.channel.preview ?? "").localeCompare(b.channel.preview ?? ""),
+      },
+    ],
+  });
+  const preferences = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+      sort: { channels: "plugin:fixture0/order/preview" },
+    }),
+  });
+  await preferences.queries.ensure();
+  const h = fixture(
+    preferences.queries,
+    "ready",
+    [
+      { id: "alpha", name: "alpha", channelType: "stream", preview: "b" },
+      { id: "beta", name: "beta", channelType: "stream", preview: "c" },
+      { id: "gamma", name: "gamma", channelType: "stream", preview: "a" },
+    ],
+    undefined,
+    registry,
+  );
+  const order = () =>
+    [...document.querySelectorAll("[data-channel-id]")].map((row) =>
+      row.getAttribute("data-channel-id"),
+    );
+  try {
+    render(h.view("alpha"));
+    await waitFor(() => expect(order()).toEqual(["gamma", "alpha", "beta"]));
+    h.publish("beta", { preview: "0" });
+    await waitFor(() => expect(order()).toEqual(["beta", "gamma", "alpha"]));
+  } finally {
+    preferences.dispose();
+  }
+});
+
+it("keeps default Solo recency as live activity changes", async () => {
+  const h = fixture(undefined, "ready", [
+    { id: "alpha", name: "Alpha", channelType: "solo", lastActivityAt: 2 },
+    { id: "beta", name: "Beta", channelType: "solo", lastActivityAt: 1 },
+    { id: "gamma", name: "Gamma", channelType: "stream" },
+  ]);
+  const soloOrder = () =>
+    [
+      ...document.querySelectorAll(
+        '[data-sidebar-section="solo"] [data-channel-id]',
+      ),
+    ].map((row) => row.getAttribute("data-channel-id"));
+  render(h.view("gamma"));
+  await waitFor(() => expect(soloOrder()).toEqual(["alpha", "beta"]));
+  h.publish("beta", { lastActivityAt: 4 });
+  await waitFor(() => expect(soloOrder()).toEqual(["beta", "alpha"]));
 });

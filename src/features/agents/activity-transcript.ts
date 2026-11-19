@@ -351,6 +351,22 @@ export function activityTranscript(
   return transcript;
 }
 
+// Each new record replaces the array, so a transcript is rebuilt from every
+// retained record. Frozen records never change: parse each one once.
+const unparsable = Symbol("unparsable");
+const parsedPlaintext = new WeakMap<object, unknown>();
+function parsed(record: Source) {
+  if (parsedPlaintext.has(record)) return parsedPlaintext.get(record);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(record.plaintext);
+  } catch {
+    raw = unparsable;
+  }
+  if (Object.isFrozen(record)) parsedPlaintext.set(record, raw);
+  return raw;
+}
+
 function buildTranscript(
   records: readonly Source[],
   scope: TranscriptScope,
@@ -359,12 +375,8 @@ function buildTranscript(
   const events: { id: string; at: number; order: number; event: Json }[] = [];
   for (const record of records) {
     if (record.agent !== scope.agent) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(record.plaintext);
-    } catch {
-      continue;
-    }
+    const raw = parsed(record);
+    if (raw === unparsable) continue;
     const envelope = object(raw);
     const children =
       envelope?.kind === "batch" ? object(envelope.payload)?.events : [raw];

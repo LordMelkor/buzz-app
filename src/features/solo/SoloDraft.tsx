@@ -19,6 +19,7 @@ import {
 } from "./workspace";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RelaySession } from "../relay/session";
+import { ownedSoloAgents } from "../relay/solo-admins";
 import {
   readView,
   writeView,
@@ -474,6 +475,10 @@ export function SoloDraft({
             "Solo chats can only use your available agents. Check mentions and workspace defaults.",
           );
       }
+      const admins = [
+        ...(await ownedSoloAgents(session.profiles, session.viewer, members)),
+      ];
+      if (!mounted.current) return;
       // Read at Send: the region's source may have stopped since.
       const regionOwner = () => {
         const current = region
@@ -515,7 +520,7 @@ export function SoloDraft({
       // agents read it from the start.
       // A region files its own chats.
       if (setup?.projectId && !region)
-        void session.soloPreferences
+        void session.sidebarPreferences
           .assign(channelId, setup.projectId)
           .catch((reason) =>
             console.warn("Solo chat could not join its workspace", reason),
@@ -574,7 +579,7 @@ export function SoloDraft({
               }
             : undefined,
           // Unguarded, so a restart can retry it like any New chat.
-          ...(region ? [{ labels: [region] }] : []),
+          { admins, ...(region ? { labels: [region] } : {}) },
         );
       } catch (reason) {
         if (startKey) writeView(scope, startKey, null);
@@ -627,7 +632,13 @@ export function SoloDraft({
         writeView(scope, `draft:${channelId}`, draft);
         transferAttachmentDraft(
           files,
-          attachmentDraft(session, `${scope}:draft:${channelId}`, channelId),
+          attachmentDraft(
+            session,
+            `${scope}:draft:${channelId}`,
+            channelId,
+            false,
+            [scope, `draft:${channelId}:files`],
+          ),
         );
       }
       if (source) writeView(scope, draftKey, null);
@@ -877,7 +888,7 @@ export function SoloDraft({
         defaultMention={defaultAgent}
         requireMention
         trailingTool={
-          session.soloPreferences ? (
+          session.sidebarPreferences ? (
             <WorkspaceControl
               session={session}
               value={selectedProject}
@@ -887,8 +898,8 @@ export function SoloDraft({
           ) : undefined
         }
         workspace={
-          session.soloPreferences && !busy
-            ? { preferences: session.soloPreferences, choose: chooseProject }
+          session.sidebarPreferences && !busy
+            ? { preferences: session.sidebarPreferences, choose: chooseProject }
             : undefined
         }
         submission={{

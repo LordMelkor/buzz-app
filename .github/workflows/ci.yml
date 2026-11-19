@@ -3,6 +3,8 @@ name: CI
 on:
   # Manual dispatch runs only Windows; automatic checks include macOS recording.
   workflow_dispatch:
+  # Sunday's preview (release.yml) calls this to rebuild main's caches.
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -19,6 +21,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  javascript_checks:
+    if: github.event_name != 'workflow_dispatch'
+    name: JavaScript checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Lint and types
+        run: ./bin/pnpm check
+      # check already ran TypeScript; do not repeat pnpm build's typecheck.
+      - name: Frontend build
+        run: ./bin/pnpm exec vite build
+
   javascript:
     if: github.event_name != 'workflow_dispatch'
     name: JavaScript (${{ matrix.shard }}/8)
@@ -37,11 +55,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - name: Lint and types
-        run: ./bin/pnpm check
-      # check already ran TypeScript; do not repeat pnpm build's typecheck.
-      - name: Frontend build
-        run: ./bin/pnpm exec vite build
       - name: Vitest shard
         env:
           # Bound contention between suites that sign and verify large fixtures.
@@ -78,7 +91,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: agent-protection
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install exact protected Claude fixture
         run: ./bin/node scripts/install-protected-claude-test.mjs
       - name: Native Claude protection boundary
@@ -122,13 +135,17 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: native
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Dependency policy
         run: ./bin/cargo-deny --locked check
       - name: Rust formatting
         run: ./bin/cargo fmt --all --check
       - name: Rust lint
         run: ./bin/cargo clippy --workspace --locked --all-targets -- -D warnings
+      # Stage resources and build the workspace tests once, before running them
+      # and before FI variants change build inputs.
+      - name: Bundled buzz CLI
+        run: ./bin/node scripts/test-buzz-cli.mjs
       # --workspace includes Tauri, unlike the default Cargo member selection.
       - name: All Rust tests and doctests
         run: ./bin/cargo test --workspace --locked
@@ -151,8 +168,6 @@ jobs:
           ./bin/cargo test -p Buzz --lib --locked host_request
       - name: Scheduled agent command identity
         run: ./bin/node scripts/test-agent-command.mjs
-      - name: Bundled buzz CLI
-        run: ./bin/node scripts/test-buzz-cli.mjs
       - name: All Node integration tests
         run: ./bin/node --test tests/integration/*.test.mjs
 
@@ -265,7 +280,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: browser-fixture
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build native browser fixture
         timeout-minutes: 8
         run: ./bin/cargo build --locked -p buzzodz-plugins --example fixture-bridge --bin buzzodz --target-dir target/browser-fixture
@@ -513,12 +528,13 @@ jobs:
   required:
     name: ${{ github.event_name == 'workflow_dispatch' && 'Automatic CI (not requested)' || 'CI required' }}
     if: always() && github.event_name != 'workflow_dispatch'
-    needs: [javascript, native, measurements, browser_fixture, browser, media_recorder, agent_protection]
+    needs: [javascript_checks, javascript, native, measurements, browser_fixture, browser, media_recorder, agent_protection]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every lane and every shard
         env:
+          JAVASCRIPT_CHECKS: ${{ needs.javascript_checks.result }}
           JAVASCRIPT: ${{ needs.javascript.result }}
           NATIVE: ${{ needs.native.result }}
           MEASUREMENTS: ${{ needs.measurements.result }}
@@ -527,6 +543,6 @@ jobs:
           MEDIA_RECORDER: ${{ needs.media_recorder.result }}
           AGENT_PROTECTION: ${{ needs.agent_protection.result }}
         run: |
-          for result in "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER" "$AGENT_PROTECTION"; do
+          for result in "$JAVASCRIPT_CHECKS" "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER" "$AGENT_PROTECTION"; do
             test "$result" = success || exit 1
           done

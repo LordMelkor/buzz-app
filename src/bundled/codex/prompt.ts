@@ -28,6 +28,7 @@ import type { Config } from "./config";
  * channel wake allows the Interest to direct a thread reply. */
 export type Conversation = {
   channelId: string;
+  community?: true;
   name: string;
   root?: string;
   topLevel?: true;
@@ -68,11 +69,15 @@ export function turnContext(
 ) {
   const core = coreMemorySection(memory);
   const text = `You are ${agent.name} (pubkey ${agent.pubkey}).\nCurrent Buzz custom instructions replace all prior Buzz custom instructions. An empty section means no custom instructions apply.\n<agent-instructions>\n${settings.instructions}\n</agent-instructions>\n\nCurrent team sections replace all prior team sections. None means you are on no team.${team ? `\n${team}` : ""}${core ? `\n\nCurrent core memory replaces all prior core memory.\n${core}` : ""}`;
+  const community =
+    settings.scope === "community"
+      ? "\nThis is the agent's one shared community session. Each request's context replaces all earlier routing and delivery-mode instructions. Only a <realtime_delegation> turn is a spoken request; other requests follow their own posting instructions. Community scope grants no additional access."
+      : "";
   const values = [""];
   let size = 0;
   // None of it is Buzz's event or steer section.
   for (const line of unframed(
-    `${text}${repositories ? `\n\n${repositories}` : ""}`,
+    `${text}${community}${repositories ? `\n\n${repositories}` : ""}`,
   ).split(/(?<=\n)/)) {
     // A line over the limit splits by code point.
     const pieces = bytes(line) > CONTEXT_VALUE_BYTES ? [...line] : [line];
@@ -117,11 +122,18 @@ export function turnInput(
   const routing = conversation.topLevel
     ? { posting: "top-level" }
     : { session_thread: conversation.root, reply_to: rootOf(event) };
-  return `<context>\n${quoted({ agent, channel_id: conversation.channelId, channel_name: conversation.name, session_scope: conversation.root ? "thread" : "channel", ...routing })}\n</context>\n${conversation.topLevel ? `${conversation.threadReplies ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}\n` : ""}${wake ? "" : `${MENTION_PROMPT}\n`}${wake && !steering ? body : `<${section}>\n${body}\n</${section}>`}${note ? `\n\n${note}` : ""}`;
+  const replyGuidance =
+    steering && conversation.community
+      ? wake
+        ? `When posting about this wake, pass channel "${conversation.channelId}" explicitly to send${conversation.topLevel ? " and omit reply" : ` and use reply "${rootOf(event)}"`}. Leave out the request field for the wake. You can continue working on other requests.`
+        : "When answering requests from different conversations, use Buzz send with the request ID for each reply. You can answer one request and continue working on another."
+      : "";
+  return `<context>\n${quoted({ agent, channel_id: conversation.channelId, channel_name: conversation.name, session_scope: conversation.community ? "community" : conversation.root ? "thread" : "channel", ...routing })}\n</context>\n${conversation.topLevel ? `${conversation.threadReplies ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}\n` : ""}${wake ? "" : `${MENTION_PROMPT}\n`}${wake && !steering ? body : `<${section}>\n${body}\n</${section}>`}${replyGuidance ? `\n\n${replyGuidance}` : ""}${note ? `\n\n${note}` : ""}`;
 }
 /** The readable part of a conversation's thread name; earlier versions used
  * it alone. */
 export function sessionTitle(agentName: string, conversation: Conversation) {
+  if (conversation.community) return `Buzz community · ${agentName}`;
   return `Buzz #${conversation.name.replace(/\s+/g, " ").slice(0, 100)}${conversation.root ? ` · thread ${conversation.root.slice(0, 8)}` : ""} · ${agentName}`;
 }
 /** Names the agent's conversation in its thread names, so its threads can be
@@ -130,14 +142,14 @@ export function sessionTitle(agentName: string, conversation: Conversation) {
  * reorder concurrent turn starts. */
 export function sessionTag(
   agent: AgentKey,
-  conversation: Pick<Conversation, "channelId" | "root">,
+  conversation: Pick<Conversation, "channelId" | "root" | "community">,
 ) {
   let hash = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(
     JSON.stringify([
       agent,
-      conversation.channelId,
-      conversation.root ?? "channel",
+      conversation.community ? "@community" : conversation.channelId,
+      conversation.community ? "channel" : (conversation.root ?? "channel"),
     ]),
   ))
     hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);

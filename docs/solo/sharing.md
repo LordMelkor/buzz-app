@@ -39,8 +39,11 @@ people, agents and channels** for an owner who can add agents) filters current
 access and lists people under **Not in this chat**, each with an **Add** button;
 Enter adds the highlighted person. Adding is immediate and uses the Solo share rule
 (`canShareSoloChat`), with per-person **Adding…**, error and **Retry** states. The
-owner's selectable agents are offered too and join as Bot, even with a Guest
-admission default, without starting a run. Composer mentions use the same grant.
+owner's selectable agents are offered too. Agents whose signed profiles verify
+that the chat owner owns them join as Admin; other agents join as Bot, even with
+a Guest admission default, without starting a run. Composer mentions use the
+same rule; other participants' composer additions use Bot.
+Existing members keep their roles, and retries finish the original saved grant.
 Where the viewer cannot add agents, a note says to mention an agent in the chat
 instead.
 Current access uses the channel groups (**People**, **Agents**) with Owner and
@@ -186,9 +189,9 @@ synchronized into the chat.
 ## Explicit conversion, separate from Share
 
 The product owner approved this distinction on 2026-10-14: **Share** keeps the
-Solo label and project filing; **Convert to channel** removes the Solo label and
-the initiating viewer's project filing, so the same conversation becomes an
-ordinary Team channel, with Private, View only or Public access. It changes
+Solo label and project filing; **Convert to channel** removes the Solo label,
+so the same conversation becomes an ordinary Team channel (still in its
+workspace, if filed), with Private, View only or Public access. It changes
 organization and conversation behavior for every member, never creates a new
 conversation or copies history.
 
@@ -213,11 +216,8 @@ The sequence is explicit, not atomic:
    altered-signature rejection and exact readback remain unchanged. The edit
    removes `buzz.solo` from the channel's labels and applies the chosen
    visibility and admission policy; name, lifetime and other labels are preserved.
-2. Refresh Solo projects and, if this viewer filed the chat in one, clear only
-   that assignment through `soloPreferences.assign(id, undefined)`. Its encrypted
-   account/community record, serialization and Outbox own persistence. Other
-   projects, conversations, defaults, memberships and other people's filing are
-   untouched.
+2. Keep the chat's workspace assignment: workspaces hold channels as well as
+   chats, so no sidebar write occurs.
 3. Announce **Converted to channel.** and open the same channel ID in Team. No
    new grant, notification, agent wake or transcript write occurs.
 
@@ -235,18 +235,11 @@ details** recovers failed reads without losing that intent. If another details
 surface confirmed the publication, fresh matching metadata can advance the retained
 conversion receipt without another kind-9002 command.
 
-`conversion.ts` retains only chat-local orchestration intent and the confirmed
-metadata phase, with a shared running guard. It is not permission evidence or a
-persistent transaction. After the label edit succeeds but project unfiling fails,
-the dialog says **Channel converted. Finish removing it from its Solo project.**
-**Finish conversion** re-reads details, confirms the label is gone and the
-settings are unchanged, and retries only the preference write. Failed reads keep
-the recovery entry. A verified superseding settings edit retires an unconfirmed
-conversion receipt, including after Reload or reopening the dialog; it does not
-rewrite those settings or remove project filing. Restart loses the
-orchestration receipt, not access or the channel: the conversation is already an
-ordinary Team channel, and a leftover project assignment for a channel without the
-label is ignored by Solo.
+**Finish conversion** re-reads details when the publication needs confirmation.
+Failed reads keep the recovery entry. A verified newer settings edit retires
+an unconfirmed conversion receipt after Reload or reopening the dialog.
+Conversion keeps the workspace assignment. An unfiled chat appears in Team
+once its Solo label is removed.
 
 ### Ordinary behavior after conversion
 

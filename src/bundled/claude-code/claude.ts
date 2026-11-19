@@ -25,10 +25,13 @@ import {
 } from "./security";
 
 export type ActivityReceipt = Readonly<{
+  /** The harness acknowledged this input, whether or not it has message activity. */
+  delivered?: () => void;
   /** Presentation destination; channel-shared sessions may handle several threads. */
   activityScope?: string;
   step?: (tool: string, target?: string) => void;
   acknowledged?: (input?: Readonly<{ steering?: true }>) => void;
+  accepted?: () => void;
   superseded?: () => void;
 }>;
 
@@ -201,9 +204,13 @@ export class ClaudeProcess {
   private working = false;
   /** Its live background tasks that are activity, as Claude last listed them. */
   private tasks = 0;
+  private taskIds = new Set<string>();
+  /** A completion notification queues its own turn after the task disappears. */
+  private continuation: "waiting" | "running" | undefined;
   /** Called when it was active and is no longer. */
   onActivity: (() => void) | undefined;
   onQuiet?: () => void;
+  private readonly idleWaiters = new Set<() => void>();
   private requests = 0;
   /** Control requests awaiting Claude's answer, by request id. */
   private calls = new Map<string, (response: Message) => void>();
@@ -535,7 +542,30 @@ export class ClaudeProcess {
   }
   /** Busy, in a turn of its own, or running background work that may call back. */
   get active() {
-    return this.busy || this.working || this.tasks > 0;
+    return (
+      this.busy ||
+      this.working ||
+      this.tasks > 0 ||
+      this.continuation !== undefined
+    );
+  }
+  /** Includes background tasks that can start tool-using continuations. */
+  idle(): Promise<void> {
+    if (!this.alive || !this.active) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.add(resolve));
+  }
+  /** Reports the activity change since `active`, its earlier state. */
+  private edge(active: boolean) {
+    if (!this.active) this.stopping = false;
+    if (active !== this.active) this.onActivity?.();
+    if (active && !this.active) {
+      this.onQuiet?.();
+      this.releaseIdle();
+    }
+  }
+  private releaseIdle() {
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
   get started() {
     return this.began;
@@ -589,6 +619,7 @@ export class ClaudeProcess {
     const settled = new Promise<Settled>((resolve) =>
       this.waiters.push(resolve),
     );
+    activity.accepted?.();
     this.write({
       type: "user",
       uuid,
@@ -733,6 +764,7 @@ export class ClaudeProcess {
     this.stopped = false;
     this.compacting = false;
     for (const resolve of this.waiters.splice(0)) resolve(settled);
+    if (!this.alive) this.releaseIdle();
   }
 
   private readError(data: string) {
@@ -796,13 +828,23 @@ export class ClaudeProcess {
       const active = this.active;
       const starts = !this.working && !this.busy && message.state !== "idle";
       this.working = message.state !== "idle";
+      if (this.working && this.continuation === "waiting")
+        this.continuation = "running";
+      if (!this.working && (this.continuation === "running" || this.stopping))
+        this.continuation = undefined;
       if (!this.working) this.callEpoch++;
       // A turn of its own, such as a background task's, is new work.
       if (starts) this.renew();
       if (!this.working && this.pending) this.done();
-      if (!this.active) this.stopping = false;
-      if (active !== this.active) this.onActivity?.();
-      if (active && !this.active) this.onQuiet?.();
+      this.edge(active);
+      return;
+    }
+    if (
+      message.type === "system" &&
+      message.subtype === "task_notification" &&
+      this.taskIds.has(String(message.task_id))
+    ) {
+      this.continuation = this.working ? "running" : "waiting";
       return;
     }
     // The whole set each time; ambient tasks, such as watchers, are not activity.
@@ -812,12 +854,18 @@ export class ClaudeProcess {
       Array.isArray(message.tasks)
     ) {
       const active = this.active;
-      this.tasks = message.tasks.filter(
+      const tasks = message.tasks.filter(
         (task) => !(task as Message | null)?.ambient,
-      ).length;
-      if (!this.active) this.stopping = false;
-      if (active !== this.active) this.onActivity?.();
-      if (active && !this.active) this.onQuiet?.();
+      );
+      this.tasks = tasks.length;
+      this.taskIds = new Set(
+        tasks.flatMap((task) => {
+          const id =
+            (task as Message | null)?.task_id ?? (task as Message | null)?.id;
+          return typeof id === "string" ? [id] : [];
+        }),
+      );
+      this.edge(active);
       return;
     }
     // `/compact` ends in a successful result even when compacting failed.
@@ -841,6 +889,7 @@ export class ClaudeProcess {
       const receipt = this.receipts.get(message.uuid);
       if (receipt) {
         this.receipts.delete(message.uuid);
+        receipt.delivered?.();
         const steering = this.activeReceipts.size > 0;
         // Watches/timers have no message activity: they must not hide a mention.
         if (receipt.step) {
@@ -880,8 +929,11 @@ export class ClaudeProcess {
           ? message.result
           : `Claude stopped (${String(message.subtype)})`;
     if (!this.reportsState) {
+      const active = this.active;
+      this.continuation = undefined;
       this.callEpoch++;
       if (this.pending) this.done();
+      this.edge(active);
     }
   }
   private done() {

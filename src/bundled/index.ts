@@ -63,6 +63,7 @@ import * as changesets from "./changesets";
 import workflowsManifest from "./workflows/manifest.json";
 import * as workflows from "./workflows";
 import type { BundledPlugin } from "../plugins/manager";
+import { orgPlugins } from "./org";
 import linksManifest from "./links/manifest.json";
 import * as links from "./links";
 import moderationManifest from "./moderation/manifest.json";
@@ -271,4 +272,6 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     module: pluginDevelopment,
     enabledByDefault: true,
   },
+  // An organization's own build may bundle plugins here (org.ts).
+  ...orgPlugins,
 ];

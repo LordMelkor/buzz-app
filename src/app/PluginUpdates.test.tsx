@@ -1652,3 +1652,72 @@ it("keeps the connection's return for a hidden window, and checks again once it 
     visibility.mockRestore();
   }
 });
+
+it("notes once what the policy installed or updated automatically", async () => {
+  const f = fixture();
+  const configuration = f.state().configuration;
+  if (configuration.status !== "ready") throw new Error("Expected catalog");
+  const managed = (
+    automatic: {
+      id: string;
+      name: string;
+      revision: string;
+      action: "installed" | "updated";
+    }[],
+  ) =>
+    f.emit({
+      configuration: {
+        ...configuration,
+        managed: {
+          status: "ready",
+          path: "policy",
+          source: "Example Org",
+          problems: [],
+          plugins: [],
+          automatic,
+        },
+      },
+    });
+  managed([
+    { id: "example.tasks", name: "Tasks", revision: "r1", action: "installed" },
+  ]);
+  f.mount();
+  expect(await screen.findByText("Example Org installed Tasks")).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Dismiss automatic plugin changes" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("Example Org installed Tasks")).toBeNull(),
+  );
+  act(() =>
+    managed([
+      {
+        id: "example.tasks",
+        name: "Tasks",
+        revision: "r1",
+        action: "installed",
+      },
+      { id: "example.notes", name: "Notes", revision: "r2", action: "updated" },
+    ]),
+  );
+  expect(await screen.findByText("Example Org updated Notes")).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Dismiss automatic plugin changes" }),
+  );
+  act(() =>
+    managed([
+      { id: "example.a", name: "A", revision: "r1", action: "installed" },
+      { id: "example.b", name: "B", revision: "r1", action: "updated" },
+    ]),
+  );
+  expect(
+    await screen.findByText("Example Org installed or updated 2 plugins"),
+  ).toBeVisible();
+  expect(screen.getByText("A, B")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Manage plugins" }));
+  expect(f.navigation.open).toHaveBeenCalledWith({
+    version: 1,
+    kind: "settings",
+    section: "plugins",
+  });
+});

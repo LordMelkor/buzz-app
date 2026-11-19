@@ -14,6 +14,12 @@ a.soloLink:hover {
   color: var(--text-standard);
   text-decoration: none;
 }
+a.soloLink[aria-disabled="true"] {
+  cursor: default;
+}
+a.soloLink[aria-disabled="true"]:hover {
+  background: var(--affordance-subtle);
+}
 html[data-keyboard-navigation] .soloLink:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;

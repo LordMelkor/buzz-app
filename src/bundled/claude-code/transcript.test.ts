@@ -986,3 +986,51 @@ it("shows a session's prompt once over the latest turns it swaps in", async () =
     shown(await latest([earlier("other"), ...(first ? [first] : [])])),
   ).toEqual([{ prompts: 1, continued: false }]);
 });
+
+it("discovers a community transcript from a different source channel", async () => {
+  clock = 0;
+  const { spawn } = host({
+    "./-Users-me--buzz/community.jsonl": [
+      line(
+        "user",
+        turnPrompt({
+          agent,
+          event: message("e", "remember"),
+          channel: { id: "channel", name: "dev" },
+          scope: "community",
+          context: [],
+          total: 1,
+        }),
+      ),
+      line("assistant", [{ type: "text", text: "Remembered." }]),
+    ].join("\n"),
+  });
+  const read = await readTranscript(
+    spawn,
+    "~/.buzz",
+    { agent, channelId: "other", community: true },
+    false,
+    new AbortController().signal,
+  );
+  expect(read?.turns.map((turn) => turn.sessionId)).toEqual(["community"]);
+});
+
+it("discovers a community session whose first turn was an unaddressed wake", async () => {
+  const { spawn } = host({
+    "./-Users-me--buzz/wake.jsonl": [
+      line(
+        "user",
+        `<context>\nScope: standalone\nSession scope: community\nAgent: ${agent}\n</context>\n\ncheck`,
+      ),
+      line("assistant", [{ type: "text", text: "checked" }]),
+    ].join("\n"),
+  });
+  const read = await readTranscript(
+    spawn,
+    "~/.buzz",
+    { agent, channelId: "other", community: true },
+    false,
+    new AbortController().signal,
+  );
+  expect(read?.turns.map((t) => t.sessionId)).toEqual(["wake"]);
+});

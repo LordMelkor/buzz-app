@@ -27,7 +27,9 @@ provides Compact session and Start a new session when idle, and Interrupt while
 working. There are no special chat commands.
 
 Thread scope is the default; channel scope shares a session across threads.
-DMs, huddle rooms and the owner's Solo chat each share one conversation. Workspace or tool-schema
+Community scope uses one session across all of the agent's conversations in its
+community, including DMs, Solo chats, huddles and unaddressed Attention turns.
+Other scopes keep DMs, huddle rooms and Solo chats as separate conversations. Workspace or tool-schema
 changes start a fresh session, as does a missing saved thread. Bindings persist
 locally per community and agent. Switching communities does not stop work;
 removing an agent, leaving its community or disabling the plugin does.

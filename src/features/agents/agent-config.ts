@@ -3,6 +3,7 @@
 // evidence (NIP-AP "Artifact state"), fences every writer so a late or stale
 // result never replaces newer state, and resolves start inputs synchronously
 // from storage.
+import { notesOf, type PluginNotes } from "./plugin-notes";
 import { PRESET } from "./recommended";
 import { verifyEvent } from "nostr-tools";
 import type { RelayEvent } from "../relay/events";
@@ -328,7 +329,11 @@ export function syncedSettings(
   agentType: string,
   schema: SettingsSchema,
 ):
-  | Readonly<{ settings: Record<string, string>; recommended?: true }>
+  | Readonly<{
+      settings: Record<string, string>;
+      recommended?: true;
+      pluginNotes?: PluginNotes;
+    }>
   | Readonly<{ problem: string }> {
   const body = JSON.parse(content) as {
     agentType?: unknown;
@@ -338,6 +343,7 @@ export function syncedSettings(
   if (body.agentType !== undefined && body.agentType !== agentType)
     return { problem: "These settings are for another agent type" };
   const problem = settingsProblem(schema, body.settings);
+  const pluginNotes = notesOf(body);
   return problem
     ? { problem }
     : {
@@ -345,6 +351,8 @@ export function syncedSettings(
         // Beside `settings`, where versions without it keep and ignore it
         // (NIP-AP "Editing"), so their strict settings check never sees it.
         ...(body.preset === PRESET ? { recommended: true as const } : {}),
+        // Plugin notes are kept the same way.
+        ...(pluginNotes ? { pluginNotes } : {}),
       };
 }
 

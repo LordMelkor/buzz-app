@@ -40,7 +40,6 @@
 .panelStack > * {
   --secondary-panel-width: initial;
 }
-.sidebar,
 .conversation {
   height: 100%;
   min-width: 0;
@@ -57,15 +56,6 @@
   min-height: 0;
   min-width: 0;
 }
-.sidebar {
-  /* Figma specifies true Semibold for unread rows, rather than the legacy 500 alias. */
-  --type-weight-semibold: 600;
-  --sidebar-padding: var(--space-2);
-  --sidebar-padding-end: var(--sidebar-padding);
-  --channel-row-radius: var(--radius-control);
-  --sidenav-emoji-size: 0.8125rem;
-  padding-inline: var(--sidebar-padding) var(--sidebar-padding-end);
-}
 .conversation
   :is(
     [data-tab-pane-toggle],
@@ -74,40 +64,19 @@
   /* An open pane shares the selected tab fill, rather than a held press. */
   --interaction-pressed: var(--affordance-subtle);
 }
-.sidebarFilter {
-  flex: 0 0 auto;
-  padding: var(--space-3) 0 0;
-  min-width: 0;
-}
-.sidebarBody {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
 .destinations {
   display: flex;
   flex-direction: column;
   gap: var(--space-half);
   margin-bottom: var(--space-3);
 }
-.sidebarFilter > .destinations {
-  margin-bottom: calc(var(--space-3) + var(--space-2));
-}
-@media (hover: hover) and (pointer: fine) {
-  .sidebar [data-icon-variant="ghost"]:hover:not([data-disabled]) {
-    background: var(--affordance-panel-hover);
-  }
-}
-.sidebar
-  [data-icon-variant="ghost"]:is(:active, [aria-expanded="true"]):not(
-    [data-disabled]
-  ) {
-  background: var(--affordance-panel-hover);
-}
 .sidebarIcon > :is(svg, img) {
   max-width: 100%;
   max-height: 100%;
+}
+.unifiedChatName {
+  --session-row-inset: calc(var(--space-2) + var(--space-half));
+  --session-action-size: calc(var(--space-6) + var(--space-1));
 }
 .sidebarIcon {
   display: inline-grid;
@@ -134,96 +103,6 @@
     min-width: 0;
     flex: 0 1 auto;
   }
-}
-.channelListFrame {
-  position: relative;
-  /* Bring the scrollbar near the divider without clipping its native thumb. */
-  width: calc(100% + 6px);
-  min-width: 0;
-  min-height: calc(var(--space-6) + var(--space-5) + var(--space-1) + 1px);
-  flex: 1;
-  overflow: hidden;
-}
-.channelList {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  overflow-y: auto;
-  /* Paint positioned rows with the scrolled contents; otherwise WebKit gives
-     each row a proxy layer that lags behind fast scrolls. */
-  isolation: isolate;
-  padding-block: var(--sidebar-padding);
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-/* Global destinations share the channel list's row geometry. */
-.channelList,
-.sidebarFilter {
-  --channel-row-fill-start: var(--space-1);
-  --channel-row-fill-end: calc(var(--space-1) + 6px);
-}
-.sidebarFilter {
-  /* No scrollbar frame extension here, so the end fill omits its 6px. */
-  --channel-row-fill-end: var(--space-1);
-}
-/* Wrapped channel rows paint on the wrapper; direct destination and Solo chat
-   rows paint on the navigation item itself, so shorten them to the fill and
-   measure their padding from that painted edge. As in ChannelSidebarRow, icons
-   start 4px and trailing content ends 6px inside the pill. */
-.channelList [data-variant="row"],
-.sidebarFilter [data-variant="row"] {
-  width: calc(
-    100% -
-    var(--channel-row-fill-start) -
-    var(--channel-row-fill-end)
-  );
-  margin-inline: var(--channel-row-fill-start) var(--channel-row-fill-end);
-  padding-inline: calc(var(--space-2) - var(--channel-row-fill-start))
-    calc(var(--space-1) + var(--space-half));
-}
-.channelList [data-variant="row"][data-inset],
-.sidebarFilter [data-variant="row"][data-inset] {
-  padding-inline-start: calc(
-    var(--space-2) +
-    var(--space-6) -
-    var(--channel-row-fill-start)
-  );
-}
-.channelList:is(:hover, :focus-within) {
-  scrollbar-color: var(--scrollbar-thumb-quiet) transparent;
-}
-.channelList::-webkit-scrollbar {
-  width: 5px;
-}
-.channelList::-webkit-scrollbar-thumb {
-  border-block: 0;
-  border-inline: 2px 0;
-  border-style: solid;
-  border-color: transparent;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  background-clip: padding-box;
-  transition: background-color 90ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-.channelList:is(:hover, :focus-within)::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb-quiet);
-  background-clip: padding-box;
-}
-.channelListContent {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-half);
-  padding-block-end: var(--sidebar-padding);
-}
-/* Inset Retry like a row, so its focus ring stays inside the scrollport. */
-.channelListContent > button {
-  align-self: flex-start;
-  margin-inline-start: var(--channel-row-fill-start);
 }
 /* Keep the prominent unread cue while matching the timeline reveal motion.
    The cue floats over the list, so its quiet fill uses the floating control
@@ -311,9 +190,18 @@
 .channelSection {
   position: relative;
   flex-shrink: 0;
+  --sidebar-section-gap: var(--space-2);
+}
+.channelSection[data-sidebar-section="starred"] {
+  --sidebar-section-gap: var(--space-4);
 }
 .channelSection + .channelSection {
-  margin-top: var(--space-4);
+  margin-top: var(--sidebar-section-gap);
+}
+[data-sidebar-slot]:has(> .channelSection)
+  ~ [data-sidebar-slot]
+  > .channelSection:first-child {
+  margin-top: var(--sidebar-section-gap);
 }
 .channelSection[data-drop-target] {
   border-radius: var(--radius-row);
@@ -324,7 +212,7 @@
 }
 .createSectionHitArea {
   position: absolute;
-  inset: calc(-1 * var(--space-4)) 0 0;
+  inset: calc(-1 * var(--sidebar-section-gap)) 0 0;
   pointer-events: none;
 }
 .createSectionReveal {
@@ -421,9 +309,6 @@ body:has([data-create-section-drop][data-drop-target]) .channelDragOverlay {
   overflow: hidden;
   white-space: nowrap;
 }
-.scopeSectionTitle {
-  color: var(--text-standard);
-}
 /* Collapsed headings stand in for their hidden rows, using the same unread
    evidence as the sidebar edge cues. Muted destinations stay quiet. */
 .channelSection:has(
@@ -460,11 +345,6 @@ body:has([data-create-section-drop][data-drop-target]) .channelDragOverlay {
 }
 details:not([open]) > summary .sectionChevron {
   transform: rotate(-90deg);
-}
-@media (hover: none) {
-  .channelList {
-    scrollbar-color: var(--scrollbar-thumb-quiet) transparent;
-  }
 }
 .preferenceNotice {
   padding: var(--space-2);
@@ -694,29 +574,12 @@ details:not([open]) > summary .sectionChevron {
   width: 0;
   height: 1em;
   vertical-align: middle;
-  opacity: 0;
-  transform: translateX(calc(-1 * var(--space-1)));
-  transition:
-    opacity var(--duration-state) var(--easing-state),
-    transform var(--duration-state) var(--easing-state);
 }
 .settingsTitlePencil > svg {
   position: absolute;
   inset-inline-start: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-}
-.settingsTitleAction[aria-busy="true"] .settingsTitlePencil,
-.settingsTitleAction:hover .settingsTitlePencil,
-.settingsTitleAction:focus-visible .settingsTitlePencil {
-  opacity: 1;
-  transform: translateX(0);
-}
-@media (hover: none) {
-  .settingsTitlePencil {
-    opacity: 1;
-    transform: none;
-  }
 }
 .settingsIcon {
   display: grid;
@@ -773,39 +636,21 @@ details:not([open]) > summary .sectionChevron {
 .settingsDetailIcon {
   display: inline-flex;
   color: var(--text-subtle);
-  opacity: 0;
-  transform: translateX(calc(-1 * var(--space-1)));
-  transition:
-    opacity var(--duration-state) var(--easing-state),
-    transform var(--duration-state) var(--easing-state);
 }
-.settingsDetailAction[aria-busy="true"] .settingsDetailIcon,
-.settingsDetailAction:hover .settingsDetailIcon,
-.settingsDetailAction:focus-visible .settingsDetailIcon,
-.settingsDetails > div:hover .settingsLabelAction .settingsDetailIcon {
-  opacity: 1;
-  transform: translateX(0);
+html[data-keyboard-navigation] .settingsTitleAction:focus-visible,
+html[data-keyboard-navigation] .settingsLabelAction:focus-visible {
+  border-radius: var(--radius-control);
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
-@media (hover: none) {
-  .settingsDetailIcon {
-    opacity: 1;
-    transform: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .settingsTitlePencil,
-  .settingsTitleAction:hover .settingsTitlePencil,
-  .settingsTitleAction:focus-visible .settingsTitlePencil,
-  .settingsDetailIcon,
-  .settingsDetailAction:hover .settingsDetailIcon,
-  .settingsDetailAction:focus-visible .settingsDetailIcon,
-  .settingsDetails > div:hover .settingsLabelAction .settingsDetailIcon {
-    transform: none;
-    transition: none;
-  }
-}
-.settingsDetailAction:focus-visible {
+.settingsDetailAction:not(.settingsLabelAction):focus-visible {
   outline: none;
+}
+html[data-keyboard-navigation]
+  .settingsDetails
+  > div:has(.settingsDetailAction:not(.settingsLabelAction):focus-visible) {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 .settingsDetailAction:not(.settingsLabelAction)::after {
   content: "";
@@ -826,6 +671,11 @@ details:not([open]) > summary .sectionChevron {
 .settingsDetails dd {
   margin: var(--space-1) 0 0;
   color: var(--text-subtle);
+}
+.settingsAccess {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 /* The switch trails its description; an error spans the row below both. */
 .settingsSwitch > dd {
@@ -1095,43 +945,20 @@ details:not([open]) > summary .sectionChevron {
   min-height: 0;
 }
 
-/* Hovered and selected rows take the row's paired ink, so navigation text
-   follows the fill instead of staying gray on an accent row. Selection has
-   its own ink: in dark mode it carries the accent on a neutral fill.
-   A row owner (a channel row or Solo chat row with its attached actions)
-   holds exactly one row, so hovering its actions still inks that row.
-   Structural selectors such as `:hover > * > row` also match a hovered
-   list and would ink every row in it. */
-.sidebar [data-variant="row"]:hover,
-.sidebar
-  :is([data-channel-sidebar-row], [data-solo-menu-id]):hover
-  [data-variant="row"]:not([data-selected]) {
-  color: var(--text-row);
-}
-.sidebar [data-variant="row"][data-selected],
-.sidebar
-  :is([data-channel-sidebar-row], [data-solo-menu-id])[data-selected]
-  [data-variant="row"] {
-  color: var(--text-row-selected);
-}
-
-/* A selected destination carries its fill's ink. Small status/count badges
-   use a quieter paired surface so working never resembles the overflow glyph. */
-.sidebar [data-selected],
-.sidebar
-  :is([data-channel-sidebar-row], [data-solo-menu-id]):has(
-    [aria-current="page"]
-  ) {
-  --text-standard: var(--text-row-selected);
-}
-.sidebar [data-selected] :is(.dmCount, .typing, .thinkingBadge) {
+/* Small status/count badges on a selected sidebar destination use a quieter
+   paired surface so working never resembles the overflow glyph. */
+[class~="buzz-sidebar-navigation"]
+  [data-selected]
+  :is(.dmCount, .typing, .thinkingBadge) {
   background: var(--surface-row-selected-detail);
   color: var(--text-row-selected-detail);
 }
-.sidebar [data-selected] .typing > span {
+[class~="buzz-sidebar-navigation"] [data-selected] .typing > span {
   background: currentColor;
 }
-.sidebar [data-selected] :is(.priorityDot, .threadActivityDot) {
+[class~="buzz-sidebar-navigation"]
+  [data-selected]
+  :is(.priorityDot, .threadActivityDot) {
   background: var(--text-row-selected);
 }
 

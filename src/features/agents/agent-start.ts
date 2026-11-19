@@ -109,6 +109,11 @@ export function resolveStart<C extends object>(input: StartInput<C>): Start<C> {
     config = read.recommended
       ? { ...config, preset: PRESET }
       : offRecommended(config);
+    // So are plugin notes; a local agent's stay without them.
+    const { pluginNotes: _, ...rest } = config as { pluginNotes?: unknown };
+    config = (
+      read.pluginNotes ? { ...rest, pluginNotes: read.pluginNotes } : rest
+    ) as typeof config;
     applied = read.settings;
     revisions.push(entry.head.id);
   }

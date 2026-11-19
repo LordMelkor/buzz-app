@@ -47,7 +47,7 @@ semantic tokens, UI authoring rules and the local component reference.
   activation/re-enable order. Primary pages choose `sidebar` (default, a row in
   the Messages sidebar) or `dock` (an app in the left dock) placement for
   contributed pages. `topbar` and `toolbar` are accepted aliases for `dock`.
-  `PrimarySidebar` is the conversation sidebar: a capsule All / Solo / Team
+  The bundled `MessagesSidebar` supplies the conversation sidebar: a capsule All / Solo / Team
   filter above one shared scrollport, Solo projects and chats above Team's channel
   sections, one relay-recovery notice, and the connection fallback. The filter
   never opens a destination or changes the open conversation; a new destination
@@ -105,14 +105,23 @@ semantic tokens, UI authoring rules and the local component reference.
   workspace navigation request retries it independently of the page body.
   Messages uses the conversation sidebar. Other pages show a sidebar only when
   they contribute `Page.sidebar`; apps without one hide the retained navigation.
-  `App.tsx` composes `PrimarySidebar` around `features/channel-navigation/ChannelInventory`. The inventory supplies channel rows,
-  notices, dialogs and scroll bindings through a render prop; PrimarySidebar owns
-  the common frame, Solo/Team arrangement and error fallback. The fallback retains
-  page navigation without remounting a failed inventory. There is no portal.
-  Sidebar session state resets on scope/connection generation without remounting
-  unrelated pages. Its own error boundary keeps page navigation and Settings usable.
+  `App.tsx` mounts a global `PrimarySidebar` host. Bundled preview contexts supply
+  its contents; Messages registers its context for the conversation navigation
+  owner, and the host adapts `Page.sidebar` into the same ordered, isolated slots.
+  The host has no Channels or Solo dependencies. Shared frame/list/slot primitives
+  remain in `features/channel-navigation` with their own stylesheet.
+  `bundled/channels/MessagesSidebar` owns the All/Solo/Team arrangement and mounts
+  `ChannelInventory`, the single preferences, actions and view owner. Solo and Team
+  sources portal their content into stable containers under their existing drag
+  owners. The Messages context owns its connection-generation readiness and error
+  fallback; replacing it mounts no Messages inventory. Returning restores saved
+  view state through the existing owner. Standalone pages hide a retained context;
+  a cold standalone launch mounts only neutral navigation until a context matches.
+  No required launch marker depends on that absent context. Settings retains its
+  existing modal presentation; migrating it to a replacement context is deferred.
   Page buttons use shared navigation rows and focus the main region on selection.
-  At short heights page rows scroll with the channel list rather than in their own list.
+  When pinned page rows run out of vertical space, their area scrolls so the
+  conversation list stays reachable.
   At widths up to 650px, Messages and pages with a sidebar contribution collapse
   navigation behind the header’s Show navigation button to preserve readable
   content at 200% text size. The 220px disclosure overlays content, supports
@@ -140,11 +149,12 @@ semantic tokens, UI authoring rules and the local component reference.
   and non-primary or missing destinations leave every dock tile unselected.
   Sidebar page links retain their exact route and focus main content when
   selected. Dock destinations never become companion launchers.
-  The shell owns one joined Panel around navigation and page content, with a
-  panel-gap outer gutter beside the dock, at the right and below. Nested Panels
-  keep their opaque fill and clipping but drop individual borders, radii, and shadows. Layout
-  owners add one-pixel semantic dividers. Document pages scroll inside the
-  remaining viewport.
+  The shell owns one joined Panel around navigation and page content. The shell
+  body uses `--space-panel-gap` minus `--space-half` on its inline edges and the
+  full `--space-panel-gap` below. When the dock is present, it supplies the
+  leading space. Nested Panels keep their opaque fill and clipping but drop
+  individual borders, radii, and shadows. Layout owners add one-pixel semantic
+  dividers. Document pages scroll inside the remaining viewport.
 - `SettingsSidebar.tsx` composes shared SidebarNavigation with
   NavigationSection/NavigationItem content inside Dialog's integrated navigation.
   The same composition wraps SidebarFrame (the Solo/Team sidebar),

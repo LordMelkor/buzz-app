@@ -101,9 +101,8 @@ function fixture(projectName = "Work") {
       write,
       writeStar: async () => [],
       removeSection: remove,
+      writeSort: async () => ({}),
       writeOrder: order,
-      // Groups-only chats have no Messages sort coordinate.
-      groupsOnly: true,
     });
   const order = vi.fn(async (ids: readonly string[]) => {
     saved = {
@@ -140,7 +139,7 @@ function fixture(projectName = "Work") {
         {
           ...owner.session,
           channelDetails: details,
-          soloPreferences: preferences,
+          sidebarPreferences: preferences,
           unread,
           canvas: { available: false },
           channels: { list: () => channels, subscribeList: () => () => {} },
@@ -258,10 +257,7 @@ it("creates and moves through the relay service, then restores in a fresh store"
   await user.click(
     await screen.findByRole("menuitem", { name: "New workspace" }),
   );
-  await user.type(
-    screen.getByRole("textbox", { name: "Workspace name" }),
-    "Projects",
-  );
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "Projects");
   await user.click(screen.getByRole("button", { name: "Create and move" }));
   await waitFor(() =>
     expect(h.write).toHaveBeenCalledWith(
@@ -1089,12 +1085,12 @@ it("rejects a late personal move through the same owner used by menu selections 
       muted: [],
     }),
     available: true,
-    groupsOnly: true,
+    writeStar: async () => [],
     write,
   });
   try {
     await preferences.queries.ensure();
-    Object.assign(h.session, { soloPreferences: preferences.queries });
+    Object.assign(h.session, { sidebarPreferences: preferences.queries });
     const channel = h.session.channels
       .list()
       .channels.find((item) => item.id === "owned");

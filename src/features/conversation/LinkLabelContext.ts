@@ -20,6 +20,11 @@ export const LinkDescriptionContext = createContext<
   ((description: string | undefined) => void) | undefined
 >(undefined);
 
+/** A bundled renderer's visible replacement name, independent of authored copy text. */
+export const LinkAccessibleNameContext = createContext<
+  ((name: string | undefined) => void) | undefined
+>(undefined);
+
 /** Host workspace opener for a message link's thread tab; false when it cannot. */
 export const LinkThreadTabContext = createContext<
   | ((channelId: string, messageId: string, rootId: string) => boolean)

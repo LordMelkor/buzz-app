@@ -110,7 +110,7 @@ it("updates a mounted profile from the shared name view without replacing its id
     );
     expect(await screen.findByRole("heading", { name })).toBeTruthy();
     expect(screen.queryByRole("img", { name: /^Presence:/ })).toBeNull();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.getByText("Online", { exact: true })).toBeVisible();
     expect(
       screen.getAllByRole("img", { name: `${name} avatar, online` }),
     ).toHaveLength(1);
@@ -123,11 +123,11 @@ it("updates a mounted profile from the shared name view without replacing its id
     expect(
       screen.getByRole("img", { name: `${name} avatar, online` }),
     ).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Presence: Active" })).toBeNull();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.queryByRole("img", { name: /^Presence:/ })).toBeNull();
+    expect(screen.getByText("Online", { exact: true })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Info" }));
     expect(screen.queryByRole("img", { name: /^Presence:/ })).toBeNull();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.getByText("Online", { exact: true })).toBeVisible();
     expect(
       screen.getAllByRole("img", { name: `${name} avatar, online` }),
     ).toHaveLength(1);
@@ -149,7 +149,7 @@ it("updates a mounted profile from the shared name view without replacing its id
       expect(
         screen.getByRole("img", { name: `${name} avatar, ${status}` }),
       ).toBeTruthy();
-      expect(screen.queryByText("Active", { exact: true })).toBeNull();
+      expect(screen.queryByText("Online", { exact: true })).toBeNull();
     }
     presenceStatus.mockReturnValue("unknown");
     act(() => {
@@ -157,11 +157,11 @@ it("updates a mounted profile from the shared name view without replacing its id
       notify();
     });
     expect(screen.getByRole("img", { name: `${name} avatar` })).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Presence: Active" })).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Presence:/ })).toBeNull();
     expect(document.querySelector(".buzz-avatar-status")).not.toHaveAttribute(
       "data-status",
     );
-    expect(screen.queryByText(/^(Active|Away|Offline)$/)).toBeNull();
+    expect(screen.queryByText(/^(Online|Away|Offline)$/)).toBeNull();
     expect(owner.session.profiles.snapshot().size).toBe(0);
   } finally {
     vi.useRealTimers();
@@ -358,7 +358,7 @@ it("exposes thinking through the named profile avatar across tabs", async () => 
     expect(
       screen.getByRole("img", { name: "Thinking agent avatar, thinking" }),
     ).toBeVisible();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.getByText("Online", { exact: true })).toBeVisible();
     await userEvent
       .setup()
       .click(screen.getByRole("tab", { name: "Channels" }));
@@ -368,7 +368,7 @@ it("exposes thinking through the named profile avatar across tabs", async () => 
     expect(
       screen.getByRole("img", { name: "Thinking agent avatar, thinking" }),
     ).toBeVisible();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.getByText("Online", { exact: true })).toBeVisible();
     act(() => {
       activity = { ...activity, turns: [] };
       for (const listener of listeners) listener();

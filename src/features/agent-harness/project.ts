@@ -21,9 +21,23 @@ export type Project = Readonly<{
  * one it was handed before. */
 export const NO_PROJECT: Project = Object.freeze({
   section:
-    "<workspace-canvas>\nThis Solo chat has no workspace Canvas from its owner now. Disregard any earlier workspace Canvas, its instructions and its folders.\n</workspace-canvas>",
+    "<workspace-canvas>\nThis conversation has no workspace Canvas from its owner now. Disregard any earlier workspace Canvas, its instructions and its folders.\n</workspace-canvas>",
   directories: [],
 });
+
+/** A shared session retains an unread Canvas only for the same source. */
+export class ProjectSource {
+  private source: string | undefined;
+  private project: Project = NO_PROJECT;
+  preview(source: string | undefined, project: Project | undefined): Project {
+    return project ?? (source === this.source ? this.project : NO_PROJECT);
+  }
+  resolve(source: string | undefined, project: Project | undefined): Project {
+    this.project = this.preview(source, project);
+    this.source = source;
+    return this.project;
+  }
+}
 
 export function project(canvas: string | undefined): Project {
   if (!canvas?.trim()) return NO_PROJECT;

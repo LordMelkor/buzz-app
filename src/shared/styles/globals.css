@@ -216,7 +216,7 @@
     flex: none;
     flex-direction: column;
     align-items: center;
-    padding: var(--space-2) var(--space-2) var(--space-panel-gap);
+    padding: var(--space-2) var(--space-1h) var(--space-panel-gap);
     min-height: 0;
   }
   .shell-dock-pages {
@@ -294,6 +294,10 @@
   .shell-pages {
     @apply flex min-w-0 flex-col gap-1;
   }
+  /* Page navigation can sit in a clipping sidebar. Keep its focus ring inside each row. */
+  html[data-keyboard-navigation] .shell-pages .navigation-item:focus-visible {
+    outline-offset: -2px;
+  }
   /* Matches ChannelSidebarRow's icon box and centers larger avatars around the
      same icon slot without moving the label column. */
   .shell-page-icon {
@@ -345,7 +349,7 @@
   }
   .shell-body {
     @apply relative flex min-h-0 min-w-0 flex-1;
-    padding-inline: var(--space-panel-gap);
+    padding-inline: calc(var(--space-panel-gap) - var(--space-half));
     padding-bottom: var(--space-panel-gap);
   }
   .shell-side-dock ~ .shell-body {
@@ -358,7 +362,8 @@
   }
   .shell-dialog-frame {
     position: absolute;
-    inset: 0 var(--space-panel-gap) var(--space-panel-gap);
+    inset: 0 calc(var(--space-panel-gap) - var(--space-half))
+      var(--space-panel-gap);
     pointer-events: none;
   }
   .shell-dialog-frame > * {
@@ -371,7 +376,8 @@
       position: fixed;
       /* Fixed positioning creates a stacking context; raise it with the dialog. */
       z-index: var(--layer-dialog);
-      inset: var(--size-topbar) var(--space-panel-gap) var(--space-panel-gap);
+      inset: var(--size-topbar) calc(var(--space-panel-gap) - var(--space-half))
+        var(--space-panel-gap);
     }
   }
   .shell-content {

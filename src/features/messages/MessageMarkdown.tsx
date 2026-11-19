@@ -14,7 +14,7 @@ import type { RelaySession } from "../relay/session";
 import type { ComposerSession } from "./composer-session";
 import { MessageLink } from "../conversation/MessageLink";
 import { parseBuzzLink } from "../navigation/buzz-links";
-import { messageLinkParts } from "./message-link-parts";
+import { bareHostParts, messageLinkParts } from "./message-link-parts";
 import { labelText } from "./label-text";
 import {
   ReferenceText,
@@ -33,7 +33,12 @@ import type { ConversationExtensions } from "../conversation/contracts";
 import { CodeFence, observeTableOverflow } from "../markdown/code-blocks";
 import { InlineText } from "../conversation/InlineText";
 import type { ChannelMessage, Profile } from "../relay/contracts";
-import { emojiMatches, linkPart, messageParts } from "../relay/emoji";
+import {
+  emojiMatches,
+  isNumericTimeShortcode,
+  linkPart,
+  messageParts,
+} from "../relay/emoji";
 import { safeLinkUrl, visibleHtmlSource } from "../relay/message-content";
 import styles from "./Messages.module.css";
 import {
@@ -172,7 +177,15 @@ function protectInlineContent(
               ? []
               : Array.from(emojiMatches(part, row.emoji ?? []), (match) => ({
                   ...match,
-                  literal: undefined,
+                  // Preserve the full-source boundary after mention segmentation,
+                  // including during the inline plugin's later text scan.
+                  literal: isNumericTimeShortcode(
+                    prepared.content,
+                    partStart + match.start,
+                    match.emoji.shortcode,
+                  )
+                    ? part.slice(match.start, match.end)
+                    : undefined,
                 }))),
             ...(urlPart ? [] : encoded),
             ...spoilerDelimiters
@@ -601,29 +614,31 @@ function PreparedMessageMarkdown({
     );
   const renderText = (text: string) => {
     let offset = 0;
-    return messageLinkParts(text).map((part) => {
-      // A trailing bare link yields two empty text parts at the same offset.
-      if (!part.url && !part.text) return null;
-      const key = `${offset}:${part.text}`;
-      offset += part.text.length;
-      return part.url ? (
-        <span key={key}>{renderLink(part.url, part.label)}</span>
-      ) : (
-        <ReferenceText
-          channelId={row.channelId}
-          key={key}
-          text={part.text}
-          mentions={[]}
-          directory={directory}
-          renderText={renderInline}
-          onOpenLink={onOpenLink}
-          extensions={extensions}
-          session={session}
-          scope={scope}
-          interactive={interactive}
-        />
-      );
-    });
+    return messageLinkParts(text)
+      .flatMap((part) => (part.url ? [part] : bareHostParts(part.text)))
+      .map((part) => {
+        // A trailing bare link yields two empty text parts at the same offset.
+        if (!part.url && !part.text) return null;
+        const key = `${offset}:${part.text}`;
+        offset += part.text.length;
+        return part.url ? (
+          <span key={key}>{renderLink(part.url, part.label)}</span>
+        ) : (
+          <ReferenceText
+            channelId={row.channelId}
+            key={key}
+            text={part.text}
+            mentions={[]}
+            directory={directory}
+            renderText={renderInline}
+            onOpenLink={onOpenLink}
+            extensions={extensions}
+            session={session}
+            scope={scope}
+            interactive={interactive}
+          />
+        );
+      });
   };
 
   const profiles = participantProfiles ?? directory.profiles;
@@ -759,6 +774,7 @@ function PreparedMessageMarkdown({
       <CodeFence
         {...props}
         copy={interactive}
+        focusable={interactive}
         registry={interactive ? extensions?.codeBlocks : undefined}
         classes={MESSAGE_CODE_CLASSES}
       />

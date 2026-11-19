@@ -1030,7 +1030,12 @@ it("opens Activity without login and keeps Identity's login running after leavin
     await signIn.mock.results[0]?.value;
   });
   expect(h.session.snapshot().status).toBe("signed-in");
-  expect(h.request).not.toHaveBeenCalled();
+  // Signed in, Activity reads only the agent's stored session list.
+  await waitFor(() =>
+    expect(
+      h.request.mock.calls.map(([input]) => input.url.split("/").at(-1)),
+    ).toEqual(["list-agents", "list-agent-sessions"]),
+  );
   expect(screen.queryByRole("textbox", { name: "Instructions" })).toBeNull();
   await user.click(screen.getByRole("tab", { name: "Identity" }));
   expect(await loadedInstructions()).toHaveValue("First instructions.");

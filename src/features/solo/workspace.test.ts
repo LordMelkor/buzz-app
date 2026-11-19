@@ -12,6 +12,7 @@ import {
   projectTemplateId,
   workspaceCanvas,
   workspaceDirectories,
+  shareableInstructions,
 } from "./workspace";
 
 it.each([{ folders: [] }, { folders: [" ", "\t"] }])(
@@ -100,6 +101,17 @@ it("reads worktree Canvas saved with the earlier worktree rule without treating 
     canvas: "Instructions",
   };
   expect(readWorkspace(saved)).toEqual(workspace);
+  const body = "x".repeat(
+    LIVE_CANVAS_BYTES - saved.length + workspace.canvas.length,
+  );
+  const full = saved.slice(0, -workspace.canvas.length) + body;
+  expect(readWorkspace(full)).toEqual({ ...workspace, canvas: body });
+  expect(() =>
+    readWorkspace(full.replace("Make all changes", "Make no changes")),
+  ).toThrow("edited");
+  expect(() => workspaceCanvas({ ...workspace, canvas: body })).toThrow(
+    LIVE_CANVAS_LIMIT,
+  );
   // Saved again, it gets the current rule.
   expect(workspaceCanvas(workspace)).toContain(
     "- Make code changes in that new worktree.",
@@ -140,7 +152,7 @@ it("preserves ordinary Canvas and refuses malformed or manually changed workspac
 function fixture() {
   const kit = { status: "ready", entries: [] as unknown[] };
   const session = {
-    soloPreferences: {
+    sidebarPreferences: {
       writable: true,
       refresh: vi.fn(async () => {}),
       snapshot: () => ({
@@ -309,3 +321,28 @@ it("finds an agent's folders even in a hand-edited workspace block", () => {
     [],
   );
 });
+
+it.each([
+  ["a canonical block", (block: string) => block, "Ship notes"],
+  [
+    "an introduction before the block",
+    (block: string) => `Intro\n\n${block}`,
+    "",
+  ],
+  ["a leading blank line", (block: string) => `\n${block}`, ""],
+  ["a nested block", (block: string) => `Ship notes\n\n${block}`, ""],
+  ["a malformed block", (block: string) => block.slice(0, 40), ""],
+  ["plain instructions", () => "Just notes", "Just notes"],
+])(
+  "shares only metadata-free workspace instructions: %s",
+  (_, shape, shared) => {
+    const block = workspaceCanvas({
+      folders: ["/private/project"],
+      worktree: { location: "/private/worktrees", baseBranch: "main" },
+      canvas: "Ship notes",
+    });
+    const result = shareableInstructions(shape(block));
+    expect(result).toBe(shared);
+    expect(result).not.toContain("/private");
+  },
+);

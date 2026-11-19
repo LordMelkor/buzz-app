@@ -3336,7 +3336,6 @@
     "src/app/settings-sections.test.ts": 0,
     "src/app/shell/AppShell.test.tsx": 5.6,
     "src/app/shell/BestieNavigation.test.tsx": 1.9,
-    "src/app/shell/ChannelDirectoryResults.test.tsx": 3.8,
     "src/app/shell/CommunityShortcuts.test.tsx": 0,
     "src/app/shell/LaunchWindowControls.test.tsx": 0.3,
     "src/app/shell/MarkAllReadShortcut.test.tsx": 0.5,

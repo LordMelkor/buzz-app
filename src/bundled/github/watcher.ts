@@ -516,33 +516,37 @@ export function watchPulls(
       // github-pulls Interest this plugin used to make, moves to this one.
       const owner =
         object && object.type !== "interest" ? object.interest_id : undefined;
-      let expected = priorObject.expected_state;
-      if (object && owner !== interest)
-        expected = (
-          JSON.parse(
-            await callAttentionTool(attention, "watch_remove", {
-              id,
-              interest: owner,
-              expected_state: expected,
-            }),
-          ) as { expected_state: string }
-        ).expected_state;
-      const update = object && owner === interest;
-      await callAttentionTool(
-        attention,
-        update ? "watch_update" : "watch_add",
-        {
-          id,
-          interest,
-          expected_state: expected,
-          ...(update
-            ? fields.root
-              ? {}
-              : { clear: ["root"] }
-            : { type: "source" }),
-          ...fields,
-        },
-      );
+      if (object && object.type !== "interest" && owner !== interest) {
+        // Admission and the transfer share one write; a refusal keeps the old watch.
+        if (!attention.enabled())
+          throw new Error("Turn on Attention to watch pull requests");
+        await attention.write(
+          `watch/${id}`,
+          { type: "source", interest_id: interest, ...fields },
+          {
+            expected: priorObject.expected_state,
+            interest: object.interest_id,
+            move: true,
+          },
+        );
+      } else {
+        const update = !!object;
+        await callAttentionTool(
+          attention,
+          update ? "watch_update" : "watch_add",
+          {
+            id,
+            interest,
+            expected_state: priorObject.expected_state,
+            ...(update
+              ? fields.root
+                ? {}
+                : { clear: ["root"] }
+              : { type: "source" }),
+            ...fields,
+          },
+        );
+      }
       return [
         `Watching ${pull.url}. You will be woken here${moved ? ", no longer in the conversation that asked before," : ""} when CI finishes on its latest commit or new feedback arrives, and when it gets stuck or ready on its way to merging.`,
         ...(object && owner !== interest

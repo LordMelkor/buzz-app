@@ -39,6 +39,13 @@ const originalOpen = Harness.open;
 let openedHarness;
 Harness.open = async (...args) => {
   openedHarness = await originalOpen(...args);
+  const conversation = openedHarness.conversation.bind(openedHarness);
+  openedHarness.conversation = async (...args) => {
+    const found = await conversation(...args);
+    return found && new Proxy(found, { get: (target, key) => key === "submit"
+      ? async (...rest) => { const accepted = await target.submit(...rest); if (rest[0]?.requestId === "SOURCE_B") throw new Error("Host stopped after acceptance"); return accepted; }
+      : typeof target[key] === "function" ? target[key].bind(target) : target[key] });
+  };
   // While \`statusGate\` is set, reads of a request's status wait for it;
   // while \`failRead\` is, the next one fails.
   const submission = openedHarness.submission.bind(openedHarness);
@@ -335,6 +342,39 @@ const last = await answer("M110", "more");
 const deliverRead = read;
 storage.scanEntries = scan;
 out.sessions = { n0: n0.session, n1: n1.session, n2: n2.session, n3: n3.session, last: last.session, reset, page: page.session, more: !!page.next, oldest: page.entries.at(-1)?.id, shown: page.entries.length, pageRead, deliverRead };
+// Community scope keeps one native conversation across different tool destinations and a host restart.
+const shared = (request, text, channel) => ({...turn(request, text), key: "@community", context: {channel}});
+const communityGate = held();
+let communityMessages, communitySteering;
+faux.setResponses([
+  async () => {
+    await communityGate.gate;
+    return fauxAssistantMessage(fauxToolCall("buzz_send", { text: "working" }), { stopReason: "toolUse" });
+  },
+  (context) => {
+    communitySteering = context.messages.filter((message) => message.role === "user").map((message) => message.content);
+    return fauxAssistantMessage("community next");
+  },
+]);
+const communityFirst = await pi.rpc("deliver", shared("COMMUNITY1", "community secret 1729", "one"));
+await started(pi.events, "COMMUNITY1");
+const communityNext = await pi.rpc("deliver", shared("COMMUNITY2", "use that context", "two"));
+communityGate.release();
+await Promise.all([communityFirst, communityNext].map(({submission}) => pi.rpc("wait", {agent, submission})));
+await pi.stop();
+pi = start();
+await pi.rpc("open", {agent, tools});
+faux.setResponses([(context) => { communityMessages = context.messages; return fauxAssistantMessage("community restored"); }]);
+const communityRestored = await pi.rpc("deliver", shared("COMMUNITY3", "after restart", "solo"));
+await pi.rpc("wait", {agent, submission: communityRestored.submission});
+await pi.rpc("open", {agent: secondary, tools});
+let isolatedMessages;
+faux.setResponses([(context) => { isolatedMessages = context.messages; return fauxAssistantMessage("other community"); }]);
+const isolated = await pi.rpc("deliver", {...shared("ISOLATED", "other community request", "one"), agent: secondary});
+await pi.rpc("wait", {agent: secondary, submission: isolated.submission});
+await pi.rpc("close", {agent: secondary});
+out.community = {steering: communitySteering, first: communityFirst.conversation, next: communityNext.conversation, restored: communityRestored.conversation, messages: JSON.stringify(communityMessages), isolated: JSON.stringify(isolatedMessages)};
+
 // A tool loaded on search is offered once tool_search finds it.
 const offered = [];
 /** The tools a request offers: its own, and those its system messages add. */
@@ -514,6 +554,37 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 await writeFile(data + "/auth.json", JSON.stringify({ p: signIn }));
 await writing();
 out.whileWritten = await reading;
+// A failure after native acceptance precedes the history-watermark commit.
+pi = start();
+await pi.rpc("open", { agent, tools });
+faux.setResponses([fauxAssistantMessage("Source A")]);
+const sourceA = await pi.rpc("deliver", { ...turn("SOURCE_A", "source A"), key: "@community", at: 100, context: { channel: "source-a" } });
+await pi.rpc("wait", { agent, submission: sourceA.submission });
+const sourceGate = held();
+faux.setResponses([async (_context, options) => { await abortable(sourceGate.gate, options?.signal); return fauxAssistantMessage("Source B"); }]);
+out.sourceFailure = await pi.rpc("deliver", { ...turn("SOURCE_B", "source B"), key: "@community", at: 200, context: { channel: "source-b", root: "private-root" } }).catch(error => error.message);
+await pi.stop();
+sourceGate.release();
+pi = start();
+await pi.rpc("open", { agent, tools });
+out.sourceRecovery = (await pi.rpc("unfinished", { agent })).submissions.find(item => item.request === "SOURCE_B");
+out.sourceSeen = (await pi.rpc("place", { agent, key: "@community" })).seen;
+await pi.rpc("drop", { agent, submissions: [out.sourceRecovery] });
+await pi.rpc("abort", { agent, conversation: sourceA.conversation });
+await pi.stop();
+// A follow-up dropped before Pi takes it leaves the running turn's tool context.
+const dropAgent = "e".repeat(64);
+pi = start(async ({ request }) => request === "DROPPED" ? undefined : { text: request, steer: request });
+await pi.rpc("open", { agent: dropAgent, tools });
+const keepGate = held(), keepRunning = held();
+faux.setResponses([async (_context, options) => { keepRunning.release(); await abortable(keepGate.gate, options?.signal); return fauxAssistantMessage(fauxToolCall("buzz_send", { text: "kept", final: true }), { stopReason: "toolUse" }); }]);
+const keep = await pi.rpc("deliver", { ...turn("KEEP", "keep"), agent: dropAgent, key: "@community", context: { channel: "keep" } });
+await keepRunning.gate;
+out.dropped = await pi.rpc("deliver", { ...turn("DROPPED", "dropped"), agent: dropAgent, key: "@community", context: { channel: "dropped" }, refresh: true });
+keepGate.release();
+await pi.rpc("wait", { agent: dropAgent, submission: keep.submission });
+out.keptTools = pi.tools.splice(0).map((tool) => tool.context);
+await pi.stop();
 console.log(JSON.stringify(out));
 `;
 
@@ -697,6 +768,14 @@ describe.skipIf(!DEPS)("the Pi host on Pi durable", () => {
       { cwd: folder, timeout: 60_000 },
     );
     const out = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
+    expect(out.sourceFailure).toContain("Host stopped after acceptance");
+    expect(out.sourceRecovery).toMatchObject({
+      key: "@community",
+      context: { channel: "source-b", root: "private-root" },
+    });
+    expect(out.sourceSeen).toBe(100);
+    expect(out.dropped).toBe(false);
+    expect(out.keptTools).toEqual([{ channel: "keep" }]);
     if (process.platform !== "win32") {
       const mode = async (path: string) => (await stat(path)).mode & 0o777;
       expect(await mode(agents)).toBe(0o700);
@@ -786,6 +865,7 @@ describe.skipIf(!DEPS)("the Pi host on Pi durable", () => {
         submission: expect.any(Number),
         conversation: out.a.conversation,
         request: "D",
+        key: "chan/root",
         reply: { channel: "chan", root: "wake-root", topLevel: false },
         context: { channel: "chan", root: "root" },
       },
@@ -845,6 +925,14 @@ describe.skipIf(!DEPS)("the Pi host on Pi durable", () => {
       n2: out.sessions.reset,
       more: true,
     });
+    expect(out.community.next).toBe(out.community.first);
+    expect(out.community.steering.slice(-2)).toEqual([
+      "community secret 1729",
+      "steer: use that context",
+    ]);
+    expect(out.community.restored).toBe(out.community.first);
+    expect(out.community.messages).toContain("community secret 1729");
+    expect(out.community.isolated).not.toContain("community secret 1729");
     expect(out.sessions.n1).toBeUndefined();
     expect(out.sessions.n3).toBeUndefined();
     expect(out.sessions.oldest).toBeGreaterThan(out.sessions.reset);

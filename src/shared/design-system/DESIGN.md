@@ -477,6 +477,12 @@ Tailwind utilities include `bg-surface-panel`, `text-standard`,
 `border-prominent` and `bg-affordance-subtle-hover`. Text and border registrations
 stay in separate namespaces so they cannot accidentally share a value.
 
+Shared Markdown has a deliberate content exception: inline snippets, fenced
+code frames, and the backing behind pinned code actions use `affordance-subtle`
+to keep one code fill in both themes. Their text uses the renderer's existing
+text roles. This exception belongs to the shared Markdown renderer; other
+recessed content continues to use `surface-inset`.
+
 Enabled sidebar section headings, disclosure chevrons and quiet section actions
 use `text-subtle`, not `text-unavailable`. Disabled controls keep their shared
 disabled state; a parent's inherited color must not override it.
@@ -659,7 +665,7 @@ in identity, guidance, transitions, and ceremony. Use color to convey meaning.
 Use the surface that matches the content and its position in the interface.
 
 - **Panels:** the shell joins sidebar navigation and the main content workspace into one surface beside the app dock. The sidebar resize grip sits on their shared `border-standard` seam. Both retain opaque surfaces when navigation overlays at narrow widths. Nested Panels keep their opaque fill and clipping but lose independent borders, corners, and shadows. The layout owner separates adjacent regions with `border-standard` hairlines. Standalone Panels use `radius-container` (24px) corners and `shadow-panel` for a translucent contour and subtle lift, rather than an opaque depth border.
-- **Recessed regions:** use `bg-inset` for a region pushed into its surrounding surface. Use quiet fills where they communicate separation; reserve outlines for boundaries that need to be identified.
+- **Recessed regions:** use `bg-inset` for a region pushed into its surrounding surface. Use `surface-inset-subtle` for a quieter reading pane, such as a search preview: it mixes the panel and inset surfaces equally in both modes. Use quiet fills where they communicate separation; reserve outlines for boundaries that need to be identified.
 - **Shell:** `bg-app` is a solid color, neutral-quiet-hover in light mode and neutral 2 in dark. The shell owns one continuous `texture-dots` grid beneath its header, rail and panes. Dots derive from this background: darker in light mode, lighter in dark mode, never an unrelated gray. The app root owns the background and its texture together. Do not override a descendant background and expect inherited texture colors to recompute. The pattern is decorative; do not increase its contrast to communicate state. The one exception to the solid shell is a backdrop a plugin explicitly registers ([shell backdrops](../../../docs/plugin-architecture.md#shell-backdrops)); the default shell has none. A backdrop may cover the dots and gutters only. Panes stay opaque, and the host keeps solid `bg-app` beneath each header control group and the app dock so their ink, fills and focus rings keep this background's contrast. The host shows no backdrop under reduced motion, reduced transparency or forced colors.
 - **Reading surfaces:** documentation and dense prose sit on opaque `bg-panel`. Keep the dot grid outside reading panes. Do not add gradient backgrounds to the app shell.
 - **Borders:** use `border-standard` for quiet separators, `border-prominent` for controls, and `border-focus` for keyboard-focus recipes. Errors and warnings have their own boundary roles. Measure the actual pairing in both themes.
@@ -1077,6 +1083,8 @@ control. Its accessible name still comes from `aria-label`.
 
 An `xs` Button whose label starts with an icon reduces its leading padding to its
 4px vertical padding, so the icon sits evenly in the capsule's leading corner.
+An `xs` Button with a small leading dot uses `data-leading-dot` for a 10px leading
+inset; its trailing inset remains 12px.
 
 Utility icon actions share the rounded rectangle in resting, hover, pressed, and
 selected states. Avatar controls default to round; use `shape="round"` for deliberate
@@ -1804,7 +1812,7 @@ inside a group than between groups.
 - Dense data uses edge-to-edge rows and dividers where a line helps track the row.
 - Distinct swatches, type samples, and avatars often need only space between them. Avoid adding a card or divider when the content already separates itself.
 - Show samples on the surface where they will be used. Glass needs a backdrop; a white swatch on white needs a quiet boundary.
-- Cards group widgets, gallery items, or settings. They sit on `bg-panel` with spacing or a hairline and have no default fill. Use `bg-hover` only for an interactive card’s hover state. There is no `bg-card` role; `bg-inset` is for recessed content such as inputs or code blocks.
+- Cards group widgets, gallery items, or settings. They sit on `bg-panel` with spacing or a hairline and have no default fill. Use `bg-hover` only for an interactive card's hover state. There is no `bg-card` role; `bg-inset` is for recessed content such as inputs. Shared Markdown code follows the content exception in [Semantic colors](#semantic-colors).
 - Use native thin scrollbars: `scrollbar-width: thin` and `scrollbar-color: var(--scrollbar-thumb-quiet) transparent`. Use the sidebar’s subtle gray thumb in both modes. Load the shared recipe into vendor shadow roots and let the browser control scrolling and visibility.
 
 ## Motion

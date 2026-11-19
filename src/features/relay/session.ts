@@ -1,6 +1,6 @@
 import type { LocalAgentSource } from "../agents/local-activity";
 // FOUNDATION: One relay session owns reads, local intent, delivery and shared views.
-import { createSoloPreferences, soloGroups } from "./solo-preferences";
+import { mergeLegacyWorkspaces } from "./workspace-migration";
 import { npubEncode } from "nostr-tools/nip19";
 import { createMemberAdditions } from "../channel-members/operations";
 import {
@@ -16,7 +16,12 @@ import {
   deletingAgent,
   templateAgentChoices,
 } from "../agents/choices";
-import { parseLineup } from "../channel-templates/model";
+import {
+  emptyLineup,
+  legacyWorkspaceRecipeCoordinate,
+  parseLineup,
+} from "../channel-templates/model";
+import { projectTemplateId, templateEntry } from "../solo/workspace";
 import { createChannelKit } from "../channel-templates/capability";
 import {
   createChannelSetup,
@@ -91,7 +96,13 @@ import type {
 import { createChannelActivity } from "./channel-activity";
 import {
   readSidebarPreferences,
+  workspaceBaseRecord,
+  projectWorkspaceGroups,
   SIDEBAR_COORDINATES,
+  WORKSPACE_PREFERENCE_COORDINATES,
+  MAX_WORKSPACE_ASSIGNMENTS,
+  type SidebarAssignmentIntent,
+  type SidebarGroups,
 } from "./sidebar-preferences";
 import { sidebarSortNeedsActivity } from "./sidebar-sort";
 import { createSidebarPreferencesStore } from "./sidebar-preferences-store";
@@ -368,6 +379,10 @@ export function createRelaySession(
               if (event.kind === 9007 || event.kind === 9000) return;
               const id = event.tags.find(([name]) => name === "h")?.[1];
               if (!id) return;
+              // Opening agents receive admin before either local wake or publication.
+              const opening =
+                event.kind === 9 ? channelWrites.prepareOpening(id) : undefined;
+              if (opening) return opening;
               const ready = channelWrites.starting(id);
               if (ready && event.kind === 9) hearStarting(event, id);
               return ready;
@@ -1193,6 +1208,7 @@ export function createRelaySession(
       channels.denyChannel(id, new Error("Channel is no longer available"));
       dropStrandedSends();
     },
+    deleted: forgetDeletedFiling,
   });
   const memberAdministration = createMemberAdministration({
     reader: transport && !options.cachedOnly ? requests.reader : undefined,
@@ -1214,6 +1230,8 @@ export function createRelaySession(
     canAccess: (channelId) => channels.canParticipate(channelId),
     notify,
   });
+  /** Callers holding `demandActivity`, beyond the sidebar's own needs. */
+  let activityDemand = 0;
   let sourceChannelList = channels.queries.list();
   let activityChannelList: ChannelList = Object.freeze({
     ...sourceChannelList,
@@ -1223,13 +1241,21 @@ export function createRelaySession(
   const projectedChannels = new WeakMap<ChannelSummary, ChannelSummary>();
   const channelQueries = Object.freeze({
     ...channels.queries,
-    // Only the viewer's own surfaces call it from outside the session (a
-    // scoped search, a requested channel, a repository page), so what they
-    // look up becomes the viewer's, as without any `attend`.
+    // Viewer surfaces promote their lookups by default. Explicit agent lookups
+    // extend discovery without turning watch-only channels into mention targets.
     ...(channels.queries.resolve && {
-      resolve: (ids: readonly string[], options?: ChannelReadOptions) =>
-        channels.queries.resolve?.(ids, { ...options, viewerLookup: true }) ??
-        Promise.resolve(),
+      resolve: async (ids: readonly string[], options?: ChannelReadOptions) => {
+        const viewerLookup = options?.viewerLookup !== false;
+        if (!viewerLookup) {
+          if (channels.queries.list().status !== "ready")
+            throw new ReadError(
+              "unavailable",
+              "Channels are not discovered yet.",
+            );
+          for (const id of ids) learnedByAgents(id);
+        }
+        await channels.queries.resolve?.(ids, { ...options, viewerLookup });
+      },
     }),
     list() {
       const snapshot = channels.queries.list();
@@ -1266,6 +1292,19 @@ export function createRelaySession(
       });
       return activityChannelList;
     },
+    ...(transport?.channelActivity && {
+      demandActivity() {
+        activityDemand++;
+        refreshChannelActivity();
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          activityDemand--;
+          refreshChannelActivity();
+        };
+      },
+    }),
     subscribeList(listener: () => void) {
       const offChannels = channels.queries.subscribeList(listener);
       const offActivity = channelActivity.subscribe(listener);
@@ -1545,11 +1584,12 @@ export function createRelaySession(
         liveListeners.delete(listener);
       };
     },
-    retry() {
+    retry(background?: boolean) {
       channels.retryList();
       revalidatePreviews(channels.suspendedPreviews());
       for (const id of channels.demandedChannels()) demandChannel(id);
-      traffic?.retry();
+      // A reconnect wait is live's own spread; the recovery timer keeps it.
+      if (!(background && liveView.status === "retrying")) traffic?.retry();
     },
   });
   /** Hands the owner's signed message in a chat still starting to live
@@ -1814,6 +1854,8 @@ export function createRelaySession(
     {
       selectable: () =>
         agentChoices.snapshot().selectable.map((agent) => agent.pubkey),
+      profiles: profiles.queries,
+      viewer: transport?.viewer ?? "",
       archived: (pubkey) =>
         agentUnavailable(
           {
@@ -1827,6 +1869,7 @@ export function createRelaySession(
     transport?.relayAuthor,
     { read: (filters, settings) => readVerified(filters, settings, false) },
     transport?.channelIdentity === true,
+    transport?.memberAdministration,
   );
   startingChannel = (id) => channelWrites.starting(id);
   // Roster authority invalidates in-flight reads, including account-owned
@@ -1871,24 +1914,6 @@ export function createRelaySession(
     canRead: (id) => !closed && channels.canParticipate(id),
     delivered: channelWrites.delivered,
   });
-  const soloPreferences = createSoloPreferences(
-    channelKit.capability,
-    lifetime.signal,
-    (chats) => {
-      // Only a verified, uncapped roster proves a missing chat was deleted.
-      const list = channels.queries.list();
-      if (
-        channels.roster().state !== "verified" ||
-        list.status !== "ready" ||
-        list.coverage
-      )
-        return [];
-      const live = new Set(
-        list.channels.filter((c) => !c.archived).map((c) => c.id),
-      );
-      return chats.filter((chat) => !live.has(chat));
-    },
-  );
   const reminders =
     transport?.reminders && writer
       ? createReminders({
@@ -1929,6 +1954,65 @@ export function createRelaySession(
         })
       : undefined;
   })();
+  let legacyWorkspaceEpoch = new AbortController();
+  let legacyWorkspaceCache: SidebarGroups | undefined;
+  function invalidateLegacyWorkspaces() {
+    legacyWorkspaceCache = undefined;
+    legacyWorkspaceEpoch.abort(
+      new Error("Saved workspaces changed while loading. Try again."),
+    );
+    legacyWorkspaceEpoch = new AbortController();
+  }
+  const legacyWorkspaceCoordinates = [
+    "channel-sections",
+    legacyWorkspaceRecipeCoordinate(transport?.scope ?? ""),
+  ];
+  async function readLegacyWorkspaces(signal: AbortSignal, fresh = false) {
+    const decode = transport?.decodeSidebarPreferences;
+    if (!transport?.workspaceMigration || !decode) return undefined;
+    const epoch = legacyWorkspaceEpoch;
+    if (!fresh && legacyWorkspaceCache) return { groups: legacyWorkspaceCache };
+    const active = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+    const [team, solo] = await Promise.allSettled([
+      preferenceReader
+        .read(
+          [
+            {
+              kinds: [30078],
+              authors: [transport.viewer],
+              "#d": ["channel-sections"],
+              limit: 1,
+              consistency: "strong",
+            },
+          ],
+          { signal: active, fresh: true, priority: "foreground" },
+        )
+        .then(async (events) => {
+          const { sections, assignments } = await decode(events, active);
+          return { sections, assignments };
+        }),
+      channelKit.readLegacyGroups(active),
+    ]);
+    signal.throwIfAborted();
+    if (team.status === "rejected")
+      return solo.status === "fulfilled"
+        ? {
+            partial: mergeLegacyWorkspaces(
+              { sections: [], assignments: {} },
+              solo.value,
+            ),
+          }
+        : undefined;
+    if (solo.status === "rejected") return { partial: team.value };
+    let groups: SidebarGroups;
+    try {
+      groups = mergeLegacyWorkspaces(team.value, solo.value);
+    } catch {
+      return { partial: team.value };
+    }
+    if (legacyWorkspaceEpoch === epoch) legacyWorkspaceCache = groups;
+    return { groups };
+  }
   const readPreferences = async (
     signal?: AbortSignal,
     consistency?: "strong",
@@ -1941,32 +2025,155 @@ export function createRelaySession(
       AbortSignal.timeout(10_000),
       ...(signal ? [signal] : []),
     ]);
-    return readSidebarPreferences(
+    if (!transport.workspaceMigration)
+      return readSidebarPreferences(
+        preferenceReader,
+        transport.viewer,
+        decode,
+        combined,
+        consistency,
+      );
+    // The main read can be cancelled before it reaches the decoder.
+    const loadingLegacy = readLegacyWorkspaces(combined).catch(() => undefined);
+    const current = await readSidebarPreferences(
       preferenceReader,
       transport.viewer,
-      decode,
+      async (events, active) =>
+        decode(events, active, (await loadingLegacy)?.groups),
       combined,
       consistency,
+      true,
     );
+    if (current.sectionOrder) return current;
+    const legacy = await loadingLegacy;
+    if (!legacy?.groups)
+      return {
+        ...current,
+        ...legacy?.partial,
+        workspaceMigrationPending: true as const,
+      };
+    return {
+      ...current,
+      ...projectWorkspaceGroups(workspaceBaseRecord(legacy.groups)),
+    };
   };
+  function workspaceWrite<T>(
+    write:
+      | ((
+          intent: T,
+          signal: AbortSignal,
+          legacy?: SidebarGroups,
+        ) => Promise<SidebarGroups>)
+      | undefined,
+  ) {
+    if (!write) return undefined;
+    return async (intent: T, signal: AbortSignal) => {
+      const active = AbortSignal.any([
+        lifetime.signal,
+        AbortSignal.timeout(20_000),
+        signal,
+        ...(transport?.workspaceMigration ? [legacyWorkspaceEpoch.signal] : []),
+      ]);
+      if (!transport?.workspaceMigration) return write(intent, active);
+      const legacy = await readLegacyWorkspaces(active, true);
+      active.throwIfAborted();
+      // A verified unified head permits a write during a legacy-only outage.
+      return write(intent, active, legacy?.groups);
+    };
+  }
+  const removeWorkspace = workspaceWrite(transport?.removeSidebarSection);
+  const assignWorkspace = workspaceWrite(transport?.writeSidebarAssignment);
+  // A missing roster row can also mean access was lost. Keep only confirmed
+  // deletes for reclamation when their immediate cleanup cannot save.
+  const deletedWorkspaceFilings = new Set<string>();
+  async function writeWorkspaceAssignment(
+    intent: SidebarAssignmentIntent,
+    signal: AbortSignal,
+  ): Promise<SidebarGroups> {
+    if (!assignWorkspace)
+      throw new Error("Workspace placement is unavailable.");
+    const assignments = sidebarPreferences.queries.snapshot().data?.assignments;
+    const roster = channels.queries.list();
+    if (
+      transport?.workspaceMigration &&
+      intent.channelId &&
+      (intent.sectionId || intent.createSection) &&
+      assignments &&
+      Object.keys(assignments).length >= MAX_WORKSPACE_ASSIGNMENTS
+    ) {
+      const deleted = [...deletedWorkspaceFilings].find((id) =>
+        Object.hasOwn(assignments, id),
+      );
+      const archived =
+        !deleted &&
+        roster.status === "ready" &&
+        !roster.coverage &&
+        channels.roster().state === "verified"
+          ? roster.channels.find(
+              (channel) =>
+                channel.channelType === "solo" &&
+                channel.archived &&
+                Object.hasOwn(assignments, channel.id),
+            )?.id
+          : undefined;
+      const channelId = deleted ?? archived;
+      const sectionId = channelId && assignments[channelId];
+      if (channelId && sectionId)
+        return assignWorkspace(
+          { ...intent, reclaim: { channelId, sectionId } },
+          signal,
+        );
+    }
+    return assignWorkspace(intent, signal);
+  }
+  function forgetDeletedFiling(id: string) {
+    const { snapshot } = sidebarPreferences.queries;
+    if (
+      !transport?.workspaceMigration ||
+      !Object.hasOwn(snapshot().data?.assignments ?? {}, id)
+    )
+      return;
+    if (deletedWorkspaceFilings.size >= MAX_WORKSPACE_ASSIGNMENTS) {
+      const oldest = deletedWorkspaceFilings.values().next().value;
+      if (oldest !== undefined) deletedWorkspaceFilings.delete(oldest);
+    }
+    deletedWorkspaceFilings.add(id);
+    void sidebarPreferences
+      .forgetDeletedFiling(id)
+      .then(() => {
+        if (!Object.hasOwn(snapshot().data?.assignments ?? {}, id))
+          deletedWorkspaceFilings.delete(id);
+      })
+      .catch(() => {});
+  }
+  async function deleteWorkspaceSettings(id: string) {
+    const kit = channelKit.capability;
+    if (!kit.available) return;
+    const active = AbortSignal.any([
+      lifetime.signal,
+      AbortSignal.timeout(20_000),
+    ]);
+    await kit.refresh();
+    active.throwIfAborted();
+    const catalog = kit.snapshot();
+    if (catalog.status !== "ready")
+      throw new Error(
+        catalog.error ?? "Workspace settings could not be loaded.",
+      );
+    const entry = templateEntry(catalog.entries, await projectTemplateId(id));
+    if (entry?.record.value.type === "template")
+      await kit.save(
+        { ...entry.record.value, ...emptyLineup(), name: "Deleted workspace" },
+        entry.eventId,
+        true,
+        active,
+      );
+  }
   const sidebarPreferences = createSidebarPreferencesStore({
     read: readPreferences,
     readAfterWrite: (signal) => readPreferences(signal, "strong"),
     available: !!transport?.decodeSidebarPreferences,
-    write: (() => {
-      const write = transport?.writeSidebarAssignment;
-      return write
-        ? (intent, signal) =>
-            write(
-              intent,
-              AbortSignal.any([
-                lifetime.signal,
-                AbortSignal.timeout(20_000),
-                signal,
-              ]),
-            )
-        : undefined;
-    })(),
+    write: assignWorkspace ? writeWorkspaceAssignment : undefined,
     writeStar: (() => {
       const write = transport?.writeSidebarStar;
       return write
@@ -2013,48 +2220,18 @@ export function createRelaySession(
         : undefined;
     })(),
     persistence: options.persistence,
-    removeSection: (() => {
-      const write = transport?.removeSidebarSection;
-      return write
-        ? (sectionId, signal) =>
-            write(
-              sectionId,
-              AbortSignal.any([
-                lifetime.signal,
-                AbortSignal.timeout(20_000),
-                signal,
-              ]),
-            )
-        : undefined;
-    })(),
-    renameSection: (() => {
-      const write = transport?.renameSidebarSection;
-      return write
-        ? (intent, signal) =>
-            write(
-              intent,
-              AbortSignal.any([
-                lifetime.signal,
-                AbortSignal.timeout(20_000),
-                signal,
-              ]),
-            )
-        : undefined;
-    })(),
-    writeOrder: (() => {
-      const write = transport?.writeSidebarSectionOrder;
-      return write
-        ? (sectionIds, signal) =>
-            write(
-              sectionIds,
-              AbortSignal.any([
-                lifetime.signal,
-                AbortSignal.timeout(20_000),
-                signal,
-              ]),
-            )
-        : undefined;
-    })(),
+    removeSection: removeWorkspace
+      ? async (id, signal) => {
+          const result = await removeWorkspace(id, signal);
+          if (!result.sections.some((section) => section.id === id))
+            void deleteWorkspaceSettings(id).catch((error: unknown) => {
+              console.warn("The deleted workspace's settings were kept", error);
+            });
+          return result;
+        }
+      : undefined,
+    renameSection: workspaceWrite(transport?.renameSidebarSection),
+    writeOrder: workspaceWrite(transport?.writeSidebarSectionOrder),
     writeFilter: (() => {
       const write = transport?.writeSidebarFilter;
       return write
@@ -2072,16 +2249,6 @@ export function createRelaySession(
             )
         : undefined;
     })(),
-  });
-  let soloHead: string | undefined;
-  const stopSoloGroups = channelKit.capability.subscribe(() => {
-    const state = channelKit.capability.snapshot();
-    if (state.status !== "ready") return;
-    const nextSolo = soloGroups(state.entries)?.eventId;
-    if (nextSolo !== soloHead) {
-      soloHead = nextSolo;
-      void soloPreferences.queries.refresh();
-    }
   });
   type SetupNotice = Readonly<{ id: string; name: string; error: string }>;
   let setupNotices: readonly SetupNotice[] = [];
@@ -2404,7 +2571,7 @@ export function createRelaySession(
   const recoverable = (
     subscribe: (listener: () => void) => () => void,
     status: () => RecoveryStatus,
-    retry: () => void,
+    retry: (background?: boolean) => void,
     reauthorize?: () => void,
   ): RecoverySource =>
     Object.freeze({
@@ -2430,11 +2597,6 @@ export function createRelaySession(
           () => void channelKit.capability.refresh(),
           // A ready catalog may be revalidating under the old credentials.
           () => void channelKit.capability.refresh({ after: true }),
-        ),
-        recoverable(
-          soloPreferences.queries.subscribe,
-          () => loadState(soloPreferences.queries.snapshot()),
-          () => void soloPreferences.queries.refresh(),
         ),
         recoverable(
           sidebarPreferences.queries.subscribe,
@@ -2662,7 +2824,6 @@ export function createRelaySession(
     sidebarPreferences: sidebarPreferences.queries,
     /** The account's saved main agent, shared by every install. */
     mainAgent,
-    soloPreferences: soloPreferences.queries,
     reminders: reminders?.capability,
     live,
     /** Wake, network and focus hint that the live socket, which may still look
@@ -3486,7 +3647,7 @@ export function createRelaySession(
     if (prefs.status === "idle" || prefs.status === "loading") return;
     channels.queries.warm?.(prefs.data?.starred ?? []);
   };
-  // Only five replaceable heads; live payloads are hints, never decoded authority.
+  // Live heads invalidate reads. Their payloads never supply migration data.
   const sidebarHeads = new Map<string, Pick<RelayEvent, "id" | "created_at">>();
   const receiveSidebar = (events: readonly RelayEvent[]) => {
     if (!transport?.decodeSidebarPreferences || cacheClearing) return;
@@ -3494,10 +3655,16 @@ export function createRelaySession(
       if (event.kind !== 30078 || event.pubkey !== transport.viewer) continue;
       const coordinates = event.tags.filter(([name]) => name === "d");
       const coordinate = coordinates[0]?.[1];
+      const legacy =
+        !!coordinate && legacyWorkspaceCoordinates.includes(coordinate);
       if (
         coordinates.length !== 1 ||
         !coordinate ||
-        !SIDEBAR_COORDINATES.some((value) => value === coordinate)
+        (!legacy &&
+          !WORKSPACE_PREFERENCE_COORDINATES.some(
+            (value) => value === coordinate,
+          ) &&
+          !SIDEBAR_COORDINATES.some((value) => value === coordinate))
       )
         continue;
       const head = sidebarHeads.get(coordinate);
@@ -3511,6 +3678,7 @@ export function createRelaySession(
         id: event.id,
         created_at: event.created_at,
       });
+      if (legacy) invalidateLegacyWorkspaces();
       sidebarPreferences.invalidate();
     }
   };
@@ -3604,6 +3772,7 @@ export function createRelaySession(
         }
         return;
       }
+      if (!continuous) invalidateLegacyWorkspaces();
       sidebarPreferences.reconnect(continuous);
       repairUnread(continuous);
       // Only while this same connection is still up.
@@ -4019,6 +4188,7 @@ export function createRelaySession(
     if (closed || !transport?.channelActivity) return;
     const preferences = sidebarPreferences.queries.snapshot().data;
     if (
+      !activityDemand &&
       !Object.values(preferences?.sort ?? {}).some(sidebarSortNeedsActivity) &&
       !Object.values(preferences?.filters ?? {}).includes("active")
     ) {
@@ -4069,8 +4239,10 @@ export function createRelaySession(
         activityRosterKey = undefined;
         typing.clear();
         sidebarHeads.clear();
+        legacyWorkspaceCache = undefined;
+        invalidateLegacyWorkspaces();
+        deletedWorkspaceFilings.clear();
         sidebarPreferences.clear();
-        soloPreferences.clear();
         channelKit.clear();
         lifecycle.clear();
         details.clear();
@@ -4102,7 +4274,6 @@ export function createRelaySession(
       }
     },
     dispose() {
-      stopSoloGroups();
       closed = true;
       resumes.clear();
       stopLiveRecovery();
@@ -4118,7 +4289,6 @@ export function createRelaySession(
       stopActivityPreferences();
       sidebarHeads.clear();
       sidebarPreferences.dispose();
-      soloPreferences.dispose();
       // Before requests.dispose(): lifecycle rereads retired shared reads
       // until its own controllers abort.
       lifecycle.dispose();

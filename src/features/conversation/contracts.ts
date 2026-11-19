@@ -159,6 +159,9 @@ export type LinkPreviewProps = Readonly<{
   /** Opens `url` through the host, as clicking the link does. False once the
    * contribution or message retires. */
   open(): boolean;
+  /** The message's `TargetOpener`, for targets other than `url`, such as the
+   * plugin's own panel. Absent on hosts that predate it. */
+  opener?: TargetOpener | undefined;
 }>;
 /** A card below a message for one of its links. The lowest `order` among
  * matches draws it, so a plugin can claim its own URLs ahead of the default

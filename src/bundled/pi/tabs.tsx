@@ -1,3 +1,4 @@
+import { sessionScope } from "../../features/agent-harness/session-scope";
 // Pi's New agent choices and agent settings. Providers, their keys and their
 // models are Pi's own: listed from it, and keys saved with its login.
 import {
@@ -70,6 +71,7 @@ const SCOPES = [
     options: [
       { value: "thread", label: "One conversation per thread" },
       { value: "channel", label: "One conversation per channel" },
+      { value: "community", label: "One conversation per community" },
     ],
   },
 ];
@@ -87,8 +89,10 @@ const providerIcon = (id: string | undefined) => {
   return Icon && <Icon size={18} aria-hidden="true" />;
 };
 const CONVERSATION_LIMIT = 30;
-const label = ({ channelId, name, root }: Place) =>
-  `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
+const label = ({ channelId, name, root, community }: Place) =>
+  community
+    ? "Community session"
+    : `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
 type Read<T> = (
   | { status: "loading"; value?: T }
   | { status: "ready"; value: T }
@@ -300,9 +304,8 @@ export function createTabs({
           models={models.value ?? []}
           loading={models.status === "loading"}
           value={value.model}
-          defaultLabel={
-            modelDefault ? `Pi default (${modelDefault})` : "Pi default"
-          }
+          defaultModel={modelDefault}
+          defaultLabel={modelDefault || "Pi default"}
           {...(models.status === "error"
             ? { description: `Could not list models: ${models.error}` }
             : missing && id && !unknown
@@ -776,6 +779,8 @@ export function createTabs({
       places,
       conversation,
       async () => undefined,
+      undefined,
+      readConfig(agent.config).scope,
     );
     const status = (place: Place) =>
       working.includes(place.conversation) ? "Working" : undefined;
@@ -996,7 +1001,7 @@ export function createTabs({
               onValueChange={(value) =>
                 setDraft({
                   ...draft,
-                  scope: value === "channel" ? "channel" : "thread",
+                  scope: sessionScope(value),
                 })
               }
             />

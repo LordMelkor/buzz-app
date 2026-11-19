@@ -27,7 +27,8 @@ import threadModel from "./session_model_thread.md?raw";
 import channelHandoff from "./session_handoff_channel.md?raw";
 import threadHandoff from "./session_handoff_thread.md?raw";
 
-export type Scope = "thread" | "channel";
+export type Scope =
+  import("../../features/agent-harness/session-scope").SessionScope;
 /** Messages of thread context shown with a turn, newest kept. */
 export const CONTEXT_LIMIT = 12;
 /** Characters of each context message shown. */
@@ -56,7 +57,12 @@ export function systemPrompt(
     notes?: string;
   }>,
 ) {
-  const model = input.scope === "thread" ? threadModel : channelModel;
+  const model =
+    input.scope === "community"
+      ? "## Session Model\n\nYou are the one shared session of this agent in its community. Channels, threads, DMs, Solo chats and huddles share this conversation context. Each turn supplies its own source and reply destination. Use that turn’s routing context, never a destination retained from an older turn. Community scope grants no additional membership or access."
+      : input.scope === "thread"
+        ? threadModel
+        : channelModel;
   const base = [basePromptFor(input.workspace), BUZZ_PROMPT, model];
   return [
     input.agent
@@ -125,14 +131,17 @@ export function turnPrompt(input: TurnInput) {
   // A session shared by a channel's threads (or a DM's) cannot tell which
   // thread a reply is for, so it names the thread itself.
   const root = thread?.rootId ?? event.id;
-  const shared = channel.dm || input.scope === "channel";
-  const reply = input.topLevel
-    ? `IMPORTANT: ${input.channelLevel ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}`
-    : shared
-      ? `IMPORTANT: For ordinary replies in this turn, pass \`reply: "${root}"\` to \`send\` so the conversation stays threaded. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, leave out \`reply\`.`
-      : thread
-        ? "IMPORTANT: `send` replies in this thread by default, so the conversation stays threaded. If the human explicitly asks for a channel-root, top-level, or broadcast post, pass `channel`. If the requested destination is ambiguous, ask before sending."
-        : "IMPORTANT: This is a new top-level message. `send` replies in its thread by default — the triggering message is the thread root. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, pass `channel`.";
+  const shared = channel.dm || input.scope !== "thread";
+  const reply =
+    input.scope === "community"
+      ? `IMPORTANT: Pass each reply's channel as \`channel\` to \`send\`. ${input.wake ? "Leave out the request field for this wake." : "Pass the triggering message ID as `request`."} For this request use channel "${channel.id}". ${input.topLevel ? "Leave out the reply field to post at the top level." : `Use "${root}" as the reply field to post in its thread.`} You can answer one request and continue working on another.`
+      : input.topLevel
+        ? `IMPORTANT: ${input.channelLevel ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}`
+        : shared
+          ? `IMPORTANT: For ordinary replies in this turn, pass \`reply: "${root}"\` to \`send\` so the conversation stays threaded. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, pass \`channel\` explicitly and leave out \`reply\`.`
+          : thread
+            ? "IMPORTANT: `send` replies in this thread by default, so the conversation stays threaded. If the human explicitly asks for a channel-root, top-level, or broadcast post, pass `channel`. If the requested destination is ambiguous, ask before sending."
+            : "IMPORTANT: This is a new top-level message. `send` replies in its thread by default — the triggering message is the thread root. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, pass `channel`.";
   const fetch = input.topLevel
     ? "Use `read` for recent messages if needed."
     : shared
@@ -151,7 +160,9 @@ export function turnPrompt(input: TurnInput) {
   const lines = channel.dm
     ? [
         "Scope: dm",
-        "Session scope: dm conversation",
+        input.scope === "community"
+          ? "Session scope: community"
+          : "Session scope: dm conversation",
         `Channel: ${channelLabel}`,
       ]
     : !input.topLevel && (thread || input.scope === "thread")
@@ -166,7 +177,7 @@ export function turnPrompt(input: TurnInput) {
         ]
       : [
           "Scope: channel",
-          "Session scope: channel",
+          `Session scope: ${input.scope === "community" ? "community" : "channel"}`,
           `Channel: ${channelLabel}`,
         ];
   const parts: string[] = [];

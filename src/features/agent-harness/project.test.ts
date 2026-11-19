@@ -7,6 +7,7 @@ import { workspaceCanvas } from "../solo/workspace";
 import {
   CANVAS_TIMEOUT_MS,
   NO_PROJECT,
+  ProjectSource,
   ownerCanvas,
   project,
   readProject,
@@ -117,3 +118,16 @@ function authTag(agent: Key, owner: Key) {
     bytesToHex(schnorr.sign(new Uint8Array(digest), owner.secret)),
   ];
 }
+
+it("retains unread Canvas only within its source and withdraws its folders elsewhere", () => {
+  const source = new ProjectSource();
+  const saved = project(
+    workspaceCanvas({ folders: ["~/project"], canvas: "source rules" }),
+  );
+  expect(source.resolve("solo", saved)).toBe(saved);
+  expect(source.resolve("solo", undefined)).toBe(saved);
+  expect(source.resolve("another-solo", undefined)).toBe(NO_PROJECT);
+  expect(source.resolve("solo", saved)).toBe(saved);
+  expect(source.resolve("channel", NO_PROJECT).directories).toEqual([]);
+  expect(source.resolve(undefined, NO_PROJECT)).toBe(NO_PROJECT);
+});

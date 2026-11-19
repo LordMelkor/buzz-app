@@ -34,11 +34,16 @@ export const historySize = 640;
 // broker/subscriber and model only the upstream relay policy with ephemeral keys.
 export const test = base.extend({
   productionBroker: [false, { option: true }],
+  openingAdminSetup: [false, { option: true }],
   enabledPlugins: [[], { option: true }],
   builderlab: [{}, { option: true }],
   /** The production broker's live setup deadline. It runs in Node, so the
    * page clock cannot hold it; a test that keeps EOSE pending sets it longer. */
   liveSetupTimeoutMs: [undefined, { option: true }],
+  // The production broker's reconnect draw (live.ts `random`). Pinned so a
+  // dropped socket returns at once; a journey can set a nonzero draw to
+  // test the spread.
+  liveDraw: [0, { option: true }],
   actionProfile: [false, { option: true }],
   agentMessageDeletion: [false, { option: true }],
   profilePicture: ["", { option: true }],
@@ -90,6 +95,7 @@ export const test = base.extend({
   // harness serves them all over one HTTP/1.1 origin; the native app does not.
   savedCommunities: [["primary", "secondary"], { option: true }],
   dmLabels: [false, { option: true }],
+  // DM id -> its other members: indexes into the peer keys, or hex pubkeys.
   dmMembers: [{}, { option: true }],
   agentPeers: [false, { option: true }],
   inboxDm: [false, { option: true }],
@@ -112,6 +118,8 @@ export const test = base.extend({
   historyCounts: [{ alpha: 1, beta: 1 }, { option: true }],
   // Rows sharing each history second; above the page size, pages split seconds.
   historyRowsPerSecond: [1, { option: true }],
+  // Fixed signing keys repeat event IDs, and so where pages split a second.
+  fixedKeys: [false, { option: true }],
   channelIds: [channels, { option: true }],
   developmentReact: [false, { option: true, scope: "worker" }],
   builderlabLogin: [false, { option: true, scope: "worker" }],
@@ -133,9 +141,11 @@ export const test = base.extend({
       browserName,
       browser,
       productionBroker,
+      openingAdminSetup,
       enabledPlugins,
       builderlab,
       liveSetupTimeoutMs,
+      liveDraw,
       actionProfile,
       agentMessageDeletion,
       profilePicture,
@@ -192,6 +202,7 @@ export const test = base.extend({
       launchAnimation,
       historyCounts,
       historyRowsPerSecond,
+      fixedKeys,
       channelIds,
       pluginFixtures,
       developmentReact,
@@ -202,7 +213,7 @@ export const test = base.extend({
   ) => {
     const channels = firstSeenHistory ? [...channelIds, "busy"] : channelIds;
     const key = (seed) =>
-      actionProfile
+      actionProfile || fixedKeys
         ? Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? seed : 0))
         : generateSecretKey();
     const relayKey = key(1);
@@ -282,16 +293,27 @@ export const test = base.extend({
         const key = generateSecretKey();
         soloAgentKeys.push(key);
         const pubkey = getPublicKey(key);
-        // A NIP-OA owner attestation marks a real agent profile; the app reads
-        // only its shape. Outside agents belong to someone else.
-        const owner = soloAgentNames.includes(name)
-          ? viewer
-          : getPublicKey(generateSecretKey());
+        // Real ownership proofs: Admin admission verifies the delegation,
+        // independently of whether the identity appears in the library.
+        const ownerKey = soloAgentNames.includes(name)
+          ? userKey
+          : generateSecretKey();
+        const owner = getPublicKey(ownerKey);
+        const delegation = createHash("sha256")
+          .update(`nostr:agent-auth:${pubkey}:`)
+          .digest();
         servedProfiles.set(
           pubkey,
           sign(
             0,
-            [["auth", owner, "", "0".repeat(128)]],
+            [
+              [
+                "auth",
+                owner,
+                "",
+                bytesToHex(schnorr.sign(delegation, ownerKey)),
+              ],
+            ],
             JSON.stringify({ name, is_agent: true }),
             key,
           ),
@@ -403,6 +425,7 @@ export const test = base.extend({
                   order: 0,
                   ...(sidebarIcons ? { icon: ":stamp:" } : {}),
                 },
+                ...(Array.isArray(savedSidebar) ? savedSidebar : []),
                 ...(sidebarIcons
                   ? [
                       {
@@ -1004,6 +1027,7 @@ export const test = base.extend({
       sessions: [],
       streamConnections: [],
       streamInterests: [],
+      liveAppends: [],
       errors: [],
       consoleErrors: [],
       unexpected: [],
@@ -1082,6 +1106,17 @@ export const test = base.extend({
         .map((entry) => entry.event);
     };
     const answer = (community, filter) => {
+      if (openingAdminSetup && (filter.ids || filter.kinds?.includes(9007)))
+        return [
+          report.setupCreation,
+          ...report.publications.map((item) => item.event),
+        ].filter(
+          (event) =>
+            event &&
+            (filter.ids
+              ? filter.ids.includes(event.id)
+              : filter.kinds.includes(event.kind)),
+        );
       // These ordinary fixture channels have no Huddle creation receipt.
       if (filter.kinds?.length === 1 && filter.kinds[0] === 9007) return [];
       // The real relay can return both current metadata and rosters in one query.
@@ -1297,9 +1332,11 @@ export const test = base.extend({
                   "guest",
                 ]),
                 ...(dmMembers[id]
-                  ? dmMembers[id].map((index) => [
+                  ? dmMembers[id].map((member) => [
                       "p",
-                      participants[index],
+                      typeof member === "string"
+                        ? member
+                        : participants[member],
                       "",
                       "member",
                     ])
@@ -1603,6 +1640,29 @@ export const test = base.extend({
               ),
             ),
         ];
+      // A local agent's mention catch-up: chat events naming it anywhere.
+      if (filter["#p"] && !filter["#h"] && !filter["#p"].includes(viewer))
+        return [...histories.entries()]
+          .filter(([key]) => key.startsWith(`${community}/`))
+          .flatMap(([, events]) => events)
+          .filter(
+            (event) =>
+              filter.kinds.includes(event.kind) &&
+              event.tags.some(
+                ([key, value]) => key === "p" && filter["#p"].includes(value),
+              ) &&
+              (filter.since === undefined ||
+                event.created_at >= filter.since) &&
+              (filter.until === undefined ||
+                event.created_at < filter.until ||
+                (event.created_at === filter.until &&
+                  (filter.before_id === undefined ||
+                    event.id > filter.before_id))),
+          )
+          .toSorted(
+            (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+          )
+          .slice(0, filter.limit);
       if (
         filter["#p"] &&
         !filter["#h"] &&
@@ -1844,6 +1904,25 @@ export const test = base.extend({
               event.created_at < filter.until ||
               (event.created_at === filter.until &&
                 event.id > filter.before_id),
+          )
+          .toSorted(
+            (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+          )
+          .slice(0, filter.limit);
+      // Search's person preview: their latest messages in any conversation.
+      if (
+        filter.authors?.length &&
+        !filter["#h"] &&
+        filter.search === undefined &&
+        filter.kinds?.includes(9)
+      )
+        return [...histories.entries()]
+          .filter(([key]) => key.startsWith(`${community}/`))
+          .flatMap(([, events]) => events)
+          .filter(
+            (event) =>
+              filter.kinds.includes(event.kind) &&
+              filter.authors.includes(event.pubkey),
           )
           .toSorted(
             (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
@@ -2097,6 +2176,9 @@ export const test = base.extend({
           "channel-stars",
           "channel-sort",
           "channel-filter",
+          "channel-workspaces",
+          "channel-workspace-sort",
+          "channel-workspace-filter",
         ].includes(sidebarCoordinate) ||
         (ownSoloChannels.length > 0 &&
           sidebarCoordinate?.startsWith("buzz-me-kit-v1:"))
@@ -2149,6 +2231,7 @@ export const test = base.extend({
           searchProfiles,
           report,
           pending,
+          olderPageDelayMs,
           // The production broker advertises read-state writes for every session,
           // not only tests opting into complete snapshot reads.
           acceptPublication: acceptReadPublication,
@@ -2166,6 +2249,26 @@ export const test = base.extend({
                     return acceptReadPublication(community, event);
                   if (event.kind === 30078 || event.kind === 20002)
                     return acceptReadPublication(community, event);
+                  if (openingAdminSetup && [9000, 9].includes(event.kind)) {
+                    // This receiver's clock is independently controlled by the journey.
+                    expect(
+                      Math.abs(report.setupReceiverTime - event.created_at),
+                    ).toBeLessThanOrEqual(900);
+                    if (event.kind === 9000) {
+                      expect(
+                        event.tags.filter(([tag]) => tag === "role"),
+                      ).toEqual([
+                        [
+                          "role",
+                          report.setupCreation
+                            ? "admin"
+                            : expect.stringMatching(/^(admin|bot)$/),
+                        ],
+                      ]);
+                      report.publications.push({ community, event });
+                      return;
+                    }
+                  }
                   expect([9, 7]).toContain(event.kind);
                   const channel = event.tags.find(([k]) => k === "h")?.[1];
                   const history = histories.get(`${community}/${channel}`);
@@ -2185,6 +2288,7 @@ export const test = base.extend({
             : {}),
           discovery: (community) => ({
             self: getPublicKey(relayKey),
+            ...(openingAdminSetup ? { supported_nips: [29] } : {}),
             // Solo details publications below retain label changes as well as names.
             ...(ownSoloChannels.length
               ? { supported_extensions: ["nip-cl"] }
@@ -2202,7 +2306,24 @@ export const test = base.extend({
           }),
         })
       : undefined;
+    // Browser-managed downloads can bypass Playwright's page routes. Serve
+    // opted-in attachment bytes over HTTP, shared with ordinary media reads.
+    const mediaFiles = new Map();
     const middleware = async (request, response, next) => {
+      const requested = new URL(request.url, "http://fixture.local");
+      const mediaFile = mediaFiles.get(requested.searchParams.get("url"));
+      if (
+        request.method === "GET" &&
+        /^\/api\/relay\/[^/]+\/media$/.test(requested.pathname) &&
+        mediaFile
+      ) {
+        response.writeHead(200, {
+          "Content-Type": mediaFile.contentType,
+          "Content-Length": mediaFile.bytes.length,
+        });
+        response.end(mediaFile.bytes);
+        return;
+      }
       // Development-React journeys restore the shared login at startup too.
       // This synthetic host has no Builderlab account; keep its stream open
       // until the page disconnects, just like the real broker's signed-out state.
@@ -2513,6 +2634,9 @@ export const test = base.extend({
                   upstreamFetch: relay.fetch,
                   socketFactory: relay.socket,
                   liveSetupTimeoutMs,
+                  ...(liveDraw === undefined
+                    ? {}
+                    : { liveRandom: () => liveDraw }),
                 });
                 await broker.configureServer(server);
               } else server.middlewares.use(middleware);
@@ -2654,6 +2778,7 @@ export const test = base.extend({
         },
       );
       await use({
+        mediaFiles,
         sign: (template) => finalizeEvent(template, userKey),
         channelMetadata: (id, tags) => sign(39000, [["d", id], ...tags]),
         // Model an owner changing visibility; production discovery consumes the
@@ -2821,6 +2946,34 @@ export const test = base.extend({
         serveProfile(key, body) {
           const event = sign(0, [], JSON.stringify(body), key);
           servedProfiles.set(event.pubkey, event);
+          return event;
+        },
+        // A real, newer NIP-OA head; the client still admits it through a read.
+        transferSoloAgent(pubkey) {
+          const index = soloAgents.findIndex(
+            (agent) => agent.pubkey === pubkey,
+          );
+          expect(index).toBeGreaterThanOrEqual(0);
+          const previous = servedProfiles.get(pubkey);
+          const ownerKey = generateSecretKey();
+          const digest = createHash("sha256")
+            .update(`nostr:agent-auth:${pubkey}:`)
+            .digest();
+          const event = sign(
+            0,
+            [
+              [
+                "auth",
+                getPublicKey(ownerKey),
+                "",
+                bytesToHex(schnorr.sign(digest, ownerKey)),
+              ],
+            ],
+            previous.content,
+            soloAgentKeys[index],
+            previous.created_at + 1,
+          );
+          servedProfiles.set(pubkey, event);
           return event;
         },
         // Configure pre-existing members before opening the app. Reads stay at
@@ -3014,9 +3167,14 @@ export const test = base.extend({
           else if (relay) return event;
           else {
             expect(streams.get(community)?.size).toBeGreaterThan(0);
+            let writes = 0;
             for (const client of streams.get(community))
-              if (client.channels.includes(channel))
+              if (client.channels.includes(channel)) {
                 client.response.write(`data: ${JSON.stringify(event)}\n\n`);
+                writes++;
+              }
+            if (deliver)
+              report.liveAppends.push({ id: event.id, channel, writes });
           }
           return event;
         },

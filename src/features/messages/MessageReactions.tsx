@@ -478,6 +478,17 @@ export function MessageReactions(
       data-populated={(active && reactions.length > 0) || undefined}
       role="group"
       aria-label="Reactions"
+      // Copies keep each reaction and how many people chose it.
+      data-copy-text={
+        active
+          ? reactions
+              .map(
+                ({ reaction, authorIds }) =>
+                  `${reaction.content} ${authorIds.length}`,
+              )
+              .join(", ")
+          : ""
+      }
       onMouseEnter={() => setPointerInRow(true)}
       onMouseLeave={() => {
         setPointerInRow(false);

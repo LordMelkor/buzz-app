@@ -508,7 +508,7 @@ export function MessageReadStateItem({
       }}
     >
       <MenuIcon>{unread ? <EnvelopeOpenIcon /> : <EnvelopeIcon />}</MenuIcon>
-      {unread ? "Mark read" : "Mark unread"}
+      {unread ? "Mark as read" : "Mark as unread"}
     </MenuItem>
   );
 }

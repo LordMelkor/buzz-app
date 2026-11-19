@@ -75,6 +75,7 @@ import {
 } from "../../../../src/shared/design-system/ui/ThemePicker";
 import { KeyboardShortcut } from "../../../../src/shared/design-system/ui/KeyboardShortcut";
 import { CountBadge } from "../../../../src/shared/design-system/ui/CountBadge";
+import { Badge } from "../../../../src/shared/design-system/ui/Badge";
 
 function ThemePickerSpecimen() {
   const [value, setValue] = useState<ThemeMode>("system");
@@ -2189,6 +2190,24 @@ function RadioGroupSpecimen() {
         </Field>
       </SpecimenGroup>
       <SpecimenGroup
+        label="Compact checkmarked rows"
+        code={`<Field label="Voice">
+  <RadioGroup size="sm" defaultValue="cove">
+    <Radio value="cove" label="Cove" variant="row" />
+    <Radio value="maple" label="Maple" variant="row" />
+    <Radio value="none" label="Unavailable" variant="row" disabled />
+  </RadioGroup>
+</Field>`}
+      >
+        <Field label="Voice">
+          <RadioGroup size="sm" defaultValue="cove">
+            <Radio value="cove" label="Cove" variant="row" />
+            <Radio value="maple" label="Maple" variant="row" />
+            <Radio value="none" label="Unavailable" variant="row" disabled />
+          </RadioGroup>
+        </Field>
+      </SpecimenGroup>
+      <SpecimenGroup
         label="Native form reset"
         code={`<form aria-label="Notification preferences">
   <Field label="Notifications">
@@ -2478,6 +2497,14 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
     </p>
   ),
   "theme-picker": ThemePickerSpecimen,
+  badge: () => (
+    <div className="flex items-center gap-2">
+      <Badge size="xs">Read only</Badge>
+      <Badge size="xs" tone="success">
+        Best match
+      </Badge>
+    </div>
+  ),
   "count-badge": () => (
     <div className="flex w-64 flex-col gap-1">
       <NavigationItem

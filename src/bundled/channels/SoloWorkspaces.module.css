@@ -59,6 +59,14 @@
   container: solo-workspace-header / inline-size;
 }
 @container solo-workspace-header (max-width: 9rem) {
+  .workspaceHeader > [class~="navigation-section-heading"] {
+    flex-wrap: wrap;
+  }
+  .workspaceHeader [class~="navigation-section-heading-label"] {
+    flex-basis: 100%;
+  }
+}
+@container solo-workspace-header (max-width: 9rem) {
   .workspaceHeader [data-solo-workspace-new-task] {
     display: none;
   }
@@ -107,7 +115,7 @@
 .sidebarContents {
   --project-icon-size: 0.9375rem;
   /* Rows and project headers share one height and one trailing slot. */
-  /* The compact sidebar row height (Channels' .sidebar rows), as in Berd. */
+  /* The compact sidebar row height (SidebarFrame’s .sidebar rows), as in Berd. */
   --session-action-size: calc(var(--space-6) + var(--space-1));
   /* Match the channel sidebar's leading and trailing content inset. */
   --session-row-inset: var(--space-2);

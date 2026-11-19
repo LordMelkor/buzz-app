@@ -44,11 +44,11 @@ const NO_ADD_EMOJI = {
   subscribe: () => () => {},
 };
 
-// Slack-sized: inline-emoji glyphs in small-control cells, resolved from the
-// tokens so text-size preferences scale them. Fallbacks are their 1rem values.
-const EMOJI_SIZE = "--size-emoji-inline";
-const EMOJI_SLOT = "--size-control-sm";
-const MAX_PER_LINE = 9;
+// Picker-sized glyphs in control-sized cells, resolved from the tokens so
+// text-size preferences scale them. Fallbacks are their 1rem values.
+const EMOJI_SIZE = "--size-emoji-picker";
+const EMOJI_SLOT = "--size-control";
+const MAX_PER_LINE = 8;
 const PICKER_COLUMN_CHROME = 44;
 // Two balanced scrollbar lanes plus the gaps between fixed-size slots.
 const PICKER_CHROME = 72;
@@ -74,7 +74,7 @@ export function EmojiPicker({
   gifShortcut,
   addEmoji = NO_ADD_EMOJI,
 }: {
-  session: ComposerSession;
+  session: Pick<ComposerSession, "emoji" | "media">;
   gifShortcut?: GifShortcut;
   addEmoji?: Pick<AddEmoji, "snapshot" | "subscribe"> | undefined;
   scope: string;
@@ -84,6 +84,10 @@ export function EmojiPicker({
   gifRequests?: GifRequests | undefined;
   externalTrigger?: {
     ref: RefObject<HTMLButtonElement | null>;
+    /** Form pickers can anchor to the complete field without changing toolbar defaults. */
+    anchor?: RefObject<HTMLDivElement | null>;
+    side?: "top" | "bottom";
+    remove?: (() => void) | undefined;
     id: string;
     close(): void;
     finalFocus(): HTMLButtonElement | false;
@@ -104,9 +108,19 @@ export function EmojiPicker({
       perLine: 0,
       availableWidth: 0,
       scale: 1,
-      emojiSize: 22,
-      slot: 32,
+      emojiSize: 28,
+      slot: 40,
     });
+  // The category bar spans the popup, so its room is the popup's width, not
+  // the grid's: wider cells must not hide it in a pane where it still fits.
+  const popupWidth = Math.min(
+    availableWidth,
+    perLine * slot + PICKER_CHROME * scale + 2,
+  );
+  const spacious = spaciousGrid(
+    popupWidth - PICKER_COLUMN_CHROME * scale,
+    scale * 16,
+  );
   const [error, setError] = useState<string>();
   const [attempt, retry] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -165,8 +179,8 @@ export function EmojiPicker({
     const root = document.documentElement;
     const resize = () => {
       const scale = rootFontSize(document) / 16;
-      const emojiSize = tokenPx(document, EMOJI_SIZE, 22 * scale);
-      const slot = tokenPx(document, EMOJI_SLOT, 32 * scale);
+      const emojiSize = tokenPx(document, EMOJI_SIZE, 28 * scale);
+      const slot = tokenPx(document, EMOJI_SLOT, 40 * scale);
       setLayout({
         scale,
         emojiSize,
@@ -283,6 +297,7 @@ export function EmojiPicker({
           perLine,
           emojiSize,
           emojiButtonSize: slot,
+          navigation: spacious,
           search: search.current,
           searchSelection,
           searchChange: (value) => {
@@ -333,6 +348,7 @@ export function EmojiPicker({
     perLine,
     emojiSize,
     slot,
+    spacious,
     tab,
     host,
     colorMode,
@@ -342,7 +358,7 @@ export function EmojiPicker({
     openAddEmoji &&
     createPortal(
       <span slot={PREVIEW_ACTION_SLOT}>
-        {!spaciousGrid(perLine * slot, scale * 16) ? (
+        {!spacious ? (
           <IconButton
             size="sm"
             variant="ghost"
@@ -427,6 +443,23 @@ export function EmojiPicker({
   );
   const picker = (
     <div className={styles.emojiContent} data-tabs={showGifTab || undefined}>
+      {externalTrigger?.remove && (
+        <div className={styles.emojiRemove}>
+          <Button
+            type="button"
+            variant="ghost"
+            shape="control"
+            size="row"
+            onClick={() => {
+              externalTrigger.remove?.();
+              accepted.current = true;
+              setOpen(false);
+            }}
+          >
+            Remove emoji
+          </Button>
+        </div>
+      )}
       <Tabs
         variant="panel"
         label="Media type"
@@ -519,24 +552,29 @@ export function EmojiPicker({
       )}
       <PopoverPopup
         colorMode={colorMode}
-        side={reaction && !externalTrigger ? "bottom" : "top"}
+        side={
+          externalTrigger?.side ??
+          (reaction && !externalTrigger ? "bottom" : "top")
+        }
         anchor={
           reaction
-            ? externalTrigger?.ref
+            ? (externalTrigger?.anchor ?? externalTrigger?.ref)
             : () => controls.current?.closest("form") ?? trigger.current
         }
         sideOffset={reaction ? 6 : 4}
         collisionPadding={16}
+        collisionAvoidance={
+          externalTrigger?.anchor
+            ? { side: "flip", align: "shift", fallbackAxisSide: "none" }
+            : undefined
+        }
         // Each media panel focuses its search after its asynchronous content mounts.
         initialFocus={false}
         padding="none"
         id={externalTrigger?.id}
         aria-label="Emoji picker"
         style={{
-          width: Math.min(
-            availableWidth,
-            perLine * slot + PICKER_CHROME * scale + 2,
-          ),
+          width: popupWidth,
           overflow: "hidden",
         }}
         finalFocus={
