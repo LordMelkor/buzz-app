@@ -3560,6 +3560,55 @@ desktop app are not exercised there.
 
 Plugins can render the host-provided [`browser.View` component](browser.md) inside a panel. It opens HTTP(S) pages beside the conversation on macOS desktop. The host owns website rendering, navigation controls, and native session cleanup. Remote pages receive no Buzz IPC bridge; plugin JavaScript remains trusted same-process code. The [capability guide](browser.md#try-the-capability-with-a-local-plugin) includes a complete local-plugin example and installation steps.
 
+## Inline embeds on desktop
+
+macOS and Linux builds allow plugins to frame the Buzz Pages relay at
+`https://block.github.io/buzz/embed/`. The default development window loads from
+`http://localhost:1430`, which is outside the relay's accepted parent origins, so
+the relay responds to `mount` with `refused` there. Windows keeps its existing
+frame policy (no `frame-src` allowlist, so `default-src 'self'` applies) because
+its WebView2 runtime adds the app's initialization scripts to subframes. Keep
+the original destination available as a link on every platform.
+
+Set the outer `<iframe>`'s `sandbox` to
+`allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox`,
+its `allow` to `autoplay; encrypted-media; picture-in-picture; fullscreen`, and
+enable `allowfullscreen`. The relay applies the same `sandbox`, `allow`, and
+`allowfullscreen` attributes to the inner provider frame (with no
+`allow-top-navigation` on either frame) and sets
+`referrerpolicy="strict-origin-when-cross-origin"`.
+
+1. Install a `message` listener on `window` before loading the relay. Accept
+   messages only when `event.source === iframe.contentWindow` and
+   `event.origin === "https://block.github.io"`.
+2. On `{ type: "buzz-embed:ready" }`, post
+   `{ type: "buzz-embed:mount", src }` to `iframe.contentWindow` with target
+   origin `"https://block.github.io"`. The relay accepts one mount per load from
+   its direct parent at `tauri://localhost`, `http://tauri.localhost`, or
+   `https://tauri.localhost`.
+3. Supply an absolute HTTPS `src` on a different origin from
+   `https://block.github.io`. The relay rejects embedded credentials,
+   `localhost` and `*.localhost` names, trailing-dot hosts, `127.x` addresses,
+   `0.0.0.0`, and IPv6 literals. Before inserting the child frame, it adds
+   `<meta http-equiv="Content-Security-Policy" content="frame-src <origin>">` so
+   later navigations and redirects stay on that origin.
+4. The relay sends `{ type: "buzz-embed:mounted" }` after inserting the child
+   frame, or `{ type: "buzz-embed:refused" }` if it rejects the mount.
+
+The plugin handles failures as follows.
+
+- **CSP refusal or rejected mount.** If the host's CSP blocks the relay
+  (`securitypolicyviolation` with `effectiveDirective === "frame-src"`) or the
+  relay sends `buzz-embed:refused`, remove the iframe, restore the preview, and
+  fall back to opening the original link.
+- **Missing or unreachable relay page.** If the Pages endpoint fails to load,
+  `buzz-embed:ready` never arrives and the handshake stays unanswered. Keep a
+  preview visible until `buzz-embed:mounted`.
+- **Failure after `mounted`.** The relay confirms insertion only. A provider may
+  display its own error message. A network failure or blocked cross-origin
+  redirect can leave the frame empty. The relay sends no further load status,
+  so keep the original link usable.
+
 ## GitHub pull request states
 
 While the bundled GitHub plugin is on, it provides `ctx.githubPulls`: the pull

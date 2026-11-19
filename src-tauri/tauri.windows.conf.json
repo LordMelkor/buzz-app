@@ -5,6 +5,9 @@
     "windows": { "nsis": { "installerHooks": "installer-hooks.nsh" } }
   },
   "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com https://d2z0pbxrxbsiz5.cloudfront.net https://d10hx6rb3fdt3l.cloudfront.net wss: buzz-media: http://buzz-media.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: buzz-media: http://buzz-media.localhost; media-src 'self' blob: https://dwwgwmfqqjotj.cloudfront.net buzz-media: http://buzz-media.localhost http://127.0.0.1:* https://github.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://github-production-user-asset-6210df.s3.amazonaws.com https://objects.githubusercontent.com"
+    },
     "windows": [
       {
         "title": "Buzz",
