@@ -2185,63 +2185,52 @@ const headOnly = (filter: ReadFilter) =>
           )
           .slice(0, filter.limit);
 
-it.each(["live traffic", "a session readPage scan"])(
-  "keeps a view ready with the same rows when %s carries 2,000 replies older than its cursor",
-  async (source) => {
-    const h = await setup(headOnly);
-    await h.view.refresh();
-    const before = h.view.snapshot().replies;
-    expect(before).toHaveLength(10);
-    if (source === "live traffic") h.traffic.receive(olderScan);
-    else
-      for (let cursor: ThreadCursor | undefined, n = 0; n < 4; n++) {
-        const { events } = await h.session.readPage([
-          {
-            kinds: [9],
-            "#h": [channel],
-            "#e": [root.id],
-            limit: 500,
-            ...(cursor
-              ? { until: cursor.created_at, before_id: cursor.id }
-              : {}),
-          },
-        ]);
-        cursor = events.at(-1);
-      }
-    expect(h.view.snapshot()).toMatchObject({
-      status: "ready",
-      error: undefined,
-      limited: false,
-    });
-    expect(h.view.snapshot().replies).toBe(before);
-    const live = replyAt("live", 2000);
-    const held = newestPage[3] as RelayEvent;
-    h.traffic.receive([live]);
-    h.traffic.receive([
-      signed(author, {
-        kind: 5,
-        content: "",
-        created_at: 2001,
-        tags: [["e", held.id]],
-      }),
+it("keeps a view ready with the same rows when a session readPage scan carries 2,000 replies older than its cursor", async () => {
+  const h = await setup(headOnly);
+  await h.view.refresh();
+  const before = h.view.snapshot().replies;
+  expect(before).toHaveLength(10);
+  for (let cursor: ThreadCursor | undefined, n = 0; n < 4; n++) {
+    const { events } = await h.session.readPage([
+      {
+        kinds: [9],
+        "#h": [channel],
+        "#e": [root.id],
+        limit: 500,
+        ...(cursor ? { until: cursor.created_at, before_id: cursor.id } : {}),
+      },
     ]);
-    const ids = h.view.snapshot().replies.map((row) => row.id);
-    expect(ids).toContain(live.id);
-    expect(ids).not.toContain(held.id);
-    expect(ids).toHaveLength(10);
-  },
-);
+    cursor = events.at(-1);
+  }
+  expect(h.view.snapshot()).toMatchObject({
+    status: "ready",
+    error: undefined,
+    limited: false,
+  });
+  expect(h.view.snapshot().replies).toBe(before);
+  const live = replyAt("live", 2000);
+  const held = newestPage[3] as RelayEvent;
+  h.traffic.receive([live]);
+  h.traffic.receive([
+    signed(author, {
+      kind: 5,
+      content: "",
+      created_at: 2001,
+      tags: [["e", held.id]],
+    }),
+  ]);
+  const ids = h.view.snapshot().replies.map((row) => row.id);
+  expect(ids).toContain(live.id);
+  expect(ids).not.toContain(held.id);
+  expect(ids).toHaveLength(10);
+});
 
-it("admits a reply at the cursor's second only when its id is at or below the cursor's, and any legacy diff", async () => {
+it("admits a read reply at the cursor's second only when its id is at or below the cursor's, any legacy diff, and every streamed reply", async () => {
   const tied = Array.from({ length: 3 }, (_, n) =>
     replyAt(`tied ${n}`, 50),
   ).sort((a, b) => a.id.localeCompare(b.id));
   const [low, mid, high] = tied as [RelayEvent, RelayEvent, RelayEvent];
   const newer = replyAt("newer", 60);
-  const h = await setup((filter) =>
-    filter.ids ? [root] : [newer, mid, bounds(filter, cursorOf(mid))],
-  );
-  await h.view.refresh();
   const diff = signed(author, {
     kind: 40008,
     content: "diff",
@@ -2251,9 +2240,26 @@ it("admits a reply at the cursor's second only when its id is at or below the cu
       ["e", root.id, "", "reply"],
     ],
   });
-  h.traffic.receive([low, high, diff]);
+  const h = await setup((filter) =>
+    filter.ids
+      ? [root]
+      : filter.thread_window
+        ? [newer, mid, bounds(filter, cursorOf(mid))]
+        : [low, high, diff],
+  );
+  await h.view.refresh();
+  await h.session.readPage([
+    { kinds: [9, 40008], "#h": [channel], "#e": [root.id], limit: 10 },
+  ]);
   expect(h.view.snapshot().replies.map((row) => row.id)).toEqual(
     [diff, low, mid, newer].map((row) => row.id),
+  );
+  const skewed = replyAt("from a clock 90 s behind", 45);
+  const missed = replyAt("sent while this client was away", 44);
+  h.traffic.receive([skewed]);
+  h.traffic.receive([missed], { phase: "replay", channelId: channel });
+  expect(h.view.snapshot().replies.map((row) => row.id)).toEqual(
+    [diff, missed, skewed, low, mid, newer].map((row) => row.id),
   );
 });
 

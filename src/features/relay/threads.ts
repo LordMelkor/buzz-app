@@ -587,10 +587,10 @@ export function createThreadView({
           : cursor;
     return !!edge && relayOrder(event, edge) < 0;
   };
-  function receive(events: readonly RelayEvent[]) {
+  function receive(events: readonly RelayEvent[], stream = false) {
     if (disposed || !canAccess() || (!rootId && !exact)) return;
     const fresh = events.filter(
-      (event) => !remoteIds.has(event.id) && !beyond(event),
+      (event) => !remoteIds.has(event.id) && (stream || !beyond(event)),
     );
     if (!fresh.length) return;
     const incoming = related(fresh);
