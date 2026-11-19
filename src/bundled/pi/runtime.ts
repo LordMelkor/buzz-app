@@ -1323,7 +1323,7 @@ export class PiRuntime {
         },
         memories: (slug) => this.memories(call.agent, slug),
         remembered: () => this.forgetMemory(call.agent),
-        ...(signal ? { signal, callSignal: signal } : {}),
+        ...(signal ? { signal } : {}),
       });
     try {
       const reply = await callSessionTool(
