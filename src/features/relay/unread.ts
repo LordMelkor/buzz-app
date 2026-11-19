@@ -192,6 +192,20 @@ export interface UnreadCapability {
     target: ReadTarget,
     messageId: string,
   ): Promise<ReadMutationResult>;
+  /** An Activity row's `readThrough` steps as one explicit intent, saved in
+   * order. Local unread intent is cut once, at the call: a newer Mark as
+   * unread on a later step's target, even one queued behind an earlier step,
+   * rejects that step and stops the rest. */
+  markReadThrough(
+    steps: readonly Readonly<{ target: ReadTarget; messageId: string }>[],
+  ): Promise<readonly ReadMutationResult[]>;
+  /** `markReadThrough`'s steps, each saved when its caller runs it, so a
+   * caller can check between steps and retry one. The cut is still the
+   * preparing call's: running a step again cannot clear a newer Mark as
+   * unread on its target. Run them in order. */
+  prepareReadThrough(
+    steps: readonly Readonly<{ target: ReadTarget; messageId: string }>[],
+  ): readonly (() => Promise<ReadMutationResult>)[];
   /** Explicit read of these verified top-level messages in one save, as the
    * reader's catch-up reads a channel bottom: the channel catch-up mark reads
    * ordinary messages through the newest, and still-unread mentions,
@@ -270,6 +284,23 @@ const EVIDENCE_LOW_EVENTS = 3072;
 const EVIDENCE_LOW_BYTES = 6 * 1024 * 1024;
 const eventBytes = (event: RelayEvent) =>
   new TextEncoder().encode(JSON.stringify(event)).byteLength;
+/** A row's preview text: its body, or a plain description of its attachments
+ * when attachment presentation left no text, so the row is never blank. */
+const previewText = (message: ChannelMessage) => {
+  if (message.content.trim() || !message.attachments.length)
+    return message.content;
+  const count = message.attachments.length;
+  const [first] = message.attachments;
+  const kind = message.attachments.every((item) => item.kind === first?.kind)
+    ? first?.kind
+    : undefined;
+  const noun =
+    kind === "image" ? "image" : kind === "video" ? "video" : "attachment";
+  return count === 1
+    ? `${noun[0]?.toUpperCase()}${noun.slice(1)}`
+    : `${count} ${noun}s`;
+};
+
 /** Rendered message order: effective ms, then event id. */
 const order = (a: RelayEvent, b: RelayEvent) =>
   eventMs(a) - eventMs(b) || a.id.localeCompare(b.id);
@@ -1291,7 +1322,7 @@ export function createUnread({
     let presented: Map<string, string> | undefined;
     const previewOf = (event: RelayEvent) => {
       presented ??= new Map(
-        folded(channelId).map((message) => [message.id, message.content]),
+        folded(channelId).map((message) => [message.id, previewText(message)]),
       );
       return presented.get(event.id) ?? event.content;
     };
@@ -1484,7 +1515,7 @@ export function createUnread({
         }
         if (!groups.size) continue;
         const rows = folded(channel.id);
-        const content = new Map(rows.map((row) => [row.id, row.content]));
+        const content = new Map(rows.map((row) => [row.id, previewText(row)]));
         // A session's top-level row shows its newest message from someone
         // else, unless that message is the root of its own thread row. This
         // mostly matches its newest evidence, but follows a relay-signed row's
@@ -3004,6 +3035,40 @@ export function createUnread({
           true,
         ),
       );
+    },
+    async markReadThrough(steps) {
+      const results: ReadMutationResult[] = [];
+      for (const save of capability.prepareReadThrough(steps))
+        results.push(await save());
+      return results;
+    },
+    prepareReadThrough(steps) {
+      const generation = epoch;
+      const admitted = steps.map(({ target, messageId }) => ({
+        target,
+        messageId,
+        event: requireMessage(target, messageId),
+      }));
+      // Reserve one saved cut at the click, before any newer manual action.
+      const cut = reads.captureLocalUnreadRevision();
+      return admitted.map(({ target, messageId, event }) => {
+        const fence = reads.captureLocalUnread([targetKey(target)], cut);
+        return () =>
+          serialize(target.channelId, () =>
+            reads.read(
+              targetKey(target),
+              event.created_at,
+              () =>
+                !closed &&
+                generation === epoch &&
+                requireMessage(target, messageId) === event,
+              true,
+              undefined,
+              undefined,
+              fence,
+            ),
+          );
+      });
     },
     async markTimelineRead(channelId, messageIds) {
       const target = { kind: "channel" as const, channelId };

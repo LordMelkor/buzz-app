@@ -1539,12 +1539,17 @@ function MessageRowContent({
                 !row.huddle &&
                 !renderMessage &&
                 messageActions()}
-              {/* Screen-reader text stays out of selections: the clipboard carries
-                what the reader saw, so a continuation copies without a byline. */}
+              {/* A selection holding the whole byline copies it as one line,
+                name then time (selection-copy.ts). A grouped row's byline is
+                otherwise screen-reader text that stays out of selections. */}
               <div
                 className={
                   stackPrevious ? "sr-only select-none" : styles.byline
                 }
+                data-copy-author={
+                  row.workflowOwnerId && workflowOwnerName ? "Workflow" : name
+                }
+                data-copy-time={showTime ? row.createdAt : undefined}
               >
                 {row.workflowOwnerId && workflowOwnerName ? (
                   <WorkflowByline

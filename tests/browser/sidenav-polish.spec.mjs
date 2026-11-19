@@ -871,7 +871,7 @@ test("non-ready sidebar keeps Retry reachable while dock pages remain available"
 });
 
 // Pixel positions across two sidebar states need a real layout engine.
-test("Personal space preserves scope control and global-row geometry", async ({
+test("Personal space preserves the global sidebar row geometry", async ({
   page,
   app,
 }) => {
@@ -884,16 +884,19 @@ test("Personal space preserves scope control and global-row geometry", async ({
   const geometry = () =>
     sidebar.evaluate((frame) => {
       const bounds = frame.getBoundingClientRect();
-      const scope = frame.querySelector('[aria-label="Navigation scope"]');
       const rows = frame
         .querySelector('[aria-label="Pages"]')
         .querySelectorAll('[data-variant="row"]');
-      return [scope, ...rows].map((element) => {
+      // In a community, page rows sit under the orderable Plugins heading,
+      // so compare their tops relative to the first row.
+      const first = rows[0].getBoundingClientRect().top;
+      return [...rows].map((element) => {
         const box = element.getBoundingClientRect();
         return {
           left: box.left - bounds.left,
-          top: box.top - bounds.top,
+          top: box.top - first,
           width: box.width,
+          height: box.height,
         };
       });
     });

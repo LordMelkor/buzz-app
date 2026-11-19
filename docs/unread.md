@@ -275,6 +275,13 @@ timeline and the thread being read, without reading unopened threads' replies.
 - `markThrough(target, messageId)` is explicit prefix intent through verified
   evidence. It can mark unloaded earlier messages read; do not use it for viewport
   observation. A channel prefix requires a top-level message, not a reply.
+- `markReadThrough(steps)` saves an Activity row's `readThrough` steps in order
+  as one explicit intent. Local manual-unread intent is cut once, at the call: a
+  newer Mark as unread on a later step's target, even one queued behind an
+  earlier step's save, rejects that step and stops the rest.
+  `prepareReadThrough(steps)` takes that cut at its call and returns one save per
+  step, for a caller that checks between steps or retries one (the Activity
+  page); running a step again keeps the preparing call's cut.
 - `markChannelRead(channelId)` captures the greater of invocation-time integer
   seconds and the newest retained verified message timestamp (including replies),
   then atomically advances the explicit channel frontier and clears the channel's
@@ -419,8 +426,8 @@ appears as an Inbox item or thread activity, and never queues a conversation
 lookup. This is the rule the [notification pipeline](notifications.md#running-app-behavior)
 already applies. The row stays in evidence, so it is still `latestMessage` and
 the live bottom that catch-up reads through. Unread intent does not change the
-rule: the message has no **Mark read** / **Mark unread** action, and channel or
-thread **Mark unread** leaves it read. The tag is self-declared by the sender. Older clients, mobile and
+rule: the message has no **Mark as read** / **Mark as unread** action, and channel or
+thread **Mark as unread** leaves it read. The tag is self-declared by the sender. Older clients, mobile and
 the relay's read-state and push rules do not apply the exemption yet.
 
 **Follow thread** / **Unfollow thread** in a message's menu records an explicit
@@ -633,6 +640,7 @@ Consumers must tolerate hosts that do not provide `undo`.
 | Automatic bottom dwell | Ordinary channel activity or that thread’s replies through verified evidence | Channel only (channel bottom, not a thread) |
 | Automatic DM dwell (visible rows or bottom) | DM channel through the newest retained verified message | DM channel only |
 | `markThrough(target, messageId)` | Explicit verified target prefix | That target only |
+| `markReadThrough(steps)` | Each step's explicit verified target prefix, in order | Each step's target, unless marked unread after the call |
 | `markChannelRead(channelId)` | Channel through max(click time, newest retained verified message) | Channel, retained messages, verified same-channel reply roots, and threads whose top-level root is retained |
 | Channel read with no evidence | Click time on frontier-capable hosts; none otherwise | Channel only |
 | Mute/Unmute | None | None |

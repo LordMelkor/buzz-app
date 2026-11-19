@@ -9,6 +9,7 @@ import { onAutomatic } from "./recommended";
 // host run each agent. It knows nothing of where it runs: everything it needs
 // of the device, community and storage comes through its RunnerHost, so the
 // desktop app and a standalone host run agents with the same code.
+import type { PublishOptions } from "../../buzz-mcp/client";
 import { bytesToHex } from "nostr-tools/utils";
 import type { ProtectionAction } from "../agent-protection/service";
 import type {
@@ -109,6 +110,12 @@ import {
 } from "./catch-up";
 import type { Interrupted } from "./interrupted";
 import type { DeviceSettings } from "../../shared/device-settings";
+import {
+  fallbackNotice,
+  gatewayRoutes,
+  TURN_READINESS_WAIT_MS,
+} from "./gateway/route";
+import { turnContextFor } from "./gateway/turn";
 
 /** Jobs waiting in each lane: mentions, and watch work (catch-up included),
  * so watches can never fill the room mentions need, as in Janet. */
@@ -461,6 +468,9 @@ export type RunnerHost = {
   /** Whether the event came as it would have with no watch keeping channels
    * live or looking them up; one heard `live`, or read by catch-up. */
   unattended(agent: Agent, event: RelayEvent, live: boolean): boolean;
+  /** Whether the channel is flat, with no threads: a DM of any size or a
+   * Solo chat. */
+  flat(agent: Agent, channelId: string): boolean;
   /** While the owner is still starting this chat, settles once it can take
    * the agent's events; undefined otherwise. */
   starting?(agent: Agent, channelId: string): Promise<void> | undefined;
@@ -558,6 +568,8 @@ export type RunnerHost = {
   plugins?(agent: Agent): AgentHandle["plugins"];
   /** Wakes the agent in another of its conversations, as its own handoff. */
   handoff(agent: Agent, handoff: AgentHandoff): void;
+  /** Whether the agent's threads in the channel have sessions of their own. */
+  threadsApart?(agent: Agent, channelId: string): boolean | undefined;
   /** The instructions plugins give the agent's turns now. */
   instructions?(
     agent: Agent,
@@ -2844,6 +2856,56 @@ export class AgentRunners {
     );
     return timer && { lane: lane(timer), job: timer };
   }
+  /** The membership's gateway route, this turn's context and its harness's
+   * upstream base, frozen before the type is asked to run, as `gateway`. A
+   * type that names no harness, whose harness this build gives no upstream
+   * (including any harness under an invalid runtime descriptor, which fails
+   * open), or whose harness the gateway doesn't enable for this membership
+   * keeps its existing behavior, without a notice. While an access check is
+   * in flight, such as the first one at cold start, the turn waits for it
+   * for up to `TURN_READINESS_WAIT_MS`, or until the turn is cancelled. A
+   * blocked `auth` route (a 401 or 403) then fails the turn, and so does one
+   * still pending after the wait, whose answer could yet be a denial. Any
+   * other blocked route runs it with its own configuration and none of the
+   * Buzz context, as `gatewayFallback`, and notes that on a mention's
+   * request. The choice is made here, before dispatch, so nothing is ever
+   * replayed. A turn whose access is revoked after dispatch is the harness's
+   * to fail visibly. */
+  private async gatewayRouting(
+    agent: Agent,
+    type: RegisteredAgentType,
+    job: Job,
+    anchor: ConversationWake | undefined,
+    signal: AbortSignal,
+  ) {
+    const harness = type.gateway?.harness;
+    const upstream = harness && gatewayRoutes.upstream(harness);
+    if (!upstream) return {};
+    const route = await gatewayRoutes.routeForTurn(
+      agent.key,
+      AbortSignal.any([signal, AbortSignal.timeout(TURN_READINESS_WAIT_MS)]),
+    );
+    signal.throwIfAborted();
+    if (route.kind === "external") return {};
+    if (route.kind === "blocked") {
+      if (route.reason === "auth" || route.reason === "readiness_pending")
+        throw new Error(route.message);
+      const notice = fallbackNotice(route.reason);
+      job.work?.notice(notice);
+      return {
+        gatewayFallback: Object.freeze({ reason: route.reason, notice }),
+      };
+    }
+    if (!route.harnesses.includes(harness)) return {};
+    const { trigger } = job;
+    const turn = turnContextFor(trigger, {
+      channelId: job.channelId,
+      wake: anchor,
+      flat: (channelId) => this.host.flat(agent, channelId),
+    });
+    return { gateway: Object.freeze({ route, turn, upstream }) };
+  }
+
   /** Runs `job` in `lane`, holding the lane until it may take another. */
   private start(
     runner: Runner,
@@ -2896,6 +2958,14 @@ export class AgentRunners {
     };
     const completion = Promise.resolve().then(async () => {
       this.assertProtected(agent, type, handle);
+      // Before any type code (its models included) runs for this turn.
+      const routing = await this.gatewayRouting(
+        agent,
+        type,
+        job,
+        anchor,
+        signal,
+      );
       const pick = await pickFor(job.trigger, agent, type);
       const start = await this.host.start(agent);
       if (!start.ok) throw new Error(start.reason);
@@ -2928,6 +2998,7 @@ export class AgentRunners {
         trigger: job.trigger,
         ...(type.sessionAdmission ? { prepareSession } : {}),
         ...(job.channelId ? { channelId: job.channelId } : {}),
+        ...routing,
         agent: handle,
         config: start.config,
         revisions: start.revisions,
@@ -3168,7 +3239,11 @@ export class AgentRunners {
         owner: agent.owner,
         // What acts as the agent stops with it: a turn still working once it
         // is deleted, removed from this community or retyped can't.
-        publish: async (event: AgentEventTemplate, check?: () => void) => {
+        publish: async (
+          event: AgentEventTemplate,
+          check?: () => void,
+          options?: PublishOptions,
+        ) => {
           lifetime.throwIfAborted();
           const destination = event.tags?.find((tag) => tag[0] === "h")?.[1];
           const ownReply =
@@ -3189,6 +3264,7 @@ export class AgentRunners {
               event,
               lifetime,
               check,
+              options,
             );
             confirmed = true;
             if (workspaces && event.kind === 9007) {
@@ -3281,6 +3357,10 @@ export class AgentRunners {
           handoff: (handoff: AgentHandoff) => {
             lifetime.throwIfAborted();
             this.host.handoff(agent, handoff);
+          },
+          threadsApart: (channelId: string) => {
+            lifetime.throwIfAborted();
+            return this.host.threadsApart?.(agent, channelId);
           },
           // The control outlives this call, so each of its calls checks the
           // run's lifetime, and set again once it has read the agents.
@@ -3699,6 +3779,7 @@ export class AgentRunners {
     event: AgentEventTemplate,
     lifetime: AbortSignal,
     check?: () => void,
+    options?: PublishOptions,
   ) {
     const channel = event.tags?.find((tag) => tag[0] === "h")?.[1];
     const agent = this.host.agent(runner.key);
@@ -3709,7 +3790,9 @@ export class AgentRunners {
       lifetime.throwIfAborted();
     }
     check?.();
-    return this.require().publish(runner.member, event);
+    return options
+      ? this.require().publish(runner.member, event, options)
+      : this.require().publish(runner.member, event);
   }
 }
 

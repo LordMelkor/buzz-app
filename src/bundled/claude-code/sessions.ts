@@ -21,6 +21,32 @@ import type { AgentStore } from "../../features/agents/store";
 /** A conversation's process stops after this long without a message or its
  * own activity, such as background work. */
 export const IDLE_MS = 15 * 60_000;
+/** How the host refuses a process when it runs all it allows, as the plugin
+ * bridge rejects (`host_process.rs`). */
+export const PROCESS_LIMIT = "Too many processes are running";
+/** `spawn` that, at the host's process limit, asks `room` for a place and
+ * tries again, while the process is still `wanted`. */
+export const withRoom =
+  (
+    spawn: Spawn,
+    room: (() => Promise<boolean>) | undefined,
+    wanted: () => boolean,
+  ): Spawn =>
+  async (id, options) => {
+    for (;;)
+      try {
+        return await spawn(id, options);
+      } catch (error) {
+        // Asked again after the wait: it may no longer be wanted.
+        if (
+          error !== PROCESS_LIMIT ||
+          !wanted() ||
+          !(await room?.()) ||
+          !wanted()
+        )
+          throw error;
+      }
+  };
 /** Saved sessions per agent; the least recently used are forgotten. */
 const SAVED_LIMIT = 200;
 
@@ -43,6 +69,9 @@ export type SessionStore = {
 
 export type SessionsOptions = Readonly<{
   spawn: Spawn;
+  /** At the host's process limit, stops some idle conversation's process to
+   * make a place for a conversation's; false when none is idle. */
+  room?(): Promise<boolean>;
   strictResume?: boolean;
   /** Where a new conversation looks for a process already started. */
   spare?: Spare;
@@ -95,6 +124,8 @@ export class AgentSessions {
   private readonly once = new Map<string, Live | undefined>();
   private onceCount = 0;
   private readonly handing = new Map<string, Promise<void>>();
+  /** Conversations whose next message the runtime is still preparing. */
+  private readonly arriving = new Map<string, number>();
   private readonly opening = new Map<string, Promise<Live | Settled>>();
   private discovery:
     | {
@@ -155,6 +186,32 @@ export class AgentSessions {
       })),
       ...[...this.once.keys()].map((key) => ({ key, busy: true })),
     ];
+  }
+
+  /** The conversation process used longest ago that is doing nothing, with
+   * how to stop it: the runtime stops it to make room when the host is
+   * running all the processes it allows. One in a turn, running background
+   * work, still starting or about to take a message is never offered. Its saved session resumes it
+   * when the conversation is next addressed, as after the idle stop. */
+  idlest(): { used: number; stop(): Promise<unknown> } | undefined {
+    let idlest: [string, Live] | undefined;
+    for (const entry of this.live) {
+      const [key, live] = entry;
+      // A message on its way in is about to use it.
+      if (this.handing.has(key) || this.opening.has(key)) continue;
+      if (this.arriving.has(key)) continue;
+      if (!live.process.active && (!idlest || live.used < idlest[1].used))
+        idlest = entry;
+    }
+    if (!idlest) return undefined;
+    const [key, live] = idlest;
+    return {
+      used: live.used,
+      stop: () => {
+        this.drop(key, live);
+        return live.process.exited;
+      },
+    };
   }
 
   /** Read defaults without assigning the shared spare to this agent. */
@@ -219,6 +276,20 @@ export class AgentSessions {
     this.discovery = undefined;
   }
 
+  /** Marks a message for `key` as on its way, before `deliver` is called, so
+   * its idle process is not stopped to make room; the returned function
+   * unmarks it. */
+  incoming(key: string) {
+    this.arriving.set(key, (this.arriving.get(key) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const left = (this.arriving.get(key) ?? 1) - 1;
+      if (left) this.arriving.set(key, left);
+      else this.arriving.delete(key);
+    };
+  }
   /** Sends `text` into the conversation `key`, and resolves when the session
    * has answered it. `steer` replaces `text` when the session is mid-turn;
    * `fresh` builds it again for a new session when the saved one is lost;
@@ -290,7 +361,15 @@ export class AgentSessions {
       }
       const saved = live ? undefined : this.options.store.get(key);
       if (!live) {
-        const opened = await this.open(key, saved?.id, 0);
+        // An interrupted turn makes no more room.
+        const opened = await this.open(
+          key,
+          saved?.id,
+          0,
+          undefined,
+          () => !current || current(),
+        );
+        if (current && !current()) return { ok: true, undelivered: true };
         if (!("process" in opened)) return opened;
         live = opened;
       }
@@ -396,6 +475,15 @@ export class AgentSessions {
   /** Compacts the conversation's session, resuming it when its process has
    * stopped. Without a session there is nothing to compact. */
   async compact(key: string): Promise<Settled> {
+    // Its process is not stopped to make room before `/compact` is sent.
+    const arrived = this.incoming(key);
+    try {
+      return await this.compacted(key);
+    } finally {
+      arrived();
+    }
+  }
+  private async compacted(key: string): Promise<Settled> {
     if (this.disposed) return { ok: false, error: "Claude was stopped" };
     let live = this.live.get(key);
     const saved = this.options.store.get(key);
@@ -459,6 +547,7 @@ export class AgentSessions {
             if (over) void process.kill();
           },
           label,
+          () => !over && !signal?.aborted,
         ),
         signal,
       );
@@ -529,8 +618,9 @@ export class AgentSessions {
     resume: string | undefined,
     seen: number,
     contextRoot?: string,
+    wanted?: () => boolean,
   ): Promise<Live | Settled> {
-    const opened = this.start(resume, key).then(
+    const opened = this.start(resume, key, undefined, undefined, wanted).then(
       async (live): Promise<Live | Settled> => {
         if (this.disposed) {
           if (this.opening.get(key) === opened) this.opening.delete(key);
@@ -569,13 +659,15 @@ export class AgentSessions {
     key?: string,
     spawned?: (process: ClaudeProcess) => void,
     once?: string,
+    wanted: () => boolean = () => true,
   ): Promise<Live> {
     // Read before `launch` reads the settings, so it never describes newer ones.
     const fingerprint = this.options.fingerprint(key);
     const launch = await this.options.launch(key);
+    const spawn = this.roomy(wanted);
     const process = resume
-      ? await ClaudeProcess.start(this.spawn, { ...launch, resume })
-      : await this.fresh(launch, spawned);
+      ? await ClaudeProcess.start(spawn, { ...launch, resume })
+      : await this.fresh(launch, spawn, spawned);
     if (fingerprint === this.options.fingerprint(key) || this.disposed) {
       if (!resume && process.sessionId)
         this.options.started?.(process.sessionId, launch.systemPrompt, once);
@@ -583,11 +675,22 @@ export class AgentSessions {
     }
     // Settings saved while it started: it would work with the old ones.
     void process.kill();
-    return this.start(resume, key, spawned, once);
+    return this.start(resume, key, spawned, once, wanted);
+  }
+  /** `spawn` for a conversation: at the host's process limit, it makes room
+   * and tries again, while the process is still wanted. Discovery and the
+   * spare, started ahead of need, never stop a conversation. */
+  private roomy(wanted: () => boolean): Spawn {
+    return withRoom(
+      this.spawn,
+      this.options.room,
+      () => !this.disposed && wanted(),
+    );
   }
   /** A process for a new session: the spare when it fits, else a new one. */
   private async fresh(
     launch: Omit<ClaudeLaunch, "resume" | "sessionId">,
+    spawn: Spawn,
     spawned?: (process: ClaudeProcess) => void,
   ) {
     const spare =
@@ -602,7 +705,7 @@ export class AgentSessions {
       } catch {
         void spare.kill();
       }
-    const process = await ClaudeProcess.spawn(this.spawn, {
+    const process = await ClaudeProcess.spawn(spawn, {
       ...launch,
       sessionId: this.newId(),
     });
@@ -785,6 +888,22 @@ export class Spare {
 
   dispose() {
     this.warm();
+  }
+
+  /** Stops the spare so a conversation can have its place at the host's
+   * process limit; it is not started again until a conversation asks for
+   * one. Taken at once, so no later call waits on it too; resolves once it
+   * has exited, or never started. Undefined when there is none. */
+  free(): Promise<unknown> | undefined {
+    const next = this.next;
+    if (!next) return undefined;
+    this.next = undefined;
+    this.stopped = true;
+    return next.process.then((process) => {
+      if (!process) return;
+      void process.kill();
+      return process.exited;
+    });
   }
 
   private place(where: Where) {

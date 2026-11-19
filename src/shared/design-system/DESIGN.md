@@ -477,6 +477,12 @@ Tailwind utilities include `bg-surface-panel`, `text-standard`,
 `border-prominent` and `bg-affordance-subtle-hover`. Text and border registrations
 stay in separate namespaces so they cannot accidentally share a value.
 
+Shared Markdown has a deliberate content exception: inline snippets, fenced
+code frames, and the backing behind pinned code actions use `affordance-subtle`
+to keep one code fill in both themes. Their text uses the renderer's existing
+text roles. This exception belongs to the shared Markdown renderer; other
+recessed content continues to use `surface-inset`.
+
 Enabled sidebar section headings, disclosure chevrons and quiet section actions
 use `text-subtle`, not `text-unavailable`. Disabled controls keep their shared
 disabled state; a parent's inherited color must not override it.
@@ -1806,7 +1812,7 @@ inside a group than between groups.
 - Dense data uses edge-to-edge rows and dividers where a line helps track the row.
 - Distinct swatches, type samples, and avatars often need only space between them. Avoid adding a card or divider when the content already separates itself.
 - Show samples on the surface where they will be used. Glass needs a backdrop; a white swatch on white needs a quiet boundary.
-- Cards group widgets, gallery items, or settings. They sit on `bg-panel` with spacing or a hairline and have no default fill. Use `bg-hover` only for an interactive card’s hover state. There is no `bg-card` role; `bg-inset` is for recessed content such as inputs or code blocks.
+- Cards group widgets, gallery items, or settings. They sit on `bg-panel` with spacing or a hairline and have no default fill. Use `bg-hover` only for an interactive card's hover state. There is no `bg-card` role; `bg-inset` is for recessed content such as inputs. Shared Markdown code follows the content exception in [Semantic colors](#semantic-colors).
 - Use native thin scrollbars: `scrollbar-width: thin` and `scrollbar-color: var(--scrollbar-thumb-quiet) transparent`. Use the sidebar’s subtle gray thumb in both modes. Load the shared recipe into vendor shadow roots and let the browser control scrolling and visibility.
 
 ## Motion

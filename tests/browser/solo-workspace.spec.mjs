@@ -15,11 +15,25 @@ const id = "33333333-3333-4333-8333-333333333333";
 const other = "44444444-4444-4444-8444-444444444444";
 test.use({
   productionBroker: true,
+  pluginFixtures: true,
   channelIds: [id, other, "gamma"],
   channelNames: { [id]: "Alpha", [other]: "Beta", gamma: "Gamma" },
   soloChannels: [id, other],
   ownSoloChannels: [id, other],
   historyCounts: { [id]: 2, [other]: 1, gamma: 1 },
+});
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const key = "buzzodz.plugins.v1";
+    const choices = JSON.parse(localStorage.getItem(key) ?? "null") ?? {
+      version: 3,
+      enabled: { "buzz.reminders": false, "buzz.workflows": false },
+    };
+    // The Solo source fixture is needed here. Its companion panel fixture
+    // deliberately matches everything, taking priority over Profile details.
+    choices.enabled["fixture.notes"] = false;
+    localStorage.setItem(key, JSON.stringify(choices));
+  });
 });
 // Activity opens the agent's profile, where its type's Activity tab lives.
 const agentProfile = (page) =>
@@ -67,13 +81,35 @@ async function showSharedMark(page, app, row) {
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  const outer = page.locator(`[data-solo-menu-id="${id}"]`);
+  const outer = row.locator(
+    "xpath=ancestor::*[@data-solo-menu-id or @data-channel-sidebar-row][1]",
+  );
   const shared = outer.locator("[data-solo-shared]");
   await expect(row).toHaveAccessibleDescription("Shared");
   // Callers check visibility: a working row hides Shared on pointer devices.
   await expect(shared).toBeAttached();
   return shared;
 }
+
+test("a unified Solo row describes and opens shared access", async ({
+  page,
+  app,
+}) => {
+  await page.goto(app.origin);
+  await newChat(page);
+  const row = page.locator(`[data-solo-destination-id="${id}"]`);
+  const shared = await showSharedMark(page, app, row);
+  await shared.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Share access",
+    exact: true,
+  });
+  await expect(
+    dialog.getByText("Shared teammate", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(shared).toBeFocused();
+});
 // The row owns status/action geometry. Compare painted centers on desktop;
 // on touch, status flows immediately before the actual actions (Shared or menu).
 async function expectTrailingAlignment(row, status, touch = false) {
@@ -162,8 +198,8 @@ test("Solo chat Activity opens the agent's profile locally, restores per convers
 }) => {
   await page.goto(app.origin);
   await newChat(page);
-  const sidebar = page.getByRole("navigation", { name: "Solo conversations" });
-  await sidebar.locator(`[data-solo-channel-id="${id}"]`).click();
+  const sidebar = page.getByRole("navigation", { name: "Subscribed channels" });
+  await sidebar.locator(`[data-solo-destination-id="${id}"]`).click();
   const composer = page.getByRole("textbox", {
     name: "Message your agents",
     exact: true,
@@ -204,7 +240,7 @@ test("Solo chat Activity opens the agent's profile locally, restores per convers
   await expect(panel).toBeVisible();
   await sidebar.getByRole("button", { name: "Beta", exact: true }).click();
   await expect(panel).toHaveCount(0);
-  await sidebar.locator(`[data-solo-channel-id="${id}"]`).click();
+  await sidebar.locator(`[data-solo-destination-id="${id}"]`).click();
   await expect(panel).toBeVisible();
   await expect(composer).toHaveText("Keep my Solo draft");
   await closeProfile(page).click();
@@ -240,10 +276,10 @@ test("Solo sidebar shares working activity, keyboard preview and local panel nav
 }, info) => {
   // Install before app timers exist so hover cleanup never mixes real/fake IDs.
   await page.clock.install();
-  await page.goto(app.origin);
+  await page.goto(`${app.origin}/?solo-region-fixture&compose-workspaces`);
   await newChat(page);
-  const sidebar = page.getByRole("navigation", { name: "Solo conversations" });
-  const alpha = sidebar.locator(`[data-solo-channel-id="${id}"]`);
+  const sidebar = page.getByRole("navigation", { name: "Subscribed channels" });
+  const alpha = sidebar.locator(`[data-solo-destination-id="${id}"]`);
   await sidebar.getByRole("button", { name: "Beta", exact: true }).click();
   await expect.poll(() => app.relay.hasRoute("primary", "observer")).toBe(true);
   const key = generateSecretKey();
@@ -441,9 +477,28 @@ test("Solo row status rules keep :has() out of minified :is() lists", async ({
 });
 
 // Reading needs real focus inside the chat; a pointer selection leaves it on the row.
+// The session reads activity for saved sorts; Solo's unsaved Recent default
+// must ask for it too, or a cold load orders Solo chats without it.
+test("Solo's default Recent sort reads channel activity on a cold load", async ({
+  page,
+  app,
+}) => {
+  const activity = page.waitForRequest("**/channel-activity");
+  await page.goto(app.origin);
+  await activity;
+});
+
 test.describe("reading", () => {
   test.use({ readState: true });
-  const bold = (row) => row.locator('[data-channel-unread-title="true"]');
+  const bold = (row) =>
+    row
+      .locator(
+        "xpath=ancestor::*[@data-channel-sidebar-row and @data-ordinary]",
+      )
+      // The visible title; its screen-reader copy repeats the name.
+      .locator("[data-solo-chat-title] > [aria-hidden]", {
+        hasText: /^(Alpha|Beta)$/,
+      });
   test("Solo chat reads a chat opened from the sidebar, so it stays unbolded after leaving", async ({
     page,
     app,
@@ -451,10 +506,10 @@ test.describe("reading", () => {
     await page.goto(app.origin);
     await newChat(page);
     const sidebar = page.getByRole("navigation", {
-      name: "Solo conversations",
+      name: "Subscribed channels",
     });
-    const alpha = sidebar.locator(`[data-solo-channel-id="${id}"]`);
-    const beta = sidebar.locator(`[data-solo-channel-id="${other}"]`);
+    const alpha = sidebar.locator(`[data-solo-destination-id="${id}"]`);
+    const beta = sidebar.locator(`[data-solo-destination-id="${other}"]`);
     // Startup shows Alpha in Messages first, so read Beta, which only Solo shows.
     await expect(bold(beta)).toHaveCount(1);
     // The marker must paint: weight is Solo's only unread cue.
@@ -491,10 +546,10 @@ test.describe("reading", () => {
     await page.goto(app.origin);
     await newChat(page);
     const sidebar = page.getByRole("navigation", {
-      name: "Solo conversations",
+      name: "Subscribed channels",
     });
-    const alpha = sidebar.locator(`[data-solo-channel-id="${id}"]`);
-    const beta = sidebar.locator(`[data-solo-channel-id="${other}"]`);
+    const alpha = sidebar.locator(`[data-solo-destination-id="${id}"]`);
+    const beta = sidebar.locator(`[data-solo-destination-id="${other}"]`);
     await alpha.click();
     // Leaving the draft retires its "New chat" row, which lifts Beta under the
     // still pointer. Hover starts on pointer entry, so leave and re-enter.
@@ -593,7 +648,7 @@ test.describe("personal recipients", () => {
       ).toBeVisible();
       await newChat(page);
       await page
-        .getByRole("navigation", { name: "Solo conversations" })
+        .getByRole("navigation", { name: "Subscribed channels" })
         .getByRole("button", { name: "Beta", exact: true })
         .click();
       const workspace = page.getByRole("main");
@@ -677,7 +732,7 @@ test.describe("touch sidebar activity", () => {
     page,
     app,
   }, info) => {
-    await page.goto(app.origin);
+    await page.goto(`${app.origin}/?solo-region-fixture&compose-workspaces`);
     await newChat(page);
     await expect
       .poll(() => app.relay.hasRoute("primary", "observer"))
@@ -692,7 +747,7 @@ test.describe("touch sidebar activity", () => {
       turnId: "touch",
     });
     app.observer(event("turn_liveness"), key);
-    const row = page.locator(`[data-solo-channel-id="${id}"]`);
+    const row = page.locator(`[data-solo-destination-id="${id}"]`);
     const indicator = row.locator("[data-solo-working-indicator]");
     await expect(
       row.getByRole("img", { name: /working in Alpha$/ }),
@@ -767,8 +822,8 @@ test("Solo sidebar opens a captured trigger in the canonical message reader", as
 }) => {
   await page.goto(app.origin);
   await newChat(page);
-  const sidebar = page.getByRole("navigation", { name: "Solo conversations" });
-  const alpha = sidebar.locator(`[data-solo-channel-id="${id}"]`);
+  const sidebar = page.getByRole("navigation", { name: "Subscribed channels" });
+  const alpha = sidebar.locator(`[data-solo-destination-id="${id}"]`);
   await expect.poll(() => app.relay.hasRoute("primary", "observer")).toBe(true);
   const key = generateSecretKey();
   const target = app.histories.get(`primary/${id}`)[0];
@@ -806,5 +861,9 @@ test("Solo sidebar opens a captured trigger in the canonical message reader", as
       channelId: id,
       messageId: target.id,
     });
-  await expect(page.locator(`[data-message-id="${target.id}"]`)).toBeVisible();
+  await expect(
+    page.locator(
+      `[data-channel-timeline] [data-message-id="${target.id}"][aria-current="true"]`,
+    ),
+  ).toBeVisible();
 });

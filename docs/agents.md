@@ -693,7 +693,12 @@ An agent hands off to itself in another of its conversations with the
 a channel the agent can see, as `send` does, and a thread in that channel (any
 message of it names its root) unless the channel is a Solo chat. It refuses the
 current conversation, which is the whole channel in a DM, a Solo chat or a
-channel-scoped session. It is the same `plugin` trigger with `from`, the
+channel-scoped session. A channel-level watch or timer turn of an agent whose
+type runs one session per thread (its `sessionControls.scope`) is apart from
+that channel's threads outside a DM, Solo chat or huddle room, so it can hand off into one of
+them. Agents decides this for every harness through the run's handle
+(`threadsApart`); a type with no session controls keeps the channel one
+conversation. It is the same `plugin` trigger with `from`, the
 conversation it came from, in place of `plugin`, shown in a `<self-handoff>`
 section that names that conversation, says nobody wrote it as a message and that
 its text is data, and that the agent acts only on what its owner asked. Only a
@@ -1063,7 +1068,7 @@ not native execution.
 
 ## Creating a Solo chat in a personal workspace
 
-Locally hosted agent runs can call `solo_workspace_list` for the host-bound
+Only locally hosted agent runs can call `solo_workspace_list` for the host-bound
 owner's personal workspace IDs and names in that community. Pass an exact ID as
 `workspace` to `channel_create` with `solo: true`, and name the owner explicitly
 in `members`. This files only that new confirmed Solo chat. It does not enroll
@@ -1074,8 +1079,6 @@ result preserves its ID. A known refusal before assignment says “created, not
 filed”; after assignment starts, failure says placement is unconfirmed and may
 have completed. Inspect or refresh the chat before using **Move to**; never
 create a duplicate. Omit `workspace` for unchanged creation.
-External/standalone tools, Nexus worker requests, and plugin agent handles do
-not gain this host-private capability or a general move operation.
 
 ## Exact channel-member mentions
 
@@ -1680,6 +1683,26 @@ cannot replace a received terminal result. Recovery neither archives raw activit
 nor restores history after reload. Older servers without the endpoint leave
 tasks unknown.
 
+A remote agent's Activity tab also lists the sessions Builderlab stored, above
+the live feed. Each time the tab opens it reads
+`/v3/beekeeper/list-agent-sessions` (pages of 50, most recently active first),
+following `next_cursor` past short or empty pages until it has 30, no cursor
+remains, or five pages were read. It shows up to 30, saying when older ones
+aren't shown. The conversation it was
+opened from comes first: its thread's session, else its channel's, which a DM
+or channel-scoped agent shares. When that session is not on the page, the tab
+asks for it by `channel_id` and `thread_root_event_id`. A session's messages
+are read from `/v3/beekeeper/get-agent-session-messages` only when its
+transcript opens, and again when the live feed shows one of its turns start or
+end. Each read returns the whole session, so a running turn isn't polled; with
+the live feed off or connecting, an open transcript doesn't refresh on its own. Messages carry no turn: a prompt joins the turn its mention
+started, and any other message the latest stored turn started at or before it,
+never one before the last prompt's turn. A message older than every turn joins
+the first. Tool requests join their responses by ID, and a message tool's text
+shows as the agent's posted message. A removed session shows no transcript. A
+server without the session list, a signed-out owner or an account without
+remote agents shows the live feed only, as it shows without Builderlab.
+
 ### Activity updates in the conversation
 
 An agent's work has one working indicator. While a live activity bubble on the
@@ -2057,7 +2080,7 @@ Source return or failure, cancellation, Attention off, agent stop, plugin unload
 
 ## Tools for the user's other local agents
 
-A plugin can offer MCP tools to agents Buzz did not start, such as Claude Code, Codex, Pi or Nexus sessions. It serves a dedicated `host.serveMcp` server and declares the bundled helper as a process, for example `{ "id": "agent-access", "program": "buzz-agent-command", "bundled": true, "args": ["--advertise"] }`. `spawn("agent-access", { mcp: server })` lets the helper claim that server's one session and save it to `~/.buzz-foundation/agent-connections`, then exit. The plugin keeps the server open after the helper exits and spawns it once per server: a second spawn on the same server stops it. Every local agent of this user can then call that server's tools. On macOS and Linux the directory and files are private to the user and the helper ignores files others could have written; on Windows they rely on the profile's inherited permissions. The plugin handler must not assume a particular caller, and protected workers that must not reach these tools need that directory in `hiddenPaths`.
+A plugin can offer MCP tools to agents that run outside Buzz, such as standalone Claude Code, Codex, or Pi sessions. It serves a dedicated `host.serveMcp` server and declares the bundled helper as a process, for example `{ "id": "agent-access", "program": "buzz-agent-command", "bundled": true, "args": ["--advertise"] }`. `spawn("agent-access", { mcp: server })` lets the helper claim that server's one session and save it to `~/.buzz-foundation/agent-connections`, then exit. The plugin keeps the server open after the helper exits and spawns it once per server: a second spawn on the same server stops it. Every local agent of this user can then call that server's tools. On macOS and Linux the directory and files are private to the user and the helper ignores files others could have written; on Windows they rely on the profile's inherited permissions. The plugin handler must not assume a particular caller, and protected workers that must not reach these tools need that directory in `hiddenPaths`.
 
 An agent runs the installed helper by absolute path, with no inherited connection, configuration or token: `/Applications/Buzz.app/Contents/Resources/bin/buzz-agent-command tools` on macOS (inside the app's installed name, such as `Buzz Foundation.app`), `…\bin\buzz-agent-command.exe` on Windows and `/usr/lib/Buzz Foundation/bin/buzz-agent-command` on Linux. `tools`, `<tool> --field value` and `call <tool> '<JSON object>'` behave as `buzz` does inside an agent command, and `--help` prints that usage with the path it was run as. The agent's own sandbox must allow loopback connections: Codex's read-only and workspace-write modes, for example, block them unless network access is enabled, and the helper then reports `Could not reach Buzz` and leaves the advertisement in place. The helper uses the newest advertised session that still answers and offers the tool, so a second Buzz window's tools are still reached; when two plugins offer the same tool name, the newer advertisement wins. A tool call stops asking older advertisements once it finds that session, so a stalled older server does not delay it; `tools` asks every advertisement. Before sending a saved session, the helper connects and confirms, by numeric user ID, that a process of this user has accepted that same connection (`lsof` on macOS, `/proc/net/tcp` on Linux), then sends the request on it. If that is not confirmed within about a second, as when another user's process holds a closed server's port, the server receives nothing and the advertisement stays. Windows does not support advertised sessions; the helper reports that instead. An advertisement lasts as long as its server. Closing the server, reloading the page, unloading the plugin or quitting Buzz ends it, and the next caller that asks it removes the file once its server refuses the connection or the session. An inherited `BUZZ_AGENT_CONNECTION` always takes precedence.
 

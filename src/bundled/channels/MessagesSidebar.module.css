@@ -11,13 +11,18 @@
   flex: 1 1 10rem;
   min-width: 0;
 }
-.sidebarGroup + .sidebarGroup:not([hidden]) {
-  margin-block-start: var(--space-6);
+/* The app-wide New menu floats over the sidebar's bottom-left corner;
+   SidebarFrame pads the list so its last rows can scroll clear of it. */
+.sidebarCreation {
+  position: absolute;
+  inset-block-end: var(--space-2);
+  inset-inline-start: var(--space-2);
+  z-index: 2;
+  display: flex;
+  /* Opaque, so rows scrolling underneath don't show through the ghost button. */
+  border-radius: var(--radius-icon-button);
+  background: var(--surface);
 }
-.sidebarGroup[hidden] + .sidebarGroup {
-  margin-block-start: 0;
-}
-
 /* Page rows reserve the channel list's scrollbar gutter (.channelList in
    SidebarFrame.module.css), so they end in its column wherever scrollbars take
    space; the controls above keep the header's full width. The gutter needs a
@@ -50,4 +55,16 @@
   font-size: var(--text-body-sm);
   line-height: var(--text-body-sm--line-height);
   letter-spacing: var(--text-body-sm--letter-spacing);
+}
+/* The plus turns into a close mark while its menu is open. */
+.sidebarCreation svg {
+  transition: transform var(--duration-settle) var(--ease-settle);
+}
+.sidebarCreation [aria-expanded="true"] svg {
+  transform: rotate(45deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebarCreation svg {
+    transition: none;
+  }
 }

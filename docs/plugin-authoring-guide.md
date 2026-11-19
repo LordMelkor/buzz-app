@@ -57,11 +57,11 @@ export function apply(ctx) {
 | Inject | Registers | Call and required fields |
 | --- | --- | --- |
 | `pages` | A page | `ctx.pages.register({ id, title, component, primary?, placement?, icon?, badge?, sidebar?, companion?, layout? })`. `id` must match the id pattern, `title` non-empty, `component` a function. `placement`: `"sidebar"` (default) or `"dock"` (only for `primary` pages; `"topbar"` and `"toolbar"` are accepted aliases for `"dock"`). `icon`: `data:image/...` URL. `badge`: component shown beside the nav entry. `sidebar`: component receiving `{ target, children }` that replaces the conversation sidebar (wrap content in `className="shell-sidebar-default"`). `layout`: `"document"` or `"workspace"`. |
-| `panels` | A panel for a link/target string | `ctx.panels.register({ id, title, matches(target) => boolean, component, order?, launcher?, channelLauncher?, channelPlacement?, keepOpen? })`. `component` receives `{ target, close, context?, channelContext? }`. Inside `component`, call `ctx.panels.useTabTitle(label)` (a React hook; no-op outside a panel tab; check `typeof ctx.panels.useTabTitle === "function"` on older hosts) to name the tab per target; `title` stays the fallback. `launcher: { icon: string, target: string }` adds a top-bar button (use `matches: () => false` for launcher-only). `channelLauncher` is a component for the channel header (`channelPlacement`: `"bottom"` default, `"side"`, `"tab"`). |
+| `panels` | A panel for a link/target string | `ctx.panels.register({ id, title, matches(target) => boolean, component, order?, launcher?, channelLauncher?, channelPlacement?, keepOpen? })`. `component` receives `{ target, close, context?, channelContext? }`. Inside `component`, call `ctx.panels.useTabTitle(label, icon?)` (a React hook; no-op outside a panel tab; check `typeof ctx.panels.useTabTitle === "function"` on older hosts) to name the tab per target; `title` stays the fallback. `launcher: { icon: string, target: string }` adds a top-bar button (use `matches: () => false` for launcher-only). `channelLauncher` is a component for the channel header (`channelPlacement`: `"bottom"` default, `"side"`, `"tab"`). |
 | `accountActions` | Account menu action | `ctx.accountActions.register({ id, title, icon?, component, placement? })`. The component receives `{ open, onOpenChange }`. Omit `placement` for the plugin section after Settings; use `"before-settings"` for a profile-related action directly above Settings. The host owns menu order, focus, and dismissal. |
 | `settingsCards` | A Settings destination | `ctx.settingsCards.register({ id, title, component, group?, personal?, identityRow? })`. `component` receives `{ active(), community?, navigation? }`; `navigation.target.route` can carry bounded, versioned presentation data for the card. Opening a route must never submit an operation. Optional `identityRow` receives `{ active() }` and contributes a compact account-status link inside Identity. Reuse the plugin’s existing session; check `active()` before navigation or an action. The row retires with its owning registration. Omit `icon` (it is a host icon component). The host supplies navigation and the content column, not a heading. |
 | `sidebarSections` (optional) | A section in the Team sidebar | `ctx.reflect.get("sidebarSections")?.register({ version: 1, id, title, icon, rows: { snapshot, subscribe }, select, actions? })`. `snapshot()` returns a stable array of `{ id, label, icon?, badge?, count?, status? }` until data changes, then notify subscribers. `select(row)` returns an open target such as `{ version: 1, kind: "home" }`. Actions: `{ id, label, icon: ReactElement, onSelect }`. |
-| `conversation` | Composer/message UI | `registerAccessory({ id, title, component, order?, placement? })` (read-only UI above the composer; props `{ session, scope, channelId, threadRootId?, canOpen, open }`; `placement`: `"composer"`, `"message"`, `"response"`). `registerMessage({ id, title, matches(message), component })`, `registerMessageAction({ id, title, matches(message, session), component })`, `registerIdentityMark({ id, title, component })` (presentation after a person's name in @mention suggestions; props `{ pubkey, profiles }`, where `profiles.snapshot().get(pubkey)?.verified` carries community verification), `registerLink({ id, title, matches(url), component })`, `registerLinkPreview({ id, title, matches(url), order?, component })` (a card below the message for one of its HTTPS links; props `{ url, messageId, open }`; lowest `order` wins, so claim your URLs below the default web card's `100`), `registerTool({ id, title, component })`. |
+| `conversation` | Composer/message UI | `registerAccessory({ id, title, component, order?, placement? })` (read-only UI above the composer; props `{ session, scope, channelId, threadRootId?, canOpen, open }`; `placement`: `"composer"`, `"message"`, `"response"`). `registerMessage({ id, title, matches(message), component })`, `registerMessageAction({ id, title, matches(message, session), component })`, `registerIdentityMark({ id, title, component })` (presentation after a person's name in @mention suggestions; props `{ pubkey, profiles }`, where `profiles.snapshot().get(pubkey)?.verified` carries community verification), `registerLink({ id, title, matches(url), component })`, `registerLinkPreview({ id, title, matches(url), order?, component })` (a card below the message for one of its HTTPS links; props `{ url, messageId, open, opener }`, where `opener` opens other targets such as your panel; lowest `order` wins, so claim your URLs below the default web card's `100`), `registerTool({ id, title, component })`. |
 | `agents` | Tools and hooks for agents | `ctx.agents.addTool({ name, description, inputSchema, call })`. `name` matches `/^[a-z][a-z0-9_]{0,63}$/`, is unique across plugins and not a Buzz tool name (prefix it with your plugin: `notes_get`). `inputSchema` is a JSON-serializable object with `type: "object"`. `async call(client, context, args)` resolves to a string (or `{ data, type, text? }`) and runs as the agent; a throw is shown to the agent as a tool error. Changing a tool's name, description or schema restarts some agent sessions, so edit deliberately. `ctx.agents.addInstructions({ id, text, when? })` gives every turn of the agents this copy runs, or those `when(agent)` accepts, a `<plugin-instructions>` section with `text` (at most 4096 UTF-8 bytes after trimming); it is sent with every turn, so keep it short. `ctx.agents.registerHook({ id, harness, event, run })` needs `host.agentHooks`. `ctx.agents.wake(agentKey, { channel, root?, topLevel?, text })` wakes a local agent (`root` is a 64-hex event id; `topLevel: true` instead wakes it at a channel's top level). With `host.files`, `ctx.agents.assignConversationFolder(agentKey, { channelId, root? }, path)` gives one conversation of a local Claude or Codex agent its own working folder before its first turn; see [Agents](agents.md). `ctx.agents.setConversationInstructions(agentKey, { channelId, root? }, text)` gives a local agent standing instructions in one conversation, shown on each of its turns there in an `<owner-instructions>` section (at most 8192 UTF-8 bytes after trimming; `""` clears them); `ctx.agents.conversationInstructions(agentKey, place)` resolves with the text. |
 | `shortcuts` | In-app key bindings | `ctx.shortcuts.register({ id, title, binding, run, when?, order?, allowInEditable?, allowInModal?, repeat? })`. `binding` is `{ key, mod?, shift?, alt?, ctrl? }` or an array; `mod` is Command on macOS, Control elsewhere. `key` is the logical key, case-insensitive (Space is `" "`). Skipped in text fields and modals unless opted in. |
 | `navigation` | Open destinations | `await ctx.navigation.open(target)` returns `{ status: "opened" \| "failed" \| "superseded" \| "cancelled" }`. Targets: `{ version: 1, kind: "plugin", pluginId, pageId?, params? }`, `{ version: 1, kind: "home" }`, `{ version: 1, kind: "settings", section? }`. |
@@ -249,6 +249,70 @@ Add `"host"` to `inject`, then:
 - A specializing reader opts in with `component.profileHistory = true`; canonical profile targets then inherit profile Back/Forward and explicit Close behavior in conversation tabs. Match the existing profile address rather than inventing a separate history store; unmarked catch-all panels and contextual channel panels retain their own behavior.
 - The host already supplies the shell, navigation, active state, error boundaries and (for panels and Settings) the outer surface, header or content column. Do not add your own page frame, header-level navigation, overlays, global stylesheet, theme or reset. Page content owns its interior padding and scrolling. Panels sit inside a host card: render only the body.
 - Avoid fixed widths; the page may be narrow. Use `width: "100%"`, flex and wrapping. Colors: use host tokens (`var(--...)`) rather than hard-coded values so light and dark themes both work.
+
+### Host Markdown and panel workspaces
+
+Inject `conversation` to render `ctx.conversation.ui.Markdown` with
+`{ content, session?, openLink?, scale? }`. The shared host styles own headings,
+spacing, code frames and tables. `scale` defaults to `"message"`; choose
+`"document"` for a page or editor read view. This is the host document renderer: GFM,
+Buzz-rich links, credential-free HTTP(S) links, no executable HTML, and images
+shown as alt text. Oversized or deeply nested input falls back to literal text
+using the same bounds as Shared notes. `session` supplies community-aware link
+names and the receiving community/viewer for default Buzz link navigation. The
+host resolves supported Buzz forms and opens them through its navigation service.
+An optional `openLink(url)` override must synchronously return true if your page
+handled the destination locally; false falls through to host navigation. Without
+a usable session/navigation service, Buzz links keep the host's unavailable-link
+behavior. Existing URL safety and external browser handling remain host-owned.
+
+Inject `panels` to use these host members:
+
+- `ctx.panels.ui.Workspace({ items, value, select, label?, actions?, focusOnMount? })`
+  is the existing tab workspace. Each item has `{ id, label, content, icon?, close?, toolbar? }`; content remains
+  mounted while another tab is selected. `close` may return false to retain a
+  tab, for example while edits need confirmation. The host owns tab controls,
+  focus and nested detail presentation; your page owns selection, admission,
+  closing and Back/Forward visits. It does not create a second history owner.
+- `ctx.panels.useTabTitle(label, icon?)` publishes a document's live title
+  inside a host workspace (including registered panels opened by Channels).
+  Feature-detect this hook on older hosts before calling it.
+- `ctx.panels.ui.useSplit(scope, name, defaultWidth?, min?, primary?)` returns
+  `{ ref, style, handle }`. Attach `ref` and `style` to your layout container,
+  place `handle` beside its secondary pane, and use CSS variable
+  `--secondary-panel-width` for that pane's width. Your page owns responsive
+  layout and scrolling. Use the current session's `scope` and a stable name
+  prefixed with your plugin ID. Plugin widths have a separate host namespace;
+  plugin-ID prefixes keep different plugins from sharing a name. Width is saved per scope/name and follows saves
+  from other windows; undefined scope keeps it in memory. Double-click resets
+  the preferred width. `primary`, when supplied, is `{ defaultWidth, maxRatio }`.
+
+```js
+export const inject = ["react", "conversation", "panels", "pages"];
+export function apply(ctx) {
+  const React = ctx.react;
+  function Reader() {
+    ctx.panels.useTabTitle?.("Guide");
+    return React.createElement(ctx.conversation.ui.Markdown, {
+      content: "## A guide\n\n**Shared rendering**",
+      openLink: () => false,
+    });
+  }
+  ctx.pages.register({
+    id: "reader", title: "Guide", primary: true, layout: "workspace",
+    component: () => React.createElement(ctx.panels.ui.Workspace, {
+      items: [{ id: "guide", label: "Guide", content: React.createElement(Reader) }],
+      value: "guide", select: () => {},
+    }),
+  });
+}
+```
+
+These are runtime values on injected services, never imports from app source.
+`@buzz/author` exports only types, including `MarkdownProps`,
+`PanelWorkspaceItem`, `PanelWorkspaceProps` and `PanelSplit`. Hosts predating
+these members cannot run plugins that require them; check for availability and
+show an upgrade explanation if supporting older hosts.
 
 ## Common mistakes
 

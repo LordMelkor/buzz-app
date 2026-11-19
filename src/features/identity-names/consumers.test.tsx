@@ -455,6 +455,7 @@ it("scopes search DM labels and message authors to their own conversation", asyn
       onQueryChange={() => {}}
       input={createRef()}
       pages={[]}
+      openNewMessage={() => {}}
       openConversation={() => {}}
     />,
   );

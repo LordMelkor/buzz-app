@@ -95,7 +95,9 @@ export type ThreadView = {
   snapshot(): ThreadSnapshot;
   subscribe(listener: () => void): () => void;
   refresh(): Promise<void>;
-  loadMore(): Promise<void>;
+  /** Reads older replies; with `through`, keeps paging in this one read until
+   * a reply at or before the time it returns is loaded. */
+  loadMore(through?: () => number): Promise<void>;
   /** Change exact selection only when verified ancestry belongs to this thread. */
   retarget(messageId: string, signal: AbortSignal): Promise<ThreadRetarget>;
   dispose(): void;
@@ -667,7 +669,11 @@ export function createThreadView({
     }
   }
 
-  async function run(replace: boolean, established = false) {
+  async function run(
+    replace: boolean,
+    established = false,
+    through?: () => number,
+  ) {
     if (disposed) return;
     if (controller) {
       if (established) again = "established";
@@ -813,10 +819,12 @@ export function createThreadView({
       // Where the loop passed the range the reader had, so a fill that never
       // reaches a pre-refresh reply can settle back on it.
       let range: { cursor: ThreadCursor | undefined } | undefined;
+      let oldest = Infinity;
       for (
         let page = 0;
         page < targetPages ||
-        (mode === "older" && !reached && page < MAX_PAGES);
+        (mode === "older" && !reached && page < MAX_PAGES) ||
+        (through !== undefined && oldest > through() && nextPages < MAX_PAGES);
         page++
       ) {
         let response: readonly RelayEvent[];
@@ -892,6 +900,8 @@ export function createThreadView({
         // other content kinds, and appended auxiliaries do not consume its page limit.
         const replies = events.filter(isReply).sort(compare);
         reached ||= replies.some((event) => kept.has(event.id));
+        for (const event of replies)
+          oldest = Math.min(oldest, event.created_at);
         if (
           !bounds &&
           replies.some((event) => nextCursor && compare(event, nextCursor) <= 0)
@@ -912,6 +922,13 @@ export function createThreadView({
         // after LIMIT, so an empty continuation means merely no more returned.
         more = bounds ? bounds.hasMore : replies.length > 0;
         if (nextPages === targetPages) range = { cursor: nextCursor };
+        // Each older page commits as it lands, so a later failure retries
+        // from the next page rather than the first.
+        if (!replace) {
+          if (!retain(union(remote, fetched))) return;
+          cursor = nextCursor;
+          pages = nextPages;
+        }
         if (!more) break;
       }
       if (!active()) return;
@@ -1073,7 +1090,7 @@ export function createThreadView({
       },
       retarget,
       refresh: () => run(true),
-      loadMore: () => run(false),
+      loadMore: (through?: () => number) => run(false, false, through),
       dispose() {
         listeners.clear();
         purge(true);

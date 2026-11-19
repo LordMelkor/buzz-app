@@ -1,6 +1,25 @@
+import { workspaceMessageTarget } from "../../features/channel-navigation/new-message-route";
+import { WorkspaceNewMenu } from "./WorkspaceNewMenu";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { visibleSoloRegions } from "./SoloRegions";
+import type { ChatIcon, ChatMenu } from "../../features/conversation/service";
+import type { ContributionReader } from "../../features/conversation/contracts";
+import { SoloChatMenuItems } from "./SoloChatMenu";
+import { SoloChatName } from "./SoloChatName";
+import { ChannelMembersDialog } from "./ChannelMembersDialog";
+import { ConvertToChannel } from "../../features/solo/ConvertToChannel";
+import { useChatConversions } from "../../features/solo/conversion";
+import { canEditLifetime } from "../../features/solo/Lifetime";
 import { TeamSidebarSections, TeamSidebarSection } from "./TeamSidebarSource";
+import type { WorkspaceSidebarComposition } from "./sidebar-environment";
 import { revealCreatedChannel } from "../../features/channel-navigation/created-channel";
-import { openEmptyChannels } from "../../features/channel-navigation/routes";
+import {
+  newMessage,
+  openEmptyChannels,
+  resumeSoloDraftTarget,
+  soloDraft,
+  soloDraftTarget,
+} from "../../features/channel-navigation/routes";
 import {
   useCallback,
   useEffect,
@@ -11,15 +30,32 @@ import {
   useSyncExternalStore,
   type ReactNode,
   type ComponentProps,
+  type RefObject,
 } from "react";
 import { ChannelLifecycleMenu } from "./ChannelLifecycleMenu";
 import { lifecycleNoun } from "./ChannelLifecycleDialog";
 import type { ChannelLifecycleAction } from "../../features/relay/channel-lifecycle-protocol";
-import { inTeamInventory } from "../../features/channel-navigation/team-inventory";
+import { useSoloNavigation } from "../../features/channel-navigation/solo-navigation-react";
+import { prepareSoloMove } from "../../features/channel-navigation/solo-navigation";
+import { eligibleSolo } from "../../features/solo/labels";
+import { WorkspaceSettings } from "../../features/solo/WorkspaceSettings";
+import {
+  resetNewChatProject,
+  soloDraftInput,
+} from "../../features/solo/SoloDraft";
+import {
+  hasSoloDraft,
+  useSoloDraftProjects,
+} from "../../features/solo/draft-projects";
+import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
+import {
+  SIDEBAR_PAGES_SECTION,
+  workspaceSectionOrder,
+} from "../../features/relay/sidebar-preferences";
 import type { RelayData } from "../../features/relay/service";
 import type { Agents } from "../../features/agents/service";
 import type { RelaySession } from "../../features/relay/session";
-import { useChannelList } from "../../features/relay/react";
+import { useChannelRoster } from "../../features/relay/react";
 import type { Navigation } from "../../features/navigation/controller";
 import type { OpenTarget } from "../../features/navigation/targets";
 import type {
@@ -61,6 +97,7 @@ import {
   ChatCircleIcon,
   FolderSimpleIcon,
   MinusIcon,
+  PencilSimpleIcon,
   PlusIcon,
   XIcon,
 } from "../../shared/design-system/icons";
@@ -73,12 +110,11 @@ import type { UnreadDmPreview } from "./SidebarUnread";
 import {
   ChannelSidebarDnd,
   DraggableChannel,
-  DraggableConversation,
   DroppableSidebarSection,
 } from "../../features/channel-navigation/ChannelSidebarDnd";
 import { channelIcon } from "../../features/channels/channel-icon";
 import { SidebarGroupIcon } from "./SidebarGroupIcon";
-import { CreateSidebarSection } from "./CreateSidebarSection";
+import { NewWorkspace } from "../../features/solo/NewWorkspace";
 import { useSidebarStartup } from "./useSidebarStartup";
 import { useChannelLabels } from "./useChannelLabels";
 import { useHiddenDms } from "./useHiddenDms";
@@ -89,6 +125,7 @@ import {
   sidebarSections,
   contributedSidebarSectionKey,
   isChannelSectionKey,
+  sidebarHome,
   sidebarDropRowKinds,
   orderContributedSidebarSections,
 } from "./sidebar-sections";
@@ -114,7 +151,7 @@ import { avatarMedia } from "../../shared/avatar-source";
 import { useBestieConversation } from "../../app/shell/bestie-context";
 
 /** The sidebar entry selected by a destination, excluding nested message state. */
-export function sidebarEntryLocation(target: OpenTarget) {
+function sidebarEntryLocation(target: OpenTarget) {
   return target.kind === "conversation"
     ? `conversation:${target.channelId}`
     : target.kind === "page"
@@ -124,6 +161,7 @@ export function sidebarEntryLocation(target: OpenTarget) {
 
 type Inventory = {
   sidebar: ReturnType<typeof useSidebarView>;
+  workspaceComposition: WorkspaceSidebarComposition;
   dmPreviews: ReadonlyMap<string, UnreadDmPreview>;
   frame: Pick<ComponentProps<typeof SidebarFrame>, "busy" | "launchPending">;
   before: ReactNode;
@@ -154,6 +192,7 @@ export function ChannelInventory({
   target,
   queries,
   cached,
+  chatsOnly = false,
   layoutReady = true,
   slotsReady,
   preserveSidebar = false,
@@ -162,6 +201,9 @@ export function ChannelInventory({
   viewer,
   sidebarSections: contributedSections,
   sidebarRows: contributedRows,
+  chatIcons,
+  chatMenus,
+  pages,
   render,
 }: {
   relay: RelayData;
@@ -170,6 +212,7 @@ export function ChannelInventory({
   target: OpenTarget;
   queries: RelaySession;
   cached: boolean;
+  chatsOnly?: boolean;
   /** Other inventories sharing this viewport must settle before restoring it. */
   layoutReady?: boolean;
   slotsReady?: ((ids: readonly string[]) => boolean) | undefined;
@@ -179,13 +222,27 @@ export function ChannelInventory({
   viewer?: string | undefined;
   sidebarSections?: SidebarSections | undefined;
   sidebarRows?: SidebarRows | undefined;
+  chatIcons?: ContributionReader<ChatIcon> | undefined;
+  chatMenus?: ContributionReader<ChatMenu> | undefined;
+  /** Sidebar-placed pages, shown as one orderable Plugins section. */
+  pages?: ReactNode;
   render(inventory: Inventory): ReactNode;
 }) {
-  const contributions = useSyncExternalStore(
+  const registeredSections = useSyncExternalStore(
     contributedSections?.subscribe ?? noSubscription,
     contributedSections?.snapshot ?? noSidebarSections,
     contributedSections?.snapshot ?? noSidebarSections,
   );
+  const contributions = chatsOnly ? noSidebarSections() : registeredSections;
+  const chatIcon = useSyncExternalStore(
+    chatIcons?.subscribe ?? noSubscription,
+    () => chatIcons?.snapshot()[0]?.component,
+  );
+  const chatMenuEntries = useSyncExternalStore(
+    chatMenus?.subscribe ?? noSubscription,
+    () => chatMenus?.snapshot(),
+  );
+  useChatConversions(queries);
   const rowContributions = useSyncExternalStore(
     contributedRows?.subscribe ?? noSubscription,
     contributedRows?.snapshot ?? noSidebarRows,
@@ -200,11 +257,52 @@ export function ChannelInventory({
     contributedRows?.settled ?? noPendingPlugins,
     contributedRows?.settled ?? noPendingPlugins,
   );
-  const list = useChannelList(queries.channels);
+  const preferences = useSidebarPreferences(queries.sidebarPreferences);
+  const sectionSort = useCallback(
+    (key: string): SidebarSortMode => {
+      const saved =
+        preferences.data?.sort?.[
+          key.startsWith("group:") ? `section:${key.slice(6)}` : key
+        ];
+      return saved &&
+        (saved === "alpha" ||
+          saved === "recent" ||
+          rowSortModes.some((mode) => mode.id === saved))
+        ? saved
+        : key === "solo"
+          ? "recent"
+          : "alpha";
+    },
+    [preferences.data, rowSortModes],
+  );
+  const appliedSorts = Object.keys(preferences.data?.sort ?? {}).map((key) =>
+    sectionSort(key.startsWith("section:") ? `group:${key.slice(8)}` : key),
+  );
+  const pluginSorted = appliedSorts.some(
+    (mode) => mode !== "alpha" && mode !== "recent",
+  );
+  const needsActivity =
+    pluginSorted ||
+    appliedSorts.includes("recent") ||
+    Object.values(preferences.data?.filters ?? {}).includes("active");
+  const soloActivity = useCallback(
+    (channel: ChannelSummary) => eligibleSolo(channel, viewer),
+    [viewer],
+  );
+  const soloRecent = sectionSort("solo") === "recent";
+  const list = useChannelRoster(queries.channels, {
+    activity: needsActivity || (soloRecent && soloActivity),
+    preview: pluginSorted,
+  });
+  // The session reads activity only for saved sorts; Solo's default needs it
+  // too, but only while there are Solo chats to order.
+  const soloOrdered = soloRecent && list.channels.some(soloActivity);
+  useEffect(() => {
+    if (soloOrdered) return queries.channels.demandActivity?.();
+  }, [soloOrdered, queries.channels]);
   const rosterRecovers = useRecoveryOwns(queries, (live) =>
     rosterRecovering(live.roster),
   );
-  const preferences = useSidebarPreferences(queries.sidebarPreferences);
   const sortModesReady =
     pluginsSettled ||
     Object.values(preferences.data?.sort ?? {}).every(
@@ -309,8 +407,9 @@ export function ChannelInventory({
   const composingMessage =
     target.kind === "page" &&
     target.pluginId === "buzz.channels" &&
-    target.route?.params === "new-message";
+    newMessage(target.route?.params) !== undefined;
   const preparingDm = composingMessage ? handoff?.preparingDm : undefined;
+  const regions = useSoloNavigation(queries);
   const sidebarChannels = useMemo(
     () =>
       channels.filter(
@@ -318,7 +417,9 @@ export function ChannelInventory({
           channel.id !== promotedDm &&
           !channel.huddle &&
           !channel.metadataPending &&
-          inTeamInventory(channel) &&
+          (channel.channelType !== "solo" ||
+            (eligibleSolo(channel, viewer) &&
+              !regions.excluded.has(channel.id))) &&
           (!preparingDm ||
             preparingDm.existing.has(channel.id) ||
             channel.channelType !== "dm" ||
@@ -327,8 +428,49 @@ export function ChannelInventory({
               preparingDm.members.has(member),
             )),
       ),
-    [channels, preparingDm, promotedDm],
+    [channels, preparingDm, promotedDm, regions.excluded, viewer],
   );
+  const currentDraft =
+    target.kind === "page" && target.pluginId === "buzz.channels"
+      ? soloDraft(target.route?.params)
+      : undefined;
+  const draftProjects = useSoloDraftProjects(
+    queries,
+    scope,
+    preferences.data?.sections.map(({ id }) => id) ?? [],
+  );
+  const drafts = draftProjects.map((id) =>
+    soloDraftTarget(scope, id ? { project: id } : {}),
+  );
+  if (currentDraft && !currentDraft.region) {
+    const index = currentDraft.linked
+      ? -1
+      : draftProjects.indexOf(currentDraft.project ?? "");
+    if (index < 0) drafts.push(target);
+    else drafts[index] = target;
+  }
+  const draftSections = new Set(
+    draftProjects.map((id) => (id ? `group:${id}` : "solo")),
+  );
+  if (currentDraft && !currentDraft.region)
+    draftSections.add(
+      currentDraft.project ? `group:${currentDraft.project}` : "solo",
+    );
+  const activeDraftSections = JSON.stringify([...draftSections]);
+  const [workspaceFrames, setWorkspaceFrames] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const registerWorkspaceFrame = useCallback((key: string) => {
+    setWorkspaceFrames((previous) => new Set([...previous, key]));
+    return () =>
+      setWorkspaceFrames((previous) => {
+        if (!previous.has(key)) return previous;
+        const next = new Set(previous);
+        next.delete(key);
+        return next;
+      });
+  }, []);
+  const hasPages = !!pages;
   const sections = useMemo(
     () =>
       startup.ready
@@ -336,23 +478,39 @@ export function ChannelInventory({
             sidebarChannels,
             preferences.data,
             new Set([...hiddenDms.hiddenIds, ...dmVisibility.hidden]),
+            chatsOnly,
+            new Set<string>(JSON.parse(activeDraftSections)),
+            regions.managed,
+            hasPages,
           )
         : [],
     [
+      hasPages,
       startup.ready,
       sidebarChannels,
       preferences.data,
       hiddenDms.hiddenIds,
       dmVisibility.hidden,
+      chatsOnly,
+      activeDraftSections,
+      regions.managed,
     ],
   );
   // Projection rejects duplicate ids; optimistic creates skip existing ids.
   // useSidebarFilters keeps every section, filtering only its rows.
   const slotsMounted =
     slotsReady?.([
-      ...sections.map(({ key }) => key),
+      ...sections.flatMap(({ key }) => (workspaceFrames.has(key) ? [] : [key])),
       ...contributions.map(({ key }) => contributedSidebarSectionKey(key)),
     ]) ?? true;
+  // A target for another community has no destination in this sidebar.
+  const location =
+    "scope" in target &&
+    target.scope &&
+    (target.scope.viewer !== viewer ||
+      target.scope.communityOrigin !== scope.slice(0, -(viewer.length + 1)))
+      ? undefined
+      : sidebarEntryLocation(target);
   const sidebar = useSidebarView(
     scope,
     layoutReady &&
@@ -360,20 +518,112 @@ export function ChannelInventory({
       startup.ready &&
       list.status === "ready" &&
       (preferences.status !== "loading" || !!preferences.cached),
-    // The sidebar entry a destination selects, not its message or thread.
-    // A target for another workspace is not a destination in this sidebar.
-    "scope" in target &&
-      target.scope &&
-      (target.scope.viewer !== viewer ||
-        target.scope.communityOrigin !== scope.slice(0, -(viewer.length + 1)))
-      ? undefined
-      : sidebarEntryLocation(target),
+    location,
     preserveSidebar,
   );
   const current = channels.find(
     (channel) =>
       channel.id ===
       (target.kind === "conversation" ? target.channelId : undefined),
+  );
+  const composesChats = !!visibleSoloRegions(
+    regions.regions,
+    sidebar.contributionOrder,
+  ).find((region) => region.source)?.source?.composeWorkspaces;
+  // A region can compose ordinary chats. Mixed workspaces and Starred retain
+  // their unified sidebar placement.
+  const composedChatSections = new Set<string>();
+  if (composesChats) {
+    composedChatSections.add("solo");
+    const mixed = new Set(
+      sidebarChannels.flatMap((channel) => {
+        const workspace = preferences.data?.assignments[channel.id];
+        return workspace && channel.channelType !== "solo" ? [workspace] : [];
+      }),
+    );
+    for (const { key } of sections)
+      if (key.startsWith("group:") && !mixed.has(key.slice(6)))
+        composedChatSections.add(key);
+  }
+  const selectedSection =
+    target.kind === "conversation"
+      ? sections.find(({ rows }) =>
+          rows.some(({ id }) => id === target.channelId),
+        )?.key
+      : currentDraft && !currentDraft.region
+        ? currentDraft.project
+          ? `group:${currentDraft.project}`
+          : "solo"
+        : undefined;
+  const ordinarySelection =
+    selectedSection && !composedChatSections.has(selectedSection)
+      ? selectedSection
+      : undefined;
+  const previousLocation = useRef(sidebar.savedLocation ?? location);
+  const destinationLocation =
+    target.kind === "conversation" || currentDraft ? location : undefined;
+  const pendingExpansion = useRef(false);
+  useLayoutEffect(() => {
+    if (!destinationLocation) {
+      pendingExpansion.current = false;
+      return;
+    }
+    if (destinationLocation !== previousLocation.current) {
+      previousLocation.current = destinationLocation;
+      pendingExpansion.current =
+        !preserveSidebar && !navigator.snapshot().attempt.traversal;
+    }
+    if (pendingExpansion.current && ordinarySelection && !preserveSidebar) {
+      pendingExpansion.current = false;
+      sidebar.toggle(ordinarySelection, true);
+    }
+  }, [
+    destinationLocation,
+    navigator,
+    ordinarySelection,
+    preserveSidebar,
+    sidebar.toggle,
+  ]);
+  const [chatTool, setChatTool] = useState<{
+    channel: ChannelSummary;
+    kind: "share" | "convert" | "settings";
+    visit: AbortSignal;
+    trigger?: HTMLElement | undefined;
+  }>();
+  const [renamingChat, setRenamingChat] = useState<string>();
+  const renameFocus = useRef<{ id: string; from: Element | null } | undefined>(
+    undefined,
+  );
+  const pendingChatClick = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const renamingSection = sections.find(({ rows }) =>
+    rows.some(
+      (channel) =>
+        channel.id === renamingChat && channel.channelType === "solo",
+    ),
+  )?.key;
+  if (renamingChat && !renamingSection) setRenamingChat(undefined);
+  const renameChat = useCallback((id: string) => {
+    setRenamingChat(id);
+    return true;
+  }, []);
+  const openChatTool = (
+    channel: ChannelSummary,
+    kind: NonNullable<typeof chatTool>["kind"],
+  ) => {
+    const visit = navigator.snapshot().attempt.signal;
+    requestAnimationFrame(() => {
+      if (mounted.current && !visit.aborted)
+        setChatTool({ channel, kind, visit });
+    });
+  };
+  const shareChat = useCallback(
+    (channel: ChannelSummary, trigger: HTMLElement) => {
+      const visit = navigator.snapshot().attempt.signal;
+      setChatTool({ channel, kind: "share", visit, trigger });
+    },
+    [navigator],
   );
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const createChannelTrigger = useRef<HTMLButtonElement>(null);
@@ -403,6 +653,50 @@ export function ChannelInventory({
 
   const [initialGroup, setInitialGroup] = useState("");
   const [initialStarred, setInitialStarred] = useState(false);
+  const [workspaceSettings, setWorkspaceSettings] = useState<{
+    id: string;
+    name: string;
+    icon?: string | undefined;
+    trigger: RefObject<HTMLButtonElement | null>;
+  }>();
+  const newChat = (project?: string) => {
+    if (relay.snapshot().session !== queries) return;
+    const current = navigator.snapshot().entry.target;
+    const destination = resumeSoloDraftTarget(scope, current, project);
+    if (destination === current) {
+      soloDraftInput()?.focus();
+      return;
+    }
+    if (project && !hasSoloDraft(queries, scope, project))
+      resetNewChatProject(scope, project);
+    void navigator.open(destination);
+  };
+  const sectionDrafts = (key: string) =>
+    drafts.flatMap((destination) => {
+      if (destination.kind !== "page") return [];
+      const draft = soloDraft(destination.route?.params);
+      if ((draft?.project ? `group:${draft.project}` : "solo") !== key)
+        return [];
+      const selected =
+        !!currentDraft &&
+        !currentDraft.region &&
+        draft?.linked === currentDraft.linked &&
+        draft?.project === currentDraft.project;
+      return [
+        <NavigationItem
+          key={draft?.linked ?? draft?.project ?? "new-chat"}
+          label="New chat"
+          aria-description="Unsent draft"
+          selected={selected}
+          aria-current={selected ? "page" : undefined}
+          icon={<PencilSimpleIcon size={16} />}
+          onClick={() => {
+            if (selected) soloDraftInput()?.focus();
+            else void navigator.open(destination);
+          }}
+        />,
+      ];
+    });
   const setupNotices = useSyncExternalStore(
     queries.channelCreation.subscribe,
     queries.channelCreation.notices,
@@ -544,11 +838,14 @@ export function ChannelInventory({
   const openAgentActivity = useCallback(
     (channelId: string, agent: string, messageId: string | undefined) => {
       if (!viewer || relay.snapshot().session !== queries) return;
-      const transcript = activityTranscript(
-        queries.channels,
-        channelId,
-        messageId,
-      );
+      const isChat = queries.channels
+        .list()
+        .channels.some(
+          (row) => row.id === channelId && row.channelType === "solo",
+        );
+      const transcript = isChat
+        ? {}
+        : activityTranscript(queries.channels, channelId, messageId);
       const intent = {
         channelId,
         agent,
@@ -583,19 +880,6 @@ export function ChannelInventory({
         sidebar.toggle(key, true),
       );
   };
-  const sectionSort = useCallback(
-    (key: string): SidebarSortMode => {
-      const saved =
-        preferences.data?.sort?.[
-          key.startsWith("group:") ? `section:${key.slice(6)}` : key
-        ];
-      return saved &&
-        (saved === "recent" || rowSortModes.some((mode) => mode.id === saved))
-        ? saved
-        : "alpha";
-    },
-    [preferences.data, rowSortModes],
-  );
   const rowUnread = useSidebarRowUnread(
     queries.unread,
     JSON.stringify(
@@ -639,7 +923,13 @@ export function ChannelInventory({
     [sections, rowSortModes, sectionSort, rowUnread, queries.unread],
   );
   const filteredSections = useSidebarFilters(
-    sortedSections,
+    sortedSections
+      .filter(({ key }) => !workspaceFrames.has(key))
+      .map((section) =>
+        composedChatSections.has(section.key)
+          ? { ...section, rows: [] }
+          : section,
+      ),
     Object.fromEntries(
       Object.entries(preferences.data?.filters ?? {}).map(([key, mode]) => [
         key.startsWith("section:") ? `group:${key.slice(8)}` : key,
@@ -674,7 +964,9 @@ export function ChannelInventory({
   const channelSectionKey = useCallback(
     (channelId: string) => {
       const data = queries.sidebarPreferences.snapshot().data;
-      const sectionId = data?.assignments[channelId];
+      const sectionId = regions.managed.has(channelId)
+        ? undefined
+        : data?.assignments[channelId];
       const channel = queries.channels
         .list()
         .channels.find((row) => row.id === channelId);
@@ -682,11 +974,11 @@ export function ChannelInventory({
         ? "starred"
         : sectionId
           ? `group:${sectionId}`
-          : channel?.channelType === "dm"
-            ? "dms"
+          : channel
+            ? sidebarHome(channel)
             : "channels";
     },
-    [queries],
+    [queries, regions.managed],
   );
   const focusChannelPlacement = (channelId: string) => {
     sidebar.toggle(channelSectionKey(channelId), true);
@@ -723,7 +1015,12 @@ export function ChannelInventory({
   ) =>
     moveChannel(
       channelId,
-      () => preferences.assign(channelId, sectionId),
+      () => {
+        const refusal = prepareSoloMove(queries, channelId);
+        return refusal
+          ? Promise.reject(new Error(refusal))
+          : preferences.assign(channelId, sectionId);
+      },
       surface,
     );
   const setChannelStar = (
@@ -740,7 +1037,8 @@ export function ChannelInventory({
     preferences.writable && preferences.starWritable && !!preferences.data;
   // Group drags land on the placement drop targets, so they need both writers.
   const orderWritable = placementWritable && preferences.sectionOrderWritable;
-  const groupIds = preferences.data?.sections.map(({ id }) => id) ?? [];
+  const groupIds = workspaceSectionOrder(preferences.data);
+  const visibleGroupIds = filteredSections.map(({ key }) => key);
   // Saved order uses the same section keys as collapse and drag.
   const orderedContributions = orderContributedSidebarSections(
     contributions.map((entry) => ({
@@ -779,6 +1077,18 @@ export function ChannelInventory({
     ids.splice(to, 0, sectionId);
     void preferences.reorderSections(sectionId, ids).catch(() => {});
   };
+  const sectionMove = (key: string) => {
+    if (!orderWritable) return undefined;
+    const index = visibleGroupIds.indexOf(key);
+    const previous = visibleGroupIds[index - 1];
+    const next = visibleGroupIds[index + 1];
+    return {
+      up: previous
+        ? () => moveGroup(key, groupIds.indexOf(previous))
+        : undefined,
+      down: next ? () => moveGroup(key, groupIds.indexOf(next)) : undefined,
+    };
+  };
   const setSectionSort = (key: string, mode: SidebarSortMode) => {
     void preferences
       .setSort(
@@ -809,22 +1119,44 @@ export function ChannelInventory({
     surface?: ChannelMenuSurface,
   ) => {
     const actions: ReactNode[] = [];
-    if (placementWritable && channel.channelType !== "forum") {
+    if (!surface && channel.channelType === "solo") {
+      actions.push(
+        <SoloChatMenuItems
+          key="chat-tools"
+          session={queries}
+          channel={channel}
+          includeChannelControls={false}
+          onSettings={() => openChatTool(channel, "settings")}
+          onShare={() => openChatTool(channel, "share")}
+          onConvert={() => openChatTool(channel, "convert")}
+          onRename={
+            canEditLifetime(queries, channel)
+              ? () => setRenamingChat(channel.id)
+              : undefined
+          }
+        >
+          {chatMenuEntries?.map(({ key, component: Menu }) => (
+            <Menu key={key} session={queries} channelId={channel.id} />
+          ))}
+        </SoloChatMenuItems>,
+      );
+    }
+    if (preferences.starWritable && !regions.managed.has(channel.id)) {
       const currentSectionId = sectionKey.startsWith("group:")
         ? sectionKey.slice("group:".length)
         : undefined;
       const starred = sectionKey === "starred";
-      const movingDm = channel.channelType === "dm";
+      const home = sidebarHome(channel);
       actions.push(
         <MenuSubmenu key="move-channel">
           <MenuSubmenuTrigger>
             <MenuIcon>
               <FolderSimpleIcon size={14} />
             </MenuIcon>
-            {movingDm ? "Move conversation" : "Move channel"}
+            Move to…
           </MenuSubmenuTrigger>
           <MenuSubmenuPopup
-            aria-label={`Move ${channel.name} to section`}
+            aria-label={`Move ${channel.name} to workspace`}
             // The root restores by channel identity after relocation;
             // a nested popup must not refocus its retired trigger.
             finalFocus={false}
@@ -838,9 +1170,7 @@ export function ChannelInventory({
                   ? "starred"
                   : currentSectionId
                     ? `group:${currentSectionId}`
-                    : movingDm
-                      ? "dms"
-                      : "channels"
+                    : home
               }
               onValueChange={(destination) => {
                 if (destination === "starred")
@@ -864,6 +1194,7 @@ export function ChannelInventory({
               {preferences.data?.sections.map((group) => (
                 <MenuRadioItem
                   key={group.id}
+                  disabled={!placementWritable}
                   value={`group:${group.id}`}
                   closeOnClick={false}
                 >
@@ -877,14 +1208,17 @@ export function ChannelInventory({
                   {group.name}
                 </MenuRadioItem>
               ))}
-              {movingDm && (
-                <MenuRadioItem value="dms" closeOnClick={false}>
-                  <MenuIcon>
-                    <ChatCircleIcon size={14} />
-                  </MenuIcon>
-                  Direct messages
-                </MenuRadioItem>
-              )}
+              <MenuRadioItem
+                value={home}
+                closeOnClick={false}
+                disabled={!placementWritable}
+              >
+                <MenuIcon>
+                  <ChatCircleIcon size={14} />
+                </MenuIcon>
+                {sections.find((section) => section.key === home)?.title ??
+                  "Unfiled"}
+              </MenuRadioItem>
             </MenuRadioGroup>
             <MenuSeparator />
             <MenuItem
@@ -912,6 +1246,7 @@ export function ChannelInventory({
             {(starred || currentSectionId) && (
               <MenuItem
                 closeOnClick={false}
+                disabled={!starred && !placementWritable}
                 onClick={() => {
                   if (starred) void setChannelStar(channel.id, false, surface);
                   else void assignGroup(channel.id, undefined, surface);
@@ -1103,19 +1438,56 @@ export function ChannelInventory({
           : (rowFocusTarget(channelId) ?? false),
     [rowFocusTarget],
   );
-  useLayoutEffect(() => {
-    if (!rowFocus || !slotsMounted) return;
-    (
-      rowFocusTarget(rowFocus) ??
+  const sidebarFocusFallback = useCallback(
+    () =>
       activeChannelRows(sidebar.list.current).find(
         (row) => row.getClientRects().length,
       ) ??
       sidebar.list.current
         ?.closest("aside")
-        ?.querySelector<HTMLButtonElement>("button")
-    )?.focus({ preventScroll: true });
+        ?.querySelector<HTMLButtonElement>("button"),
+    [sidebar.list],
+  );
+  useLayoutEffect(() => {
+    if (!rowFocus || !slotsMounted) return;
+    (rowFocusTarget(rowFocus) ?? sidebarFocusFallback())?.focus({
+      preventScroll: true,
+    });
     setRowFocus(undefined);
-  }, [rowFocus, rowFocusTarget, sidebar.list, slotsMounted]);
+  }, [rowFocus, rowFocusTarget, sidebarFocusFallback, slotsMounted]);
+  useLayoutEffect(() => {
+    const intent = renameFocus.current;
+    if (renamingChat || !intent || !slotsMounted) return;
+    // Let the editor unmount and the disclosure finish committing before
+    // restoring focus. Preserve any focus the user has moved in the meantime.
+    const frame = requestAnimationFrame(() => {
+      if (renameFocus.current !== intent) return;
+      renameFocus.current = undefined;
+      if (
+        document.activeElement !== document.body &&
+        document.activeElement !== intent.from
+      )
+        return;
+      const section = channelSectionKey(intent.id);
+      const summary = sidebar.collapsed.includes(section)
+        ? sidebar.list.current?.querySelector<HTMLElement>(
+            `[data-sidebar-section="${CSS.escape(section)}"] details > summary`,
+          )
+        : undefined;
+      (summary ?? rowFocusTarget(intent.id) ?? sidebarFocusFallback())?.focus({
+        preventScroll: true,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    renamingChat,
+    slotsMounted,
+    channelSectionKey,
+    rowFocusTarget,
+    sidebarFocusFallback,
+    sidebar.collapsed,
+    sidebar.list,
+  ]);
   const [groupFocus, setGroupFocus] = useState<string>();
   // Group recovery removes its focused notice; return focus to the group header.
   useLayoutEffect(() => {
@@ -1172,6 +1544,31 @@ export function ChannelInventory({
   useLayoutEffect(() => () => menuActions?.publish(undefined), [menuActions]);
   const lifecycleCallbacks = handoff?.lifecycleCallbacks;
   const openSuccessor = handoff?.openSuccessor;
+  const soloNeighborsRef = handoff?.soloNeighbors;
+  useLayoutEffect(() => {
+    if (!soloNeighborsRef || composesChats) return;
+    const neighbors = (id: string) => {
+      const shown = filteredSections.flatMap(({ key, rows }) =>
+        sidebar.collapsed.includes(key)
+          ? []
+          : rows.flatMap((row) =>
+              row.channelType === "solo" &&
+              !pluginHiddenRows.current.has(row.id)
+                ? [row.id]
+                : [],
+            ),
+      );
+      const at = shown.indexOf(id);
+      return at < 0
+        ? shown
+        : [...shown.slice(at + 1), ...shown.slice(0, at).reverse()];
+    };
+    soloNeighborsRef.current = neighbors;
+    return () => {
+      if (soloNeighborsRef.current === neighbors)
+        soloNeighborsRef.current = undefined;
+    };
+  }, [composesChats, filteredSections, sidebar.collapsed, soloNeighborsRef]);
   // The shown rows nearest the confirmed channel and the open one: its own
   // section's, then the nearest expanded sections'. Captured while each is
   // still listed: completion, or removal while it is open, can drop it first.
@@ -1278,8 +1675,40 @@ export function ChannelInventory({
     },
     [lifecycleCallbacks, openSuccessor],
   );
+  const workspaceNewAction = (workspace: string, name: string) => (
+    <WorkspaceNewMenu
+      key={`${scope}:${workspace}`}
+      scope={scope}
+      workspace={workspace}
+      name={name}
+      channelAvailable={queries.channelCreation.available}
+      dmAvailable={queries.directMessages.available}
+      choose={(action, trigger) => {
+        if (relay.snapshot().session !== queries) return;
+        if (action === "chat") newChat(workspace);
+        else if (action === "channel") {
+          createChannelTrigger.current = trigger;
+          setInitialStarred(false);
+          setInitialGroup(workspace);
+          setCreateChannelOpen(true);
+        } else {
+          const partition = splitPartition(scope);
+          if (partition)
+            void navigator.open(workspaceMessageTarget(partition, workspace));
+        }
+      }}
+    />
+  );
   return render({
     sidebar,
+    workspaceComposition: {
+      sections: composedChatSections,
+      pendingChatClick,
+      collapsed: sidebar.collapsed,
+      toggle: sidebar.toggle,
+      registerFrame: registerWorkspaceFrame,
+      newAction: workspaceNewAction,
+    },
     dmPreviews: unreadDmPreviews,
     frame: {
       launchPending: connectionError
@@ -1345,28 +1774,27 @@ export function ChannelInventory({
             if (
               mounted.current &&
               channel &&
+              !prepareSoloMove(queries, channelId) &&
               queries.sidebarPreferences.sectionCreationWritable
             )
               setCreatingFor({ channel, position: "first" });
           });
         }}
-        onMove={(channelId, sectionKey) =>
-          sectionKey === "starred"
-            ? setChannelStar(channelId, true)
-            : assignGroup(
-                channelId,
-                sectionKey.startsWith("group:")
-                  ? sectionKey.slice("group:".length)
-                  : undefined,
-              )
-        }
+        onMove={(channelId, sectionKey) => {
+          if (prepareSoloMove(queries, channelId)) return;
+          if (sectionKey === "starred") setChannelStar(channelId, true);
+          else
+            assignGroup(
+              channelId,
+              sectionKey.startsWith("group:")
+                ? sectionKey.slice("group:".length)
+                : undefined,
+            );
+        }}
         onReorder={(sectionKey, overKey) =>
           sectionKey.startsWith("plugin:")
             ? reorderContributions(sectionKey, overKey)
-            : moveGroup(
-                sectionKey.slice("group:".length),
-                groupIds.indexOf(overKey.slice("group:".length)),
-              )
+            : moveGroup(sectionKey, groupIds.indexOf(overKey))
         }
         overlay={(id, group) => {
           if (group) {
@@ -1413,243 +1841,388 @@ export function ChannelInventory({
               defaultPosition: index,
               element: (
                 <TeamSidebarSection
-                  render={() => (
-                    <DroppableSidebarSection
-                      key={section.key}
-                      createSectionTarget={
-                        section.key === firstChannelSection &&
-                        preferences.sectionCreationWritable
-                      }
-                      groupIndex={groupIds.indexOf(
-                        section.key.slice("group:".length),
-                      )}
-                      disabled={
-                        !placementWritable ||
-                        !sidebarDropRowKinds(section.key).length
-                      }
-                      accepts={sidebarDropRowKinds(section.key)}
-                      reorderable={
-                        orderWritable && section.key.startsWith("group:")
-                      }
-                      move={
-                        orderWritable && section.key.startsWith("group:")
-                          ? (() => {
-                              const id = section.key.slice("group:".length);
-                              const index = groupIds.indexOf(id);
-                              return {
-                                up:
-                                  index > 0
-                                    ? () => moveGroup(id, index - 1)
-                                    : undefined,
-                                down:
-                                  index < groupIds.length - 1
-                                    ? () => moveGroup(id, index + 1)
-                                    : undefined,
-                              };
-                            })()
-                          : undefined
-                      }
-                      sectionKey={section.key}
-                      title={section.title}
-                      icon={section.icon}
-                      session={queries}
-                      open={!sidebar.collapsed.includes(section.key)}
-                      onToggle={(open) => sidebar.toggle(section.key, open)}
-                      channelCount={section.allRows.length}
-                      filter={
-                        preferences.data
-                          ? {
-                              value:
-                                preferences.data.filters?.[
-                                  section.key.startsWith("group:")
-                                    ? `section:${section.key.slice(6)}`
-                                    : section.key
-                                ] ?? "all",
-                              disabled: !preferences.filterWritable,
-                              activeWindowSeconds:
-                                preferences.data.activeWindowSeconds?.[
-                                  section.key.startsWith("group:")
-                                    ? `section:${section.key.slice(6)}`
-                                    : section.key
-                                ],
-                              change: (mode, seconds) =>
-                                setSectionFilter(section.key, mode, seconds),
-                              dismissError: () =>
-                                preferences.dismissFilterError(
-                                  section.key.startsWith("group:")
-                                    ? `section:${section.key.slice(6)}`
-                                    : section.key,
-                                ),
-                            }
-                          : undefined
-                      }
-                      channels={{
-                        rows: section.hiddenRows,
-                        selected: preserveSidebar ? undefined : current?.id,
-                        select,
-                      }}
-                      onRemove={
-                        preferences.removeSectionWritable &&
-                        section.key.startsWith("group:")
-                          ? async () => {
-                              await preferences.removeSection(
-                                section.key.slice(6),
-                              );
-                              sidebar.toggle(section.key, true);
-                            }
-                          : undefined
-                      }
-                      onRename={
-                        preferences.sectionRenameWritable &&
-                        section.key.startsWith("group:")
-                          ? async (edit) => {
-                              await preferences.renameSection(
-                                section.key.slice(6),
-                                edit,
-                              );
-                            }
-                          : undefined
-                      }
-                      removalFocus={() =>
-                        sidebar.list.current?.querySelector<HTMLButtonElement>(
-                          '[data-sidebar-section="channels"] button',
-                        )
-                      }
-                      createChannel={
-                        section.key === "starred" ||
-                        isChannelSectionKey(section.key)
-                          ? {
-                              available: queries.channelCreation.available,
-                              open: (trigger) => {
-                                createChannelTrigger.current = trigger;
-                                setInitialStarred(section.key === "starred");
-                                setInitialGroup(
-                                  section.key.startsWith("group:")
-                                    ? section.key.slice(6)
-                                    : "",
-                                );
-                                setCreateChannelOpen(true);
-                              },
-                            }
-                          : undefined
-                      }
-                      createSection={
-                        section.key === "channels"
-                          ? {
-                              available: preferences.sectionCreationWritable,
-                              open: (trigger) => {
-                                createSectionTrigger.current = trigger;
-                                requestAnimationFrame(() => {
-                                  if (mounted.current) setCreatingSection(true);
-                                });
-                              },
-                            }
-                          : undefined
-                      }
-                      newMessage={
-                        section.key === "dms"
-                          ? () => {
-                              if (
-                                viewer &&
-                                relay.snapshot().session === queries
-                              )
-                                void navigator.open({
-                                  version: 1,
-                                  kind: "page",
-                                  pluginId: "buzz.channels",
-                                  pageId: "channels",
-                                  scope: {
-                                    viewer,
-                                    communityOrigin: scope.slice(
-                                      0,
-                                      -(viewer.length + 1),
-                                    ),
-                                  },
-                                  route: { version: 1, params: "new-message" },
-                                });
-                            }
-                          : undefined
-                      }
-                      sort={
-                        preferences.sortWritable
-                          ? {
-                              value: sectionSort(section.key),
-                              modes: rowSortModes,
-                              change: (mode) =>
-                                setSectionSort(section.key, mode),
-                            }
-                          : undefined
-                      }
-                    >
-                      <ChannelSidebarRows
+                  render={() =>
+                    section.key === SIDEBAR_PAGES_SECTION ? (
+                      <DroppableSidebarSection
+                        key={section.key}
+                        groupIndex={groupIds.indexOf(section.key)}
+                        // A section drop target that accepts no rows.
+                        disabled={false}
+                        accepts={[]}
+                        reorderable={orderWritable}
+                        move={sectionMove(section.key)}
+                        sectionKey={section.key}
+                        title={section.title}
+                        hideMoreActions={!orderWritable}
                         open={!sidebar.collapsed.includes(section.key)}
+                        onToggle={(open) => sidebar.toggle(section.key, open)}
                       >
-                        {section.rows.map((channel) => {
-                          const selected =
-                            !preserveSidebar && current?.id === channel.id
-                              ? current.id
-                              : undefined;
-                          // Every row offers Copy link; build items only for the open
-                          // menu. useChannelRowMenu closes a menu left with none.
-                          const menuOpen =
-                            rowMenu?.channelId === channel.id &&
-                            rowMenu.sectionKey === section.key;
-                          return (
-                            <ChannelSidebarItem
-                              profile={
-                                channel.channelType === "dm" &&
-                                channel.participants?.length === 1
-                                  ? dmProfiles.get(
-                                      channel.participants[0] ?? "",
-                                    )
-                                  : undefined
+                        {pages}
+                      </DroppableSidebarSection>
+                    ) : (
+                      <DroppableSidebarSection
+                        key={section.key}
+                        createSectionTarget={
+                          section.key === firstChannelSection
+                            ? preferences.sectionCreationWritable
+                              ? "available"
+                              : "unavailable"
+                            : undefined
+                        }
+                        groupIndex={groupIds.indexOf(section.key)}
+                        disabled={
+                          !placementWritable ||
+                          !sidebarDropRowKinds(section.key).length
+                        }
+                        accepts={sidebarDropRowKinds(section.key)}
+                        reorderable={orderWritable}
+                        move={sectionMove(section.key)}
+                        sectionKey={section.key}
+                        title={section.title}
+                        icon={section.icon}
+                        session={queries}
+                        open={
+                          !sidebar.collapsed.includes(section.key) ||
+                          renamingSection === section.key
+                        }
+                        onToggle={(open) =>
+                          sidebar.toggle(
+                            section.key,
+                            renamingSection === section.key
+                              ? sidebar.collapsed.includes(section.key)
+                              : open,
+                          )
+                        }
+                        channelCount={section.allRows.length}
+                        filter={
+                          preferences.data
+                            ? {
+                                value:
+                                  preferences.data.filters?.[
+                                    section.key.startsWith("group:")
+                                      ? `section:${section.key.slice(6)}`
+                                      : section.key
+                                  ] ?? "all",
+                                disabled: !preferences.filterWritable,
+                                activeWindowSeconds:
+                                  preferences.data.activeWindowSeconds?.[
+                                    section.key.startsWith("group:")
+                                      ? `section:${section.key.slice(6)}`
+                                      : section.key
+                                  ],
+                                change: (mode, seconds) =>
+                                  setSectionFilter(section.key, mode, seconds),
+                                dismissError: () =>
+                                  preferences.dismissFilterError(
+                                    section.key.startsWith("group:")
+                                      ? `section:${section.key.slice(6)}`
+                                      : section.key,
+                                  ),
                               }
-                              key={channel.id}
-                              channel={channel}
-                              rowContributions={rowContributions}
-                              onHiddenChange={setRowHidden}
-                              session={queries}
-                              working={workingChannels.has(channel.id)}
-                              selected={composingMessage ? undefined : selected}
-                              onSelect={select}
-                              onOpenThread={openActivityThread}
-                              onOpenMessage={openActivityMessage}
-                              onOpenWorkingAgent={openWorkingAgent}
-                              onOpenAgentActivity={openAgentActivity}
-                              menuEnabled
-                              sectionKey={section.key}
-                              selectFrame={
-                                !sidebarDropRowKinds(section.key).length
-                                  ? undefined
-                                  : channel.channelType === "dm"
-                                    ? DraggableConversation
-                                    : DraggableChannel
+                            : undefined
+                        }
+                        channels={{
+                          rows: section.hiddenRows,
+                          selected: preserveSidebar ? undefined : current?.id,
+                          select,
+                        }}
+                        onRemove={
+                          preferences.removeSectionWritable &&
+                          section.key.startsWith("group:")
+                            ? async () => {
+                                await preferences.removeSection(
+                                  section.key.slice(6),
+                                );
+                                sidebar.toggle(section.key, true);
                               }
-                              onOpenMenu={openRowMenu}
-                              menuOpen={menuOpen}
-                              menuAnchor={menuOpen ? rowMenu.anchor : undefined}
-                              menuContent={
-                                menuOpen ? (
-                                  <>
-                                    {rowActions(channel, section.key)}
-                                    {readWrite?.pending && (
-                                      <p role="status">Saving…</p>
-                                    )}
-                                    {readWrite?.error && (
-                                      <p role="alert">{readWrite.error}</p>
-                                    )}
-                                  </>
-                                ) : undefined
-                              }
-                              onCloseMenu={closeRowMenu}
-                              onMenuClosed={rowMenuClosed}
-                              menuFinalFocus={rowMenuFinalFocus}
+                            : undefined
+                        }
+                        menuActions={
+                          section.key.startsWith("group:")
+                            ? (dismiss, trigger) => (
+                                <>
+                                  <MenuItem
+                                    onClick={() => {
+                                      dismiss();
+                                      requestAnimationFrame(() => {
+                                        if (mounted.current)
+                                          setWorkspaceSettings({
+                                            id: section.key.slice(6),
+                                            name: section.title,
+                                            icon: section.icon,
+                                            trigger,
+                                          });
+                                      });
+                                    }}
+                                  >
+                                    Workspace settings
+                                  </MenuItem>
+                                  {handoff && (
+                                    <MenuItem
+                                      disabled={
+                                        !queries.channelLifecycle.available ||
+                                        !!handoff.inactiveRun ||
+                                        handoff.inactiveRuns.length > 0 ||
+                                        !!handoff.lifecycleDialog
+                                      }
+                                      onClick={() => {
+                                        dismiss();
+                                        const id = section.key.slice(6);
+                                        requestAnimationFrame(() => {
+                                          if (mounted.current)
+                                            handoff.archiveInactive({
+                                              action: "archive",
+                                              workspaceId: id,
+                                              ids: sidebarChannels
+                                                .filter(
+                                                  (channel) =>
+                                                    channel.channelType ===
+                                                      "solo" &&
+                                                    preferences.data
+                                                      ?.assignments[
+                                                      channel.id
+                                                    ] === id,
+                                                )
+                                                .map(({ id }) => id),
+                                            });
+                                        });
+                                      }}
+                                    >
+                                      Archive inactive chats
+                                    </MenuItem>
+                                  )}
+                                </>
+                              )
+                            : undefined
+                        }
+                        headerActions={
+                          section.key.startsWith("group:") ? (
+                            workspaceNewAction(
+                              section.key.slice(6),
+                              section.title,
+                            )
+                          ) : section.key === "solo" ? (
+                            <IconButton
+                              size="compact"
+                              aria-label={`New chat in ${section.title}`}
+                              title="New chat"
+                              icon={<PlusIcon size={15} strokeWidth={2.5} />}
+                              onClick={() => newChat()}
                             />
-                          );
-                        })}
-                      </ChannelSidebarRows>
-                    </DroppableSidebarSection>
-                  )}
+                          ) : null
+                        }
+                        removalFocus={() =>
+                          sidebar.list.current?.querySelector<HTMLButtonElement>(
+                            '[data-sidebar-section="channels"] button',
+                          )
+                        }
+                        createChannel={
+                          section.key === "starred" ||
+                          section.key === "channels"
+                            ? {
+                                available: queries.channelCreation.available,
+                                open: (trigger) => {
+                                  createChannelTrigger.current = trigger;
+                                  setInitialStarred(section.key === "starred");
+                                  setInitialGroup("");
+                                  setCreateChannelOpen(true);
+                                },
+                              }
+                            : undefined
+                        }
+                        createSection={
+                          section.key === "channels"
+                            ? {
+                                available: preferences.sectionCreationWritable,
+                                open: (trigger) => {
+                                  createSectionTrigger.current = trigger;
+                                  requestAnimationFrame(() => {
+                                    if (mounted.current)
+                                      setCreatingSection(true);
+                                  });
+                                },
+                              }
+                            : undefined
+                        }
+                        newMessage={
+                          section.key === "dms"
+                            ? () => {
+                                if (
+                                  viewer &&
+                                  relay.snapshot().session === queries
+                                )
+                                  void navigator.open({
+                                    version: 1,
+                                    kind: "page",
+                                    pluginId: "buzz.channels",
+                                    pageId: "channels",
+                                    scope: {
+                                      viewer,
+                                      communityOrigin: scope.slice(
+                                        0,
+                                        -(viewer.length + 1),
+                                      ),
+                                    },
+                                    route: {
+                                      version: 1,
+                                      params: "new-message",
+                                    },
+                                  });
+                              }
+                            : undefined
+                        }
+                        sort={
+                          preferences.sortWritable
+                            ? {
+                                value: sectionSort(section.key),
+                                modes: rowSortModes,
+                                change: (mode) =>
+                                  setSectionSort(section.key, mode),
+                              }
+                            : undefined
+                        }
+                      >
+                        <ChannelSidebarRows
+                          open={
+                            !sidebar.collapsed.includes(section.key) ||
+                            renamingSection === section.key
+                          }
+                        >
+                          {[
+                            ...(composedChatSections.has(section.key)
+                              ? []
+                              : sectionDrafts(section.key)),
+                            ...section.rows.map((channel) => {
+                              if (channel.id === renamingChat)
+                                return (
+                                  <SoloChatName
+                                    key={channel.id}
+                                    session={queries}
+                                    id={channel.id}
+                                    title={channel.name}
+                                    className={styles.unifiedChatName}
+                                    onAbandon={() => {
+                                      const ids = section.rows.map(
+                                        ({ id }) => id,
+                                      );
+                                      const index = ids.indexOf(channel.id);
+                                      const neighbors = [
+                                        ...ids.slice(index + 1),
+                                        ...ids.slice(0, index).reverse(),
+                                      ];
+                                      const rows = activeChannelRows(
+                                        sidebar.list.current,
+                                      );
+                                      const target = neighbors
+                                        .map((id) =>
+                                          rows.find(
+                                            (row) =>
+                                              row.dataset.channelId === id,
+                                          ),
+                                        )
+                                        .find(Boolean);
+                                      (
+                                        target ??
+                                        sidebar.list.current?.querySelector<HTMLElement>(
+                                          `[data-sidebar-section="${CSS.escape(section.key)}"] summary`,
+                                        )
+                                      )?.focus({ preventScroll: true });
+                                    }}
+                                    close={(focus) => {
+                                      renameFocus.current = focus
+                                        ? {
+                                            id: channel.id,
+                                            from: document.activeElement,
+                                          }
+                                        : undefined;
+                                      setRenamingChat(undefined);
+                                    }}
+                                  />
+                                );
+                              const selected =
+                                !preserveSidebar && current?.id === channel.id
+                                  ? current.id
+                                  : undefined;
+                              // Every row offers Copy link; build items only for the open
+                              // menu. useChannelRowMenu closes a menu left with none.
+                              const menuOpen =
+                                rowMenu?.channelId === channel.id &&
+                                rowMenu.sectionKey === section.key;
+                              return (
+                                <ChannelSidebarItem
+                                  profile={
+                                    channel.channelType === "dm" &&
+                                    channel.participants?.length === 1
+                                      ? dmProfiles.get(
+                                          channel.participants[0] ?? "",
+                                        )
+                                      : undefined
+                                  }
+                                  key={channel.id}
+                                  channel={channel}
+                                  chatIcon={
+                                    channel.channelType === "solo"
+                                      ? chatIcon
+                                      : undefined
+                                  }
+                                  rowContributions={rowContributions}
+                                  onHiddenChange={setRowHidden}
+                                  session={queries}
+                                  working={workingChannels.has(channel.id)}
+                                  selected={
+                                    composingMessage ? undefined : selected
+                                  }
+                                  onSelect={select}
+                                  onShareChat={shareChat}
+                                  navigation={navigator}
+                                  pendingClick={pendingChatClick}
+                                  onRename={
+                                    channel.channelType === "solo" &&
+                                    !renamingChat &&
+                                    canEditLifetime(queries, channel)
+                                      ? renameChat
+                                      : undefined
+                                  }
+                                  onOpenThread={openActivityThread}
+                                  onOpenMessage={openActivityMessage}
+                                  onOpenWorkingAgent={openWorkingAgent}
+                                  onOpenAgentActivity={openAgentActivity}
+                                  menuEnabled
+                                  sectionKey={section.key}
+                                  selectFrame={
+                                    regions.managed.has(channel.id)
+                                      ? undefined
+                                      : DraggableChannel
+                                  }
+                                  onOpenMenu={openRowMenu}
+                                  menuOpen={menuOpen}
+                                  menuAnchor={
+                                    menuOpen ? rowMenu.anchor : undefined
+                                  }
+                                  menuContent={
+                                    menuOpen ? (
+                                      <>
+                                        {rowActions(channel, section.key)}
+                                        {readWrite?.pending && (
+                                          <p role="status">Saving…</p>
+                                        )}
+                                        {readWrite?.error && (
+                                          <p role="alert">{readWrite.error}</p>
+                                        )}
+                                      </>
+                                    ) : undefined
+                                  }
+                                  onCloseMenu={closeRowMenu}
+                                  onMenuClosed={rowMenuClosed}
+                                  menuFinalFocus={rowMenuFinalFocus}
+                                />
+                              );
+                            }),
+                          ]}
+                        </ChannelSidebarRows>
+                      </DroppableSidebarSection>
+                    )
+                  }
                 />
               ),
             })),
@@ -1710,6 +2283,8 @@ export function ChannelInventory({
     ),
     content: (
       <>
+        {/* Pages stay reachable until their orderable section can render. */}
+        {!startup.ready && pages}
         {!startup.ready && (
           <p className={styles.empty} role="status">
             Loading your sidebar…
@@ -1795,8 +2370,7 @@ export function ChannelInventory({
             <p>
               Couldn’t save the move for{" "}
               {sections.find(
-                ({ key }) =>
-                  key === `group:${preferences.orderError?.sectionId}`,
+                ({ key }) => key === preferences.orderError?.sectionId,
               )?.title ?? "this section"}
               . {preferences.orderError.error}
             </p>
@@ -1818,7 +2392,7 @@ export function ChannelInventory({
                 void preferences
                   .reorderSections(failed.sectionId, failed.sectionIds)
                   .catch(() => {});
-                setGroupFocus(`group:${failed.sectionId}`);
+                setGroupFocus(failed.sectionId);
               }}
             >
               Retry move
@@ -1828,7 +2402,7 @@ export function ChannelInventory({
               onClick={() => {
                 const failed = preferences.orderError;
                 preferences.dismissOrderError();
-                if (failed) setGroupFocus(`group:${failed.sectionId}`);
+                if (failed) setGroupFocus(failed.sectionId);
               }}
             >
               Dismiss
@@ -1856,8 +2430,11 @@ export function ChannelInventory({
               )}
               <button
                 type="button"
-                disabled={!preferences.writable}
+                disabled={
+                  !preferences.writable || regions.managed.has(move.channelId)
+                }
                 onClick={() =>
+                  !prepareSoloMove(queries, move.channelId) &&
                   moveChannel(move.channelId, () =>
                     preferences.retryMove(move.channelId),
                   )
@@ -1878,8 +2455,20 @@ export function ChannelInventory({
           ))}
         {!cached &&
         startup.ready &&
-        preferences.status === "error" &&
-        !preferences.transient ? (
+        preferences.data?.workspaceMigrationPending ? (
+          <ToastNotice
+            title="Some workspaces couldn’t load"
+            description="Retry to load your previous workspaces and edit the layout."
+            tone="warning"
+          >
+            <Button type="button" size="sm" onClick={preferences.reload}>
+              Retry
+            </Button>
+          </ToastNotice>
+        ) : !cached &&
+          startup.ready &&
+          preferences.status === "error" &&
+          !preferences.transient ? (
           <ToastNotice
             title="Saved sidebar preferences couldn’t refresh"
             description="Your conversations are still available."
@@ -1914,59 +2503,101 @@ export function ChannelInventory({
     ),
     dialogs: (
       <>
-        {creatingSection && (
-          <CreateSidebarSection
+        {chatTool?.kind === "settings" && (
+          <WorkspaceSettings
+            key={chatTool.channel.id}
             session={queries}
-            scope={queries.scope}
-            writable={preferences.sectionCreationWritable}
-            refreshing={preferences.status === "loading"}
-            retry={preferences.reload}
+            scope={scope}
+            signal={chatTool.visit}
+            target={{
+              kind: "chat",
+              id: chatTool.channel.id,
+              name: chatTool.channel.name,
+            }}
+            close={() => setChatTool(undefined)}
+            finalFocus={() => rowMenuFinalFocus(chatTool.channel.id)}
+          />
+        )}
+        {chatTool?.kind === "share" && (
+          <ChannelMembersDialog
+            key={chatTool.channel.id}
+            session={queries}
+            channelId={chatTool.channel.id}
+            navigator={navigator}
+            signal={chatTool.visit}
+            trigger={{
+              get current() {
+                if (
+                  chatTool.trigger?.isConnected &&
+                  !chatTool.trigger.closest("[inert]")
+                )
+                  return chatTool.trigger;
+                return (
+                  activeChannelRows(sidebar.list.current).find(
+                    (row) => row.dataset.channelId === chatTool.channel.id,
+                  ) ?? null
+                );
+              },
+            }}
+            close={() => setChatTool(undefined)}
+          />
+        )}
+        {chatTool?.kind === "convert" && (
+          <ConvertToChannel
+            key={chatTool.channel.id}
+            session={queries}
+            id={chatTool.channel.id}
+            signal={chatTool.visit}
+            onConverted={() => select(chatTool.channel.id)}
+            close={() => setChatTool(undefined)}
+            finalFocus={() => rowMenuFinalFocus(chatTool.channel.id)}
+          />
+        )}
+        {workspaceSettings && (
+          <WorkspaceSettings
+            key={workspaceSettings.id}
+            session={queries}
+            scope={scope}
+            target={{ kind: "project", ...workspaceSettings }}
+            close={() => setWorkspaceSettings(undefined)}
+            finalFocus={workspaceSettings.trigger}
+          />
+        )}
+        {creatingSection && (
+          <NewWorkspace
+            session={queries}
             finalFocus={createSectionTrigger}
             close={() => setCreatingSection(false)}
-            create={async (section) => {
-              if (!queries.sidebarPreferences.sectionCreationWritable)
-                return false;
-              await preferences.createSection(section);
-              sidebar.toggle(`group:${section.id}`, true);
-              setCreatingSection(false);
-              return true;
-            }}
+            create={preferences.createSection}
+            onCreated={(id) => sidebar.toggle(`group:${id}`, true)}
           />
         )}
         {creatingFor && !creatingFor.surface?.signal?.aborted && (
-          <CreateSidebarSection
+          <NewWorkspace
             session={queries}
-            scope={queries.scope}
-            channelName={creatingFor.channel.name}
-            writable={preferences.sectionCreationWritable}
-            refreshing={preferences.status === "loading"}
-            retry={preferences.reload}
+            moveConversation
             create={(section) => {
-              // The modal can outlive the snapshot that admitted its menu. Check
-              // the live gate before handing its draft to the optimistic store.
-              if (
-                creatingFor.surface?.signal?.aborted ||
-                !queries.sidebarPreferences.sectionCreationWritable
-              )
-                return false;
-              moveChannel(
-                creatingFor.channel.id,
-                () =>
-                  preferences.createAndAssign(creatingFor.channel.id, {
-                    ...section,
-                    ...(creatingFor.position
-                      ? { position: creatingFor.position }
-                      : {}),
-                  }),
-                creatingFor.surface,
-              );
-              setCreatingFor(undefined);
-              return true;
+              creatingFor.surface?.signal?.throwIfAborted();
+              const refusal = prepareSoloMove(queries, creatingFor.channel.id);
+              if (refusal) return Promise.reject(new Error(refusal));
+              return preferences.createAndAssign(creatingFor.channel.id, {
+                ...section,
+                ...(creatingFor.position
+                  ? { position: creatingFor.position }
+                  : {}),
+              });
             }}
+            onCreated={(id) => sidebar.toggle(`group:${id}`, true)}
+            finalFocus={() =>
+              creatingFor.surface
+                ? false
+                : (rowFocusTarget(creatingFor.channel.id) ??
+                  sidebarFocusFallback() ??
+                  false)
+            }
             close={() => {
-              if (creatingFor.surface) creatingFor.surface.focus();
-              else focusChannelPlacement(creatingFor.channel.id);
               setCreatingFor(undefined);
+              if (mounted.current) creatingFor.surface?.focus();
             }}
           />
         )}

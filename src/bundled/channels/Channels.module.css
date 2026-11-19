@@ -74,6 +74,10 @@
   max-width: 100%;
   max-height: 100%;
 }
+.unifiedChatName {
+  --session-row-inset: var(--space-2);
+  --session-action-size: calc(var(--space-6) + var(--space-1));
+}
 .sidebarIcon {
   display: inline-grid;
   width: 1.125rem;
@@ -300,9 +304,6 @@ body:has([data-create-section-drop][data-drop-target]) .channelDragOverlay {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-}
-.scopeSectionTitle {
-  color: var(--text-standard);
 }
 /* Collapsed headings stand in for their hidden rows, using the same unread
    evidence as the sidebar edge cues. Muted destinations stay quiet. */
@@ -569,29 +570,12 @@ details:not([open]) > summary .sectionChevron {
   width: 0;
   height: 1em;
   vertical-align: middle;
-  opacity: 0;
-  transform: translateX(calc(-1 * var(--space-1)));
-  transition:
-    opacity var(--duration-state) var(--easing-state),
-    transform var(--duration-state) var(--easing-state);
 }
 .settingsTitlePencil > svg {
   position: absolute;
   inset-inline-start: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-}
-.settingsTitleAction[aria-busy="true"] .settingsTitlePencil,
-.settingsTitleAction:hover .settingsTitlePencil,
-.settingsTitleAction:focus-visible .settingsTitlePencil {
-  opacity: 1;
-  transform: translateX(0);
-}
-@media (hover: none) {
-  .settingsTitlePencil {
-    opacity: 1;
-    transform: none;
-  }
 }
 .settingsIcon {
   display: grid;
@@ -648,39 +632,21 @@ details:not([open]) > summary .sectionChevron {
 .settingsDetailIcon {
   display: inline-flex;
   color: var(--text-subtle);
-  opacity: 0;
-  transform: translateX(calc(-1 * var(--space-1)));
-  transition:
-    opacity var(--duration-state) var(--easing-state),
-    transform var(--duration-state) var(--easing-state);
 }
-.settingsDetailAction[aria-busy="true"] .settingsDetailIcon,
-.settingsDetailAction:hover .settingsDetailIcon,
-.settingsDetailAction:focus-visible .settingsDetailIcon,
-.settingsDetails > div:hover .settingsLabelAction .settingsDetailIcon {
-  opacity: 1;
-  transform: translateX(0);
+html[data-keyboard-navigation] .settingsTitleAction:focus-visible,
+html[data-keyboard-navigation] .settingsLabelAction:focus-visible {
+  border-radius: var(--radius-control);
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
-@media (hover: none) {
-  .settingsDetailIcon {
-    opacity: 1;
-    transform: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .settingsTitlePencil,
-  .settingsTitleAction:hover .settingsTitlePencil,
-  .settingsTitleAction:focus-visible .settingsTitlePencil,
-  .settingsDetailIcon,
-  .settingsDetailAction:hover .settingsDetailIcon,
-  .settingsDetailAction:focus-visible .settingsDetailIcon,
-  .settingsDetails > div:hover .settingsLabelAction .settingsDetailIcon {
-    transform: none;
-    transition: none;
-  }
-}
-.settingsDetailAction:focus-visible {
+.settingsDetailAction:not(.settingsLabelAction):focus-visible {
   outline: none;
+}
+html[data-keyboard-navigation]
+  .settingsDetails
+  > div:has(.settingsDetailAction:not(.settingsLabelAction):focus-visible) {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 .settingsDetailAction:not(.settingsLabelAction)::after {
   content: "";
@@ -701,6 +667,11 @@ details:not([open]) > summary .sectionChevron {
 .settingsDetails dd {
   margin: var(--space-1) 0 0;
   color: var(--text-subtle);
+}
+.settingsAccess {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 /* The switch trails its description; an error spans the row below both. */
 .settingsSwitch > dd {

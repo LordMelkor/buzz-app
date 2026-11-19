@@ -144,10 +144,13 @@ export function ChannelSidebarDnd({
   );
 }
 
-function CreateSectionDropTarget() {
+function CreateSectionDropTarget({ available }: { available: boolean }) {
   const { active, measureDroppableContainers } = useDndContext();
   const enabled =
-    useContext(Writable) && !!active && !active.data.current?.group;
+    useContext(Writable) &&
+    available &&
+    !!active &&
+    !active.data.current?.group;
   const reducedMotion = useReducedMotion();
   const [revealed, setRevealed] = useState(false);
   const { setNodeRef, isOver } = useDroppable({
@@ -175,7 +178,7 @@ function CreateSectionDropTarget() {
       <div
         ref={setNodeRef}
         className={styles.createSectionHitArea}
-        data-create-section-trigger=""
+        data-create-section-trigger={available ? "" : undefined}
       />
       <motion.div
         className={styles.createSectionReveal}
@@ -199,7 +202,7 @@ function CreateSectionDropTarget() {
           data-drop-target={isOver || undefined}
         >
           <PlusIcon size={24} />
-          <span>Add to new section</span>
+          <span>Add to new workspace</span>
         </div>
       </motion.div>
     </div>
@@ -236,12 +239,6 @@ export function DraggableChannel({
       {children}
     </div>
   );
-}
-
-export function DraggableConversation(
-  props: Omit<ComponentProps<typeof DraggableChannel>, "rowKind">,
-) {
-  return <DraggableChannel {...props} rowKind="dm" />;
 }
 
 /** Shared header drag and post-drag click suppression for Team and Solo. */
@@ -324,7 +321,7 @@ export function DroppableSidebarSection({
   groupDomain?: string;
   /** Row kinds a drop may place here; every row when omitted. */
   accepts?: readonly SidebarRowKind[];
-  createSectionTarget?: boolean;
+  createSectionTarget?: "available" | "unavailable" | undefined;
 }) {
   const { setNodeRef, isOver, active } = useDroppable({
     id: section.sectionKey,
@@ -347,7 +344,11 @@ export function DroppableSidebarSection({
   const from = active?.data.current?.groupIndex;
   return (
     <>
-      {createSectionTarget && <CreateSectionDropTarget />}
+      {createSectionTarget && (
+        <CreateSectionDropTarget
+          available={createSectionTarget === "available"}
+        />
+      )}
       <SidebarSection
         {...section}
         dropRef={setNodeRef}

@@ -826,10 +826,11 @@ Each slot has its own error boundary and Retry. A source failure replaces its
 slots with one unavailable-and-Retry placeholder; a source returning no
 publication settles empty. Registrations and publications are fenced by owner
 incarnation, so disabling or replacing a source retires its old content.
-The bundled Messages context mounts the Channels inventory as its one preferences,
-view, action and status owner. Its failures retain the whole-sidebar fallback;
-a thin Team source failure affects Team and its version-1 slots while Solo stays
-mounted. Both built-in sources require the required Channels plugin to activate.
+The Messages context mounts one inventory for workspace preferences, rows and
+actions. The built-in source publishes the workspace and home sections. Solo
+region sources publish their own region content. A primary region can compose
+ordinary chats in its task view. Starred and mixed workspaces keep their unified
+placement. Both bundled sources activate with the required Channels plugin.
 
 The viewport waits for every current section key to commit before consuming a
 saved scroll position. Container refs and portal publication settle during layout,
@@ -838,20 +839,18 @@ drag hit testing: a DOM emulator cannot establish their geometry.
 
 ### Solo-only sidebar
 
-`sidebarScope.restrict({ id, scope: "solo", banner })` shows only the Solo
-inventory while it is registered. The All/Solo/Team tabs and page destinations
-give way to the plugin's `banner` component, and the person's saved tab returns
-when the last restriction is removed. It returns a remover; disable, replacement
-and teardown remove it too, so a restriction can never outlive its plugin. A
-banner that throws renders nothing and leaves the sidebar usable. It changes
-only the sidebar: links, search and alert clicks still open any conversation.
-Focus is the first caller and registers its restriction only while Focus is on.
+`sidebarScope.restrict({ id, scope: "solo", banner })` filters the sidebar to
+Solo-labelled chats across sections. Empty sections, Team contributions and
+pinned page destinations are hidden. The banner is isolated from the sidebar by
+an error boundary. Links, search and alert clicks can still open conversations.
+The call returns a remover. Disable, replacement and teardown remove the
+restriction. Focus registers it while active.
 
 ### Decorating host sidebar rows and adding sort modes
 
 `ctx.reflect.get("sidebarRows")` is an optional version-1 capability for host
 Team channel, direct-message and ordinary Solo rows, including rows moved into
-custom Team groups or Solo workspaces. Plugin-owned Solo regions render their
+personal workspaces. Plugin-owned Solo regions render their
 own rows and are not decorated here. Use the reflective lookup rather than
 required `inject` so the plugin still activates on older hosts.
 
@@ -1368,13 +1367,14 @@ destination, roster, audio or controls.
 Every plugin surface in a channel or thread can open a target, such as a panel
 URL, with the same `canOpen(target)` / `open(target)` pair (`TargetOpener`):
 panels (`context`), channel-header launchers, composer tools and accessories,
-message renderers, message ⋯ action components, attachment renderers and inline
-renderers. The conversation host decides placement: in Channels a panel target
-opens as a side-pane tab, as if the user clicked a link to it in that message or
-composer. `canOpen` is presentation only. `open` re-resolves at click time and
-returns false outside a conversation host, after the contribution is removed or
-after its mount retires. Link renderers keep host-owned link activation;
-reaction choosers and message markers get no opener.
+message renderers, message ⋯ action components, attachment renderers, inline
+renderers and link preview cards (`opener`). The conversation host decides
+placement: in Channels a panel target opens as a side-pane tab, as if the user
+clicked a link to it in that message or composer. `canOpen` is presentation
+only. `open` re-resolves at click time and returns false outside a conversation
+host, after the contribution is removed or after its mount retires. Link
+renderers keep host-owned link activation; reaction choosers and message markers
+get no opener.
 
 ### Resolution order
 
@@ -1619,11 +1619,11 @@ are also deferred; opt in when the contribution's static title is sufficient unt
 selection.
 
 A plugin panel, which cannot import host modules, names its tab with
-`ctx.panels.useTabTitle(label)`, a React hook called in the panel component (for
+`ctx.panels.useTabTitle(label, icon?)`, a React hook called in the panel component (for
 example `ctx.panels.useTabTitle("#12554892")` for a build opened from a link). The
 label replaces the static `title` while the component is mounted and the static
-`title` returns when it unmounts; outside a panel tab the call does nothing. It
-takes a label only, no icon. Hosts that predate it lack the hook, so plugins that
+`title` returns when it unmounts; outside a panel tab the call does nothing. The
+optional `icon` is a React node. Hosts that predate it lack the hook, so plugins that
 support them test `typeof ctx.panels.useTabTitle === "function"` first.
 
 Channels keeps layout and channel/thread selection. The Terminal plugin binds its
@@ -2308,8 +2308,96 @@ refuse. Only the verified fixed ownership file is excluded.
 The shared root permits at most 64 MiB and 16 artifact files. Any plugin can fill
 it; there is no per-plugin quota or fairness promise. A full root refuses before
 another file is created, without evicting unexpired files. Failures remove output
-best-effort; residue remains counted. There is no index, sidecar, recovery adoption,
-content deduplication or temporary-to-final file service.
+best-effort; residue remains counted. There is no persistent index, sidecar,
+recovery adoption, content deduplication or temporary-to-final file service.
+The optional after-send policy below uses only a bounded in-memory consent map.
+
+#### Opt-in temporary attachment release
+
+A compatible desktop frontend/native pair accepts
+`await host.saveBytes(bytes, {sha256, releaseAfterSend: true})`. The flag defaults
+to off; false/omission preserves ordinary saves. Require the returned
+`releaseAfterSend === true` acknowledgement. An older native host may save while
+ignoring the option: missing/false acknowledgement rejects as unsupported and
+**possibly saved**, never permission to retry. Establish a compatible released
+pair before enabling a consumer; method detection alone is not evidence.
+No new grant, caller path/account, deletion callback or release command exists.
+
+Native captures the saving **human Nostr owner**, not a plugin ID or federated
+login account. Opt-in saves may refuse if identity is unavailable, closed or busy
+at the final commit. Consent insertion and identity close share a short native
+fence; ordinary saves remain identity-independent. Native command timeout/drop
+before commit prevents consent. Renderer disposal/page retirement/lost IPC replies
+are not native cancellation signals: they can leave a possibly saved file and
+committed consent even before the renderer learns the result. Never automatically
+save again to recover an unknown outcome.
+
+The app's shared attachment tools collect bounded local hints after read/upload,
+using the bytes' exact SHA256/size and a matching upload descriptor. These hints
+travel outside signed event tags and tool arguments. They do not create deletion
+authority. Only after the **full native evidence-wrapped publication** succeeds
+with the relay accepting that exact signed kind-9 event ID does native attempt
+release. Upload, local event insertion, renderer claims and an unconfirmed receipt
+are insufficient. This is not recipient delivery/read or permanent remote storage.
+The trusted app supplies read/upload mapping; no independent cryptographic native
+provenance or malicious-plugin sandbox is claimed. Standalone/browser clients do
+not gain a local deletion implementation.
+
+A different runtime plugin may send the saving plugin's source for the same human
+owner. Native requires its process-local save consent, exact direct-child path,
+saver digest, private no-link file identity, content hash/size, and the confirmed
+event's URL/hash/size together in one imeta. Saver update/disable and later UI or
+federated-session changes do not retarget previously committed consent. Unknown,
+legacy, replaced, aliased, unmarked or other-owner files never acquire consent
+from filenames or tool hints. Platforms without safely verifiable file identity
+retain the source. Public explicit deletion retains its existing grant/owner rules.
+
+One bounded best-effort attempt per distinct source uses the shared byte permit,
+root writer and reader exclusion, with **one shared 30-second cleanup-entry budget
+for the whole message**, including scheduling and queue wait. The confirmed send
+returns immediately without awaiting cleanup; cleanup runs detached on the app's
+native runtime, not the runner lifetime. Runner disposal does not cancel it.
+The deadline is captured before spawning, and actual blocking work keeps its
+byte/root/reader guards until completion. App shutdown need not drain cleanup:
+undispatched work can be lost and sources retained; dispatched unlink may finish
+with an unknown outcome. No work is durable or required to outlive the app.
+Failure/refusal never changes a confirmed send into an error or repost.
+Active app-wide readers refuse cleanup;
+while cleanup verifies content, new direct/process reads instead promptly refuse
+with `File reads are busy; try again later`, without spawning/reading or silently
+retrying. A stalled hash can outlive the response budget; dispatched work retains
+admission/exclusion through real completion and its unlink outcome can be unknown.
+
+| Outcome | Source and caller behavior |
+| --- | --- |
+| Read/upload/body/mention/emoji failure, or native-unconfirmed publish | Keep sources; no cleanup or automatic resend. Earlier uploads may exist remotely. |
+| Confirmed native publish, cleanup succeeds | Local source removed and quota reclaimed; posted message/media unchanged. |
+| Confirmed publish, busy reader/root/queue, mismatch or cleanup error | Send still succeeds; source may remain indefinitely, without a cleanup retry. |
+| Dispatched cleanup exceeds the shared deadline | Send succeeds; local cleanup outcome unknown and actual work may finish late. |
+| Second sequential send of a released path | Normal missing-file failure before upload; reuse the posted link, not the old source. |
+| Concurrent send with bytes already read | It may finish from its snapshot even after the first confirmed send releases the source. Future reads are not reserved. |
+| Restart/crash/different process | Consent is lost, never adopted from a filename; files may remain indefinitely. |
+
+**Cleanup may never happen automatically; expiry only makes a file eligible for removal during a later save.**
+There is no durable/cross-process consent, background sweep, completion callback
+or eventual-erasure guarantee. Only this new after-send path requires confirmed
+publish; owner deletion, lazy expiry sweeping, erasure and disk loss remain
+independent. Save acknowledgement is not a publication/deletion receipt;
+`sent <id>` confirms publication, not local deletion.
+
+When returning an opted-in path, explain: “Temporary attachment source: send this
+file once. After a confirmed post, the host may release the local copy; keep the
+posted link for reuse. Failed or uncertain sends are not safe to repeat
+automatically.” Also disclose that cleanup refusal may retain it indefinitely.
+
+The bundled Codex and Claude Code runtimes suppress managed-attachment hints
+when their active reader is backed by an execution target. Those attachments
+still publish normally through the same tools, but cannot trigger desktop-local
+managed cleanup through these two guarded readers. No remote deletion is added.
+The shared app client otherwise forwards hints by default; custom-reader harness
+integrations retain their existing trusted-reader contract and must not treat
+this scoped guard as universal source provenance. Managed release remains local,
+bounded by the same consent/identity/path/content checks above.
 
 Optional `host.deleteManagedFile(path)` requires `host.managedFiles` and the current
 enabled plugin revision, not `host.files`. It accepts only a direct, host-generated
@@ -2912,11 +3000,15 @@ lowest-`order` match draws its card under the panel
 [resolution order](#resolution-order), so a plugin claims its own URLs by
 registering below the default web card's catch-all band; a component that
 renders nothing leaves that link without a card. Components receive
-`{ url, messageId, open }`; `open()` routes `url` through the host's link
-handler, as clicking the link does, and returns false once the contribution or
-message has retired. Cards sit between the message bubble and its attachments.
-After three, the rest fold behind "Show N more previews". A render failure drops
-only that card. Registration follows the existing plugin lifetime.
+`{ url, messageId, open, opener }`;
+`open()` routes `url` through the host's link handler, as clicking the link
+does, and returns false once the contribution or message has retired. `opener`
+is the message's [`TargetOpener`](#opening-targets-from-channel-plugins), so a
+card can open a different target, such as its plugin's panel, while clicking the
+link itself still does what it always did. Hosts that predate it omit `opener`.
+Cards sit between the message bubble and its attachments. After three, the rest
+fold behind "Show N more previews". A render failure drops only that card.
+Registration follows the existing plugin lifetime.
 
 `registerCodeBlock({ id, title, matches, component, action? })` contributes optional
 presentation for a fenced code block. `matches(language)` receives the fence's
@@ -3247,8 +3339,9 @@ The existing native and browser upload adapters prepare `voice-note-*.wav` files
 as the old Buzz H.264/AAC MP4 envelope. Voice Notes adds no uploader, signer or
 outbox. Files upload on Send, retain the shared progress/recovery behavior, and
 carry bounded duration and waveform metadata through ordinary `imeta` tags.
-Recordings stop at five minutes. Pending files have the same tab-local lifetime
-and limits as other attachment drafts; they do not survive app restart.
+Recordings stop at five minutes. Pending files have the same lifetime and limits
+as other attachment drafts: uploaded files survive app restart with the draft;
+files still uploading do not.
 
 The player loads audio on Play, supports seeking and playback speed, and pauses
 when its conversation is hidden. Existing voice notes are recognized from signed

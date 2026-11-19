@@ -506,6 +506,29 @@ export function composerBlockPrefix(
   return marks.length ? tr.setStoredMarks(marks) : tr;
 }
 
+/** A caret leaving a code block by an arrow key, past the edge of the block in
+ * that direction, lands in an empty paragraph opened there when no textblock
+ * lies beyond, as Enter on the block's empty last line opens one below it.
+ * Elsewhere the native caret motion already leaves the block. The caller
+ * decides that the caret is at the block's edge in the key's direction. */
+export function composerCodeBlockExit(
+  state: EditorState,
+  forward: boolean,
+): Transaction | undefined {
+  const { $head, empty } = state.selection;
+  if (!empty || !$head.parent.type.spec.code) return;
+  const edge = forward ? $head.after() : $head.before();
+  const $edge = state.doc.resolve(edge);
+  if (Selection.findFrom($edge, forward ? 1 : -1, true)) return;
+  const index = $edge.index();
+  if (!$edge.parent.canReplaceWith(index, index, schema.nodes.paragraph))
+    return;
+  const tr = state.tr.insert(edge, schema.nodes.paragraph.create());
+  return tr
+    .setSelection(TextSelection.create(tr.doc, edge + 1))
+    .setStoredMarks([]);
+}
+
 /** A line break continues the block; an empty last line exits it. The host
  * owns when Enter sends or requests a line break. */
 export function composerBlockLineBreak(

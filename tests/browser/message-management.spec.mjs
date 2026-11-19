@@ -182,10 +182,12 @@ test("manage a channel message, peer unread state, and its thread", async ({
         (await readJournal(page))?.state.frontiers["activity:alpha"] ?? 0,
     )
     .toBeGreaterThanOrEqual(peer.created_at);
-  const toggle = page.getByRole("menuitem", { name: /^Mark (read|unread)$/ });
+  const toggle = page.getByRole("menuitem", {
+    name: /^Mark as (read|unread)$/,
+  });
   for (const [action, next] of [
-    ["Mark unread", "Mark read"],
-    ["Mark read", "Mark unread"],
+    ["Mark as unread", "Mark as read"],
+    ["Mark as read", "Mark as unread"],
   ]) {
     await hoverMessage(peerRow);
     await peerTrigger.click();
@@ -361,7 +363,7 @@ test("DM menus edit own messages but never expose destructive actions for peers"
   await hoverMessage(peerRow);
   await peerRow.getByRole("button", { name: "More message actions" }).click();
   await expect(
-    page.getByRole("menuitem", { name: /^Mark (read|unread)$/ }),
+    page.getByRole("menuitem", { name: /^Mark as (read|unread)$/ }),
   ).toBeVisible();
   await expect(
     page.getByRole("menuitem", { name: "Edit message", exact: true }),

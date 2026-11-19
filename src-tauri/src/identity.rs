@@ -1,5 +1,8 @@
 //! One create-only human identity. Never consult legacy, agent, file or environment keys.
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
+    Engine as _,
+};
 use bech32::{primitives::decode::CheckedHrpstring, Bech32, Hrp};
 use buzz_agent_controller::LegacyHumanError;
 use buzz_credential_store as credentials;
@@ -488,6 +491,25 @@ impl Identity {
     }
 }
 
+fn valid_compact_workspace_id(row: &str) -> bool {
+    if let Some(escaped) = row.strip_prefix("~~") {
+        escaped.encode_utf16().count() < 256
+    } else if let Some(packed) = row.strip_prefix('~') {
+        packed.len() == 43
+            && STANDARD_NO_PAD
+                .decode(packed)
+                .is_ok_and(|bytes| bytes.len() == 32)
+    } else {
+        row != "__proto__"
+            && !row.trim().is_empty()
+            && row.encode_utf16().count() <= 256
+            && !(row.len() == 64
+                && row
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || matches!(c, b'a'..=b'f')))
+    }
+}
+
 // Reject renderer-supplied arbitrary ciphertext/plaintext at the purpose-bound signer.
 fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Result<()> {
     let invalid = || "Invalid sidebar payload".to_owned();
@@ -499,18 +521,120 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
         v.as_str()
             .is_some_and(|s| !s.trim().is_empty() && s.encode_utf16().count() <= max)
     };
+    let workspace_choices = matches!(
+        coordinate,
+        "channel-workspace-sort" | "channel-workspace-filter"
+    );
+    let choice_limit = if workspace_choices { 205 } else { 104 };
+    let coordinate = match coordinate {
+        "channel-workspace-sort" => "channel-sort",
+        "channel-workspace-filter" => "channel-filter",
+        _ => coordinate,
+    };
     match coordinate {
-        "channel-sections" => {
+        "channel-sections" | "channel-workspaces" => {
+            let workspaces = coordinate == "channel-workspaces";
             let sections = data
                 .get("sections")
                 .and_then(|v| v.as_array())
                 .ok_or_else(invalid)?;
-            let assignments = data
-                .get("assignments")
-                .and_then(|v| v.as_object())
-                .ok_or_else(invalid)?;
-            if sections.len() > 100 || assignments.len() > 1000 {
+            let (section_limit, assignment_limit) =
+                if workspaces { (200, 2000) } else { (100, 1000) };
+            if sections.len() > section_limit {
                 return Err(invalid());
+            }
+            if workspaces {
+                if data.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "version"
+                            | "sections"
+                            | "assignments"
+                            | "filings"
+                            | "sectionOrder"
+                            | "legacyTemplates"
+                            | "removedSections"
+                            | "unfiled"
+                            | "packedUnfiled"
+                            | "unifiedOnly"
+                            | "legacyImportClosed"
+                    )
+                }) {
+                    return Err(invalid());
+                }
+                let order = data
+                    .get("sectionOrder")
+                    .and_then(|order| order.as_array())
+                    .ok_or_else(invalid)?;
+                let mut keys = std::collections::HashSet::new();
+                if order.len() > section_limit + 6
+                    || order.iter().any(|key| {
+                        let Some(key) = key.as_str() else {
+                            return true;
+                        };
+                        !keys.insert(key)
+                            || (!matches!(
+                                key,
+                                "pages" | "starred" | "solo" | "channels" | "forums" | "dms"
+                            ) && !key.strip_prefix("group:").is_some_and(|id| {
+                                !id.trim().is_empty() && id.encode_utf16().count() <= 256
+                            }))
+                    })
+                {
+                    return Err(invalid());
+                }
+                for key in ["removedSections", "unfiled"] {
+                    if let Some(value) = data.get(key) {
+                        let list = value.as_array().ok_or_else(invalid)?;
+                        let mut unique = std::collections::HashSet::new();
+                        if list.iter().any(|id| {
+                            !text(id, 256) || id == "__proto__" || !unique.insert(id.as_str())
+                        }) {
+                            return Err(invalid());
+                        }
+                    }
+                }
+                if let Some(value) = data.get("legacyImportClosed") {
+                    if value.as_bool() != Some(true)
+                        || ["removedSections", "unfiled", "packedUnfiled", "unifiedOnly"]
+                            .iter()
+                            .any(|key| data.contains_key(*key))
+                    {
+                        return Err(invalid());
+                    }
+                }
+                if let Some(value) = data.get("packedUnfiled") {
+                    if !data.contains_key("filings") || data.contains_key("unfiled") {
+                        return Err(invalid());
+                    }
+                    let list = value.as_array().ok_or_else(invalid)?;
+                    let mut unique = std::collections::HashSet::new();
+                    if list.iter().any(|id| {
+                        !id.as_str()
+                            .is_some_and(|id| valid_compact_workspace_id(id) && unique.insert(id))
+                    }) {
+                        return Err(invalid());
+                    }
+                }
+                if let Some(templates) = data.get("legacyTemplates") {
+                    let templates = templates.as_object().ok_or_else(invalid)?;
+                    if templates.len() > section_limit
+                        || templates.iter().any(|(id, template)| {
+                            id.trim().is_empty()
+                                || id.encode_utf16().count() > 256
+                                || !template.as_str().is_some_and(|template| {
+                                    !template.is_empty()
+                                        && template.len() <= 128
+                                        && template.bytes().all(|byte| {
+                                            byte.is_ascii_alphanumeric()
+                                                || matches!(byte, b'_' | b'-')
+                                        })
+                                })
+                        })
+                    {
+                        return Err(invalid());
+                    }
+                }
             }
             let mut ids = std::collections::HashSet::new();
             for section in sections {
@@ -528,14 +652,50 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
                     return Err(invalid());
                 }
             }
-            if assignments.iter().any(|(id, section)| {
-                id.trim().is_empty()
-                    || id.encode_utf16().count() > 256
-                    || !section
-                        .as_str()
-                        .is_some_and(|v| !v.trim().is_empty() && v.encode_utf16().count() <= 256)
-            }) {
-                return Err(invalid());
+            let assignment_count = if workspaces && data.contains_key("filings") {
+                let filings = data["filings"].as_object().ok_or_else(invalid)?;
+                if data.contains_key("assignments") {
+                    return Err(invalid());
+                }
+                let mut conversations = std::collections::HashSet::new();
+                for (workspace, rows) in filings {
+                    let rows = rows.as_array().ok_or_else(invalid)?;
+                    if rows.is_empty() || !ids.contains(workspace.as_str()) {
+                        return Err(invalid());
+                    }
+                    for row in rows {
+                        let row = row.as_str().ok_or_else(invalid)?;
+                        if !valid_compact_workspace_id(row)
+                            || !conversations.insert(row)
+                            || conversations.len() > assignment_limit
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                }
+                conversations.len()
+            } else {
+                let assignments = data["assignments"].as_object().ok_or_else(invalid)?;
+                if assignments.len() > assignment_limit
+                    || assignments.iter().any(|(id, section)| {
+                        id.trim().is_empty()
+                            || id.encode_utf16().count() > 256
+                            || !text(section, 256)
+                    })
+                {
+                    return Err(invalid());
+                }
+                assignments.len()
+            };
+            if let Some(value) = data.get("unifiedOnly").filter(|_| workspaces) {
+                let count = sections.len() + assignment_count;
+                let bits = value.as_str().ok_or_else(invalid)?;
+                let bytes = STANDARD_NO_PAD.decode(bits).map_err(|_| invalid())?;
+                if bytes.len() != count.div_ceil(8)
+                    || (count % 8 != 0 && bytes.last().is_some_and(|last| last >> (count % 8) != 0))
+                {
+                    return Err(invalid());
+                }
             }
         }
         "channel-stars" | "channel-mutes" => {
@@ -573,7 +733,7 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
             if coordinate == "channel-filter" {
                 if let Some(windows) = data.get("activeWindowSeconds") {
                     let windows = windows.as_object().ok_or_else(invalid)?;
-                    if windows.len() > 104
+                    if windows.len() > choice_limit
                         || windows.iter().any(|(group, value)| {
                             group.trim().is_empty()
                                 || group.encode_utf16().count() > 264
@@ -586,7 +746,7 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
                     }
                 }
             }
-            if groups.len() > 104
+            if groups.len() > choice_limit
                 || groups.iter().any(|(group, mode)| {
                     group.encode_utf16().count() > 264
                         || !mode.is_string()
@@ -634,7 +794,7 @@ fn validate_sidebar_payload(coordinate: &str, value: &serde_json::Value) -> Resu
             if !choices
                 .get("g")
                 .and_then(|v| v.as_object())
-                .is_some_and(|g| g.len() <= 104)
+                .is_some_and(|g| g.len() <= choice_limit)
             {
                 return Err(invalid());
             }
@@ -798,10 +958,13 @@ pub(crate) fn sidebar_coordinate(value: &str) -> bool {
     matches!(
         value,
         "channel-sections"
+            | "channel-workspaces"
             | "channel-stars"
             | "channel-mutes"
             | "channel-sort"
             | "channel-filter"
+            | "channel-workspace-sort"
+            | "channel-workspace-filter"
             | "main-agent"
     )
 }
@@ -869,6 +1032,23 @@ impl IdentityHost {
         self.saved_viewer()
             .await?
             .ok_or_else(|| "Set up your identity first".into())
+    }
+
+    /// Short creation-time consent fence. Never restores secure storage or waits.
+    /// Close uses this same mutex; callers must not perform I/O in `commit`.
+    pub(crate) fn try_commit_managed_consent<T>(
+        &self,
+        expected: &str,
+        commit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let identity = self
+            .0
+            .try_lock()
+            .map_err(|_| "Managed save identity is busy")?;
+        match &identity.state {
+            State::Ready(key) if key.viewer()? == expected => commit(),
+            _ => Err("Managed save identity is unavailable or changed".into()),
+        }
     }
 
     pub(crate) async fn require_missing(&self) -> Result<()> {

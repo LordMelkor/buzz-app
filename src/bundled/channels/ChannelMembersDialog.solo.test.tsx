@@ -344,8 +344,8 @@ function fixture(
     ? {
         ...owner.session,
         messages: { ...owner.session.messages },
-        soloPreferences: {
-          ...owner.session.soloPreferences,
+        sidebarPreferences: {
+          ...owner.session.sidebarPreferences,
           snapshot: () => (filed ? filedProjects : unfiledProjects),
           refresh: async () => {},
           assign: placement,
@@ -531,7 +531,7 @@ it("opens a Solo chat for view-only visitors and makes it private again without 
   expect(
     screen.queryByRole("combobox", { name: "New people can" }),
   ).not.toBeInTheDocument();
-  expect(t.session.soloPreferences.snapshot().data?.assignments).toEqual({
+  expect(t.session.sidebarPreferences.snapshot().data?.assignments).toEqual({
     [source]: "g",
   });
   expect(t.placement).not.toHaveBeenCalled();

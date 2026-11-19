@@ -1,4 +1,3 @@
-import { RenameSidebarSection } from "./RenameSidebarSection";
 import { SidebarActiveDialog, activeWindowLabel } from "./SidebarActiveDialog";
 import { FadingLabel } from "./FadingLabel";
 import {
@@ -8,6 +7,7 @@ import {
   type DOMAttributes,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import {
   MenuGroup,
@@ -34,7 +34,6 @@ import {
   ChatUnreadIcon,
   DotsThreeIcon,
   Filter2Icon,
-  PencilSimpleIcon,
   PlusIcon,
   TextAaIcon,
   TimerIcon,
@@ -48,7 +47,6 @@ import type { RelaySession } from "../../features/relay/session";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import type { SidebarSortMode } from "../../features/relay/sidebar-sort";
 import type { SidebarFilter } from "./useSidebarFilters";
-import type { SidebarSectionEdit } from "../../features/relay/sidebar-preferences";
 import { SidebarGroupIcon } from "./SidebarGroupIcon";
 import { SidebarStarIcon } from "./SidebarStarIcon";
 import { ChannelSidebarMenuItem } from "./ChannelSidebarMenuItem";
@@ -64,7 +62,6 @@ export function SidebarSection({
   headerActions,
   headerNotice,
   hideMoreActions = false,
-  persistentChevron = false,
   createChannel,
   createSection,
   newMessage,
@@ -78,7 +75,7 @@ export function SidebarSection({
   dragging = false,
   move,
   onRemove,
-  onRename,
+  menuActions,
   channelCount,
   removalFocus,
   children,
@@ -92,10 +89,14 @@ export function SidebarSection({
   headerActions?: ReactNode;
   headerNotice?: ReactNode;
   onRemove?: (() => unknown) | undefined;
-  onRename?: ((edit: SidebarSectionEdit) => unknown) | undefined;
+  menuActions?:
+    | ((
+        dismiss: () => void,
+        trigger: RefObject<HTMLButtonElement | null>,
+      ) => ReactNode)
+    | undefined;
   hideMoreActions?: boolean;
   /** Keep the disclosure affordance visible instead of revealing it on hover. */
-  persistentChevron?: boolean;
   channelCount?: number | undefined;
   removalFocus?: (() => HTMLElement | null | undefined) | undefined;
   createChannel?:
@@ -153,11 +154,9 @@ export function SidebarSection({
   if (hideMoreActions && menuOpen) setMenuOpen(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [activeOpen, setActiveOpen] = useState(false);
-  const [renameOpen, setRenameOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState("");
   const canRemove = !!onRemove && sectionKey.startsWith("group:");
-  const canRename = !!onRename && !!session && sectionKey.startsWith("group:");
   const remove = async () => {
     if (!onRemove || removing) return;
     setRemoving(true);
@@ -368,7 +367,7 @@ export function SidebarSection({
                         <MenuIcon>
                           <PlusIcon size={14} />
                         </MenuIcon>
-                        Create section
+                        Create workspace
                       </MenuItem>
                     </>
                   )}
@@ -400,19 +399,8 @@ export function SidebarSection({
                       </MenuItem>
                     </>
                   )}
-                  {canRename && (
-                    <MenuItem
-                      onClick={() => {
-                        setMenuOpen(false);
-                        setRenameOpen(true);
-                      }}
-                    >
-                      <MenuIcon>
-                        <PencilSimpleIcon size={14} />
-                      </MenuIcon>
-                      Rename section
-                    </MenuItem>
-                  )}
+                  {menuActions?.(() => setMenuOpen(false), actionsTrigger)}
+
                   {canRemove && (
                     <>
                       <MenuSeparator />
@@ -427,7 +415,7 @@ export function SidebarSection({
                         <MenuIcon>
                           <TrashIcon size={14} />
                         </MenuIcon>
-                        Remove section
+                        Remove workspace
                       </MenuItem>
                     </>
                   )}
@@ -456,17 +444,6 @@ export function SidebarSection({
                 finalFocus={actionsTrigger}
               />
             )}
-            {renameOpen && onRename && session && (
-              <RenameSidebarSection
-                title={title}
-                icon={typeof icon === "string" ? icon : undefined}
-                session={session}
-                scope={session.scope}
-                rename={onRename}
-                close={() => setRenameOpen(false)}
-                finalFocus={actionsTrigger}
-              />
-            )}
             {canRemove && (
               <Dialog
                 size="compact"
@@ -481,7 +458,7 @@ export function SidebarSection({
                     : (removalFocus?.() ?? false)
                 }
                 title={`Remove ${title}?`}
-                description={`${channelCount === undefined ? "Assigned channels" : `${channelCount} ${channelCount === 1 ? "channel" : "channels"}`} will move back to Channels. This does not delete any channels.`}
+                description={`${channelCount === undefined ? "Assigned conversations" : `${channelCount} ${channelCount === 1 ? "conversation" : "conversations"}`} will return to their default sections.`}
                 actions={
                   <>
                     <Button
@@ -498,7 +475,7 @@ export function SidebarSection({
                       loading={removing}
                       onClick={() => void remove()}
                     >
-                      Remove section
+                      Remove workspace
                     </Button>
                   </>
                 }
@@ -532,6 +509,7 @@ export function SidebarSection({
           {/* biome-ignore lint/a11y/noStaticElementInteractions: summary has native keyboard activation. */}
           <summary
             ref={dragHandle?.ref}
+            tabIndex={0}
             {...dragHandle?.listeners}
             aria-label={title}
             aria-controls={id}
@@ -548,17 +526,11 @@ export function SidebarSection({
               ) : (
                 icon
               )}
-              <FadingLabel
-                className={`${styles.sectionTitle} ${
-                  persistentChevron ? styles.scopeSectionTitle : ""
-                }`}
-              >
-                {title}
-              </FadingLabel>
+              <FadingLabel className={styles.sectionTitle}>{title}</FadingLabel>
             </span>
             <span
               className={`${styles.sidebarIcon} ${styles.sectionChevron}`}
-              data-navigation-reveal={persistentChevron ? undefined : ""}
+              data-navigation-reveal=""
             >
               <CaretDownIcon strokeWidth={2.5} size={15} />
             </span>

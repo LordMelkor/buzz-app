@@ -15,6 +15,11 @@ import userEvent from "@testing-library/user-event";
 import { canonicalPublicKey } from "../../shared/identity/public-key";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "../../features/relay/session";
+import type {
+  ChannelList,
+  ChannelSummary,
+} from "../../features/relay/contracts";
+import { newMessageLink } from "../../features/direct-messages/message-person";
 import { keypair, profile, signed } from "../../features/relay/testing";
 import { matchesEvent } from "../../features/relay/projection";
 import type { RelayEvent } from "../../features/relay/events";
@@ -203,12 +208,33 @@ async function setup(
     interval: vi.isFakeTimers() ? 50 : 1,
   });
   const onOpenLink = vi.fn(() => true);
-  const onOpenConversation = vi.fn(() => true);
+  const onOpenMessage = vi.fn(() => true);
   const openMessage = vi.fn(
     async (_keys: readonly string[], _signal: AbortSignal) => "dm-1",
   );
+  // The viewer's existing DMs; a test empties it to message someone new.
+  const dms: ChannelSummary[] = [target, owner].map((person) => ({
+    id: person === target ? "dm-1" : `dm-${person.pubkey.slice(0, 8)}`,
+    name: person === target ? "Morgan" : "Owner",
+    channelType: "dm",
+    participants: [person.pubkey],
+  }));
+  let listed: [ChannelList, number, ChannelList] | undefined;
   const presentedSession = {
     ...session,
+    channels: {
+      ...session.channels,
+      list: () => {
+        const base = session.channels.list();
+        if (listed?.[0] !== base || listed[1] !== dms.length)
+          listed = [
+            base,
+            dms.length,
+            { ...base, channels: [...base.channels, ...dms] },
+          ];
+        return listed[2];
+      },
+    },
     ...(presence ? { presence } : {}),
     directMessages: {
       ...session.directMessages,
@@ -223,7 +249,7 @@ async function setup(
         channelId={id}
         canOpenLink={() => true}
         onOpenLink={onOpenLink}
-        onOpenConversation={messageNavigation ? onOpenConversation : undefined}
+        onOpenMessage={messageNavigation ? onOpenMessage : undefined}
       />
     </ToastProvider>
   );
@@ -250,8 +276,9 @@ async function setup(
     write,
     query,
     onOpenLink,
-    onOpenConversation,
+    onOpenMessage,
     openMessage,
+    dms,
     target,
     viewer,
     relay,
@@ -2026,11 +2053,39 @@ it("opens a confirmed human DM once, then hands navigation off without a members
   expect(t.openMessage).toHaveBeenCalledOnce();
   await t.user.keyboard("{Escape}");
   await act(async () => release("dm-1"));
-  expect(t.onOpenConversation).toHaveBeenCalledExactlyOnceWith("dm-1");
+  expect(t.onOpenMessage).toHaveBeenCalledExactlyOnceWith(
+    "buzz://channel/dm-1",
+  );
   await vi.waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
   expect(t.onOpenLink).not.toHaveBeenCalled();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("opens a draft to someone without a DM, creating nothing until it is sent", async () => {
+  const t = await setup(
+    "member",
+    "member",
+    true,
+    undefined,
+    false,
+    undefined,
+    true,
+  );
+  t.dms.length = 0;
+  await t.user.click(
+    screen.getByRole("button", { name: /^Actions for Morgan$/ }),
+  );
+  await t.user.click(
+    await screen.findByRole("menuitem", { name: "Send message" }),
+  );
+  await vi.waitFor(() =>
+    expect(t.onOpenMessage).toHaveBeenCalledExactlyOnceWith(
+      newMessageLink(t.target.pubkey),
+    ),
+  );
+  expect(t.openMessage).not.toHaveBeenCalled();
   expect(t.publish).not.toHaveBeenCalled();
 });
 
@@ -2048,7 +2103,7 @@ it.each(["read", "navigation"])(
     );
     if (failure === "read")
       t.openMessage.mockRejectedValueOnce(new Error("DM unavailable"));
-    else t.onOpenConversation.mockReturnValueOnce(false);
+    else t.onOpenMessage.mockReturnValueOnce(false);
     const actions = screen.getByRole("button", {
       name: /^Actions for Morgan$/,
     });
@@ -2106,7 +2161,7 @@ it("closing Members aborts the DM waiter and prevents late navigation", async ()
   await t.user.click(screen.getByRole("button", { name: "Close" }));
   expect(signal.aborted).toBe(true);
   await act(async () => release("dm-1"));
-  expect(t.onOpenConversation).not.toHaveBeenCalled();
+  expect(t.onOpenMessage).not.toHaveBeenCalled();
   expect(t.publish).not.toHaveBeenCalled();
 });
 

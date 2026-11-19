@@ -72,8 +72,8 @@ test("a Solo chat alone with an agent tags it while a background read-state snap
   const [agent] = app.soloAgents;
   // The gap leaves the chat's row carrying an unread badge in its name.
   const row = page
-    .getByRole("navigation", { name: "Solo conversations" })
-    .locator(`[data-solo-channel-id="${chat}"]`);
+    .getByRole("navigation", { name: "Subscribed channels" })
+    .locator(`[data-solo-destination-id="${chat}"]`);
   const pill = page.getByRole("button", {
     name: `Sending to ${agent.name}. Change agents`,
     exact: true,

@@ -225,6 +225,136 @@ it("pages 303 tied replies newest-first, deduplicates live rows and repairs reta
     h.view.snapshot().replies.find((r) => r.id === oldest.id)?.content,
   ).toBe(oldest.content);
 });
+it("pages older to a read frontier in one read, revalidating the root once", async () => {
+  const newest = Array.from({ length: 303 }, (_, n) => reply(n)).sort(
+    (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+  );
+  const h = await setup((f) => {
+    if (f.ids) return [root];
+    const eligible = newest.filter(
+      (e) =>
+        f.until === undefined ||
+        e.created_at < f.until ||
+        (e.created_at === f.until && e.id > (f.before_id ?? "")),
+    );
+    const page = eligible.slice(0, f.limit);
+    const last = page.at(-1);
+    assert.exists(last);
+    return [
+      ...page,
+      bounds(
+        f,
+        eligible.length > page.length
+          ? { created_at: last.created_at, id: last.id }
+          : null,
+      ),
+    ];
+  });
+  await h.view.refresh();
+  const before = h.requests.length;
+  await h.view.loadMore(() => 50);
+  const read = h.requests.slice(before);
+  expect(read[0]).toEqual([{ ids: [root.id], "#h": [channel], limit: 1 }]);
+  expect(read.slice(1).map(([f]) => f?.limit)).toEqual([50, 50, 50, 50]);
+  expect(h.view.snapshot()).toMatchObject({
+    status: "ready",
+    canLoadMore: true,
+  });
+  expect(h.view.snapshot().replies[0]?.createdAt).toBeLessThanOrEqual(50);
+});
+// A strict-window relay over `replies`, newest first.
+const pagedThread =
+  (replies: readonly RelayEvent[]) =>
+  (f: ReadFilter): readonly RelayEvent[] => {
+    if (f.ids) return [root];
+    const eligible = replies.filter(
+      (e) =>
+        f.until === undefined ||
+        e.created_at < f.until ||
+        (e.created_at === f.until && e.id > (f.before_id ?? "")),
+    );
+    const page = eligible.slice(0, f.limit);
+    const last = page.at(-1);
+    return [
+      ...page,
+      bounds(
+        f,
+        last && eligible.length > page.length
+          ? { created_at: last.created_at, id: last.id }
+          : null,
+      ),
+    ];
+  };
+it("reads a shallow frontier without loading large older replies", async () => {
+  const large = "x".repeat(30 * 1024);
+  const replies = Array.from({ length: 210 }, (_, n) =>
+    n < 150
+      ? message(author, channel, `${large}${n}`, 10 + n, [
+          ["e", root.id, "", "reply"],
+        ])
+      : message(author, channel, `reply ${n}`, 10 + n, [
+          ["e", root.id, "", "reply"],
+        ]),
+  ).reverse();
+  const h = await setup(pagedThread(replies));
+  await h.view.refresh();
+  const before = h.requests.length;
+  // Unread from the 40th newest reply: one 50-row continuation reaches it.
+  await h.view.loadMore(() => 10 + 170);
+  expect(h.requests.slice(before + 1).map(([f]) => f?.limit)).toEqual([50]);
+  expect(h.view.snapshot()).toMatchObject({
+    status: "ready",
+    canLoadMore: true,
+    limited: false,
+  });
+  expect(h.view.snapshot().replies).toHaveLength(60);
+});
+it("stops a frontier load when the frontier moves past the loaded replies", async () => {
+  const replies = Array.from({ length: 303 }, (_, n) =>
+    message(author, channel, `reply ${n}`, 10 + n, [
+      ["e", root.id, "", "reply"],
+    ]),
+  ).reverse();
+  const relay = pagedThread(replies);
+  let frontier = 0;
+  const h = await setup((f) => {
+    // A read synced from another device while the first older page loads.
+    if (f.until !== undefined) frontier = Infinity;
+    return relay(f);
+  });
+  await h.view.refresh();
+  const before = h.requests.length;
+  await h.view.loadMore(() => frontier);
+  expect(h.requests.slice(before + 1).map(([f]) => f?.limit)).toEqual([50]);
+  expect(h.view.snapshot().replies).toHaveLength(60);
+});
+it("resumes a failed frontier load from the page that failed", async () => {
+  const replies = Array.from({ length: 303 }, (_, n) =>
+    message(author, channel, `reply ${n}`, 10 + n, [
+      ["e", root.id, "", "reply"],
+    ]),
+  ).reverse();
+  const relay = pagedThread(replies);
+  let windows = 0;
+  let fail = true;
+  const h = await setup((f) => {
+    if (f.thread_window && f.until !== undefined && ++windows === 2 && fail)
+      return relay(f).filter((event) => event.kind !== 39007);
+    return relay(f);
+  });
+  await h.view.refresh();
+  await h.view.loadMore(() => 0);
+  expect(h.view.snapshot().status).toBe("error");
+  fail = false;
+  const retry = h.requests.length;
+  await h.view.loadMore();
+  const [window] =
+    h.requests.slice(retry).find(([f]) => f?.thread_window) ?? [];
+  // The retry reads the failed second page, not the first again.
+  expect(window?.until).toBe(10 + 303 - 60);
+  expect(h.view.snapshot()).toMatchObject({ status: "ready" });
+  expect(h.view.snapshot().replies).toHaveLength(110);
+});
 it("uses raw scan progress across empty pages without deriving cursors from rows", async () => {
   let pages = 0;
   const h = await setup((f) =>

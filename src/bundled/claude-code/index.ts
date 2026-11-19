@@ -7,7 +7,7 @@ import { repositoriesContext } from "../../features/communities/repositories";
 import { isTauri } from "@tauri-apps/api/core";
 import { type ComponentType, createElement } from "react";
 import { pubkeyOf } from "../../features/agents/membership";
-import { ownerReads } from "../../features/agents/reads";
+import { ownerReads, readyOwnerReads } from "../../features/agents/reads";
 import { withProviderWords } from "../../features/agents/failure-words";
 import { refusedByBuzz } from "./auth";
 import type { PluginModule } from "../../plugins/api";
@@ -139,6 +139,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (key, session) => agents.execution(key, session),
     (key) => agents.inspectExecution(key),
     (key) => !!agents.executionBinding(key),
+    undefined,
+    undefined,
+    (agent, signal, channelId) =>
+      readyOwnerReads(agents.relay(agent.key), agent, signal, channelId),
   );
   /** A Claude agent is running, so Buzz's copy is needed; unknown until the
    * agents have loaded. */
@@ -354,7 +358,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       // A remote target runs Recommended on its own default.
       if (agent && (await agents.inspectExecution(agent.key))) return;
       await (agent?.protection
-        ? setup.protectedInstalled(signal)
+        ? setup.protectedInstalled(signal, () => runtime.room())
         : setup.installed(signal));
       await follow(agent);
     }),

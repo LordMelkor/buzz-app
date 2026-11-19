@@ -1,4 +1,10 @@
-import { isSidebarPreferencesBatch } from "../src/features/relay/sidebar-preferences.ts";
+import {
+  isSidebarPreferencesBatch,
+  decodeLegacyWorkspaceEnvelope,
+  WORKSPACE_COORDINATE,
+  WORKSPACE_SORT_COORDINATE,
+  WORKSPACE_FILTER_COORDINATE,
+} from "../src/features/relay/sidebar-preferences.ts";
 import {
   isCatalogKind,
   MAX_EVENT_BYTES as CATALOG_EVENT_BYTES,
@@ -15,9 +21,9 @@ import { memoryResponseText } from "../src/features/agents/memory.ts";
 import { prepareMedia } from "./media-preparation.mjs";
 import {
   assertSidebarSortIntent,
-  mutateSidebarSort,
+  mutateWorkspaceSort,
   assertSidebarFilterIntent,
-  mutateSidebarFilter,
+  mutateWorkspaceFilter,
 } from "./sidebar-sort.mjs";
 import { readProjectGit } from "./project-git.mjs";
 import {
@@ -868,6 +874,8 @@ export function relayBrokerPlugin({
   archiveFile,
   // Tests that hold EOSE on purpose lengthen this real-time deadline.
   liveSetupTimeoutMs,
+  // Tests pin the live reconnect draw; production uses Math.random.
+  liveRandom,
 } = {}) {
   const publicOrigin =
     browserOrigin === undefined
@@ -1406,22 +1414,22 @@ export function relayBrokerPlugin({
           ) {
             const [coordinate, assertIntent, mutate] = {
               "/api/relay/sidebar-section-removal": [
-                "channel-sections",
+                WORKSPACE_COORDINATE,
                 assertSidebarSectionRemovalIntent,
                 mutateSidebarSectionRemoval,
               ],
               "/api/relay/sidebar-section-rename": [
-                "channel-sections",
+                WORKSPACE_COORDINATE,
                 assertSidebarSectionRenameIntent,
                 mutateSidebarSectionRename,
               ],
               "/api/relay/sidebar-section-order": [
-                "channel-sections",
+                WORKSPACE_COORDINATE,
                 assertSidebarSectionOrderIntent,
                 mutateSidebarSectionOrder,
               ],
               "/api/relay/sidebar-assignment": [
-                "channel-sections",
+                WORKSPACE_COORDINATE,
                 assertSidebarAssignmentIntent,
                 mutateSidebarAssignment,
               ],
@@ -1431,14 +1439,14 @@ export function relayBrokerPlugin({
                 mutateSidebarStar,
               ],
               "/api/relay/sidebar-filter": [
-                "channel-filter",
+                WORKSPACE_FILTER_COORDINATE,
                 assertSidebarFilterIntent,
-                mutateSidebarFilter,
+                mutateWorkspaceFilter,
               ],
               "/api/relay/sidebar-sort": [
-                "channel-sort",
+                WORKSPACE_SORT_COORDINATE,
                 assertSidebarSortIntent,
-                mutateSidebarSort,
+                mutateWorkspaceSort,
               ],
               "/api/relay/sidebar-mute": [
                 "channel-mutes",
@@ -1447,24 +1455,46 @@ export function relayBrokerPlugin({
               ],
             }[route];
             const sorting =
-              coordinate === "channel-sort" || coordinate === "channel-filter";
+              coordinate === WORKSPACE_SORT_COORDINATE ||
+              coordinate === WORKSPACE_FILTER_COORDINATE;
             const muting = coordinate === "channel-mutes";
-            // Sort and order intents carry up to 100 section IDs.
+            // Sort, filter and order intents carry the workspace roster.
             const listing =
               sorting || route === "/api/relay/sidebar-section-order";
+            const workspace = coordinate === WORKSPACE_COORDINATE;
+            const limit = workspace ? 192 * 1024 : listing ? 64 * 1024 : 2048;
             const chunks = [];
             let bytes = 0;
             for await (const part of req) {
               bytes += part.length;
-              if (bytes > (listing ? 32 * 1024 : 2048))
+              if (bytes > limit)
                 return json(res, 413, {
                   error: `Sidebar preference intent is too large`,
                 });
               chunks.push(part);
             }
             let intent;
+            let legacy;
             try {
               intent = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              if (workspace && intent && Object.hasOwn(intent, "legacy")) {
+                if (
+                  Object.keys(intent).some(
+                    (key) => key !== "intent" && key !== "legacy",
+                  )
+                )
+                  throw new Error("Invalid workspace intent envelope");
+                ({ intent, legacy } = intent);
+                legacy = decodeLegacyWorkspaceEnvelope(legacy);
+              }
+              if (
+                workspace &&
+                Buffer.byteLength(JSON.stringify(intent) ?? "") >
+                  (listing ? 64 * 1024 : 2048)
+              )
+                return json(res, 413, {
+                  error: "Sidebar preference intent is too large",
+                });
               assertIntent(intent);
             } catch {
               return json(res, 400, {
@@ -1542,8 +1572,11 @@ export function relayBrokerPlugin({
                     },
                     requestSignal,
                   );
-                const readHead = async () => {
-                  const response = await dispatch("/query", filter);
+                const readHead = async (target = coordinate) => {
+                  const response = await dispatch(
+                    "/query",
+                    filter.map((entry) => ({ ...entry, "#d": [target] })),
+                  );
                   if (!response.ok)
                     throw new Error(
                       `Sidebar preference query failed (${response.status})`,
@@ -1575,8 +1608,9 @@ export function relayBrokerPlugin({
                   key,
                   readHead,
                   publishEvent,
+                  legacy,
                 );
-                return coordinate === "channel-filter"
+                return coordinate === WORKSPACE_FILTER_COORDINATE
                   ? {
                       groups: result.filters,
                       activeWindowSeconds: result.activeWindowSeconds,
@@ -1698,6 +1732,7 @@ export function relayBrokerPlugin({
               projectGit: true,
               attachmentUploads: true,
               sidebarPreferences: true,
+              sidebarWorkspaceMigration: true,
               sidebarSortWrites: true,
               sidebarFilterWrites: true,
               channelActivity: true,
@@ -2241,6 +2276,8 @@ export function relayBrokerPlugin({
               principal.live,
               undefined,
               liveSetupTimeoutMs,
+              undefined,
+              liveRandom,
             );
             principal.streams++;
             traffic.observe(observer);

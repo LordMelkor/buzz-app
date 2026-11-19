@@ -220,14 +220,16 @@ second
         "<ol><li><p>x</p></li><li><p>y</p></li></ol>" +
         "<blockquote><p>quote   here</p></blockquote>" +
         "<table><thead><tr><th>a     b</th></tr></thead><tbody><tr><td>c   d</td></tr></tbody></table>" +
-        "<p><code>a    b</code></p><pre><code>one\n  two\n</code>",
+        '<p><code>a    b</code></p><pre><code tabindex="-1">one\n  two\n</code>',
     );
   });
 
   it("renders inline and fenced code without parsing markdown inside it", () => {
     const html = render("`**literal** :party:`\n\n```ts\nconst x = 1\n```");
     expect(html).toContain("<code>**literal** :party:</code>");
-    expect(html).toContain('<code class="language-ts">const x = 1');
+    expect(html).toContain(
+      '<code class="language-ts" tabindex="-1">const x = 1',
+    );
     expect(html).not.toContain("<strong>literal</strong>");
   });
 
@@ -861,6 +863,20 @@ describe("Markdown profile mentions", () => {
 });
 
 describe("Markdown inline extensions", () => {
+  it.each(["Agent2", "Agent"])(
+    "keeps numeric boundaries across a mention named %s",
+    (name) => {
+      const html = render(`@${name}:25: @${name} :25: @${name}:party_parrot:`, {
+        participantProfiles: new Map([[mic, { name }]]),
+        emoji: [party, { shortcode: "25", url: party.url }],
+        extensions,
+        media: () => "https://media.test/emoji.png",
+      });
+      expect(html.match(/<button/g)).toHaveLength(3);
+      expect(html.match(/<img/g)).toHaveLength(name === "Agent2" ? 2 : 3);
+    },
+  );
+
   it("preserves custom emoji and plugin prose alongside profile mentions", () => {
     const html = render("**:party_parrot:** PLUGIN @Mic", {
       emoji: [party],
@@ -949,6 +965,27 @@ describe("Markdown inline extensions", () => {
     expect(html.replace(/<[^>]*>/g, "")).toBe(
       content.replace(/^<(.*)>$/, "$1"),
     );
+  });
+
+  it.each([
+    ["let me check example.com", "https://example.com"],
+    ["**builderlab.xyz/a.**", "https://builderlab.xyz/a"],
+    [
+      "see www.example.com and docs.rs.io",
+      "http://www.example.com/",
+      "https://docs.rs.io",
+    ],
+  ])("links a scheme-less host as authored: %s", (content, ...hrefs) => {
+    const html = render(content);
+    expect([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1])).toEqual(
+      hrefs,
+    );
+    expect(html.replace(/<[^>]*>/g, "")).toBe(content.replaceAll("**", ""));
+  });
+
+  it("leaves scheme-less hosts in code and file names as text", () => {
+    const html = render("`example.com` and main.rs");
+    expect(html).not.toContain("href=");
   });
 
   it("keeps emoji-only sizing and readable fallback when media or extensions are unavailable", () => {
@@ -1282,6 +1319,9 @@ describe("code block copy", () => {
 
   it("omits the copy action in noninteractive previews", () => {
     expect(render(fenced, { interactive: false })).not.toContain("<button");
+    expect(render(fenced, { interactive: false })).not.toContain(
+      'tabindex="0"',
+    );
   });
 });
 

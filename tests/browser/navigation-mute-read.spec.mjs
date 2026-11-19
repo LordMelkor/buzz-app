@@ -51,7 +51,7 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   // This fixture's legacy "beta" id cannot carry lifecycle commands, so the
   // menu offers none beside the others.
   await expect(menu.getByRole("menuitem")).toHaveText([
-    "Move channel",
+    "Move to…",
     "Mute",
     "Mark as read",
     "Copy link",
@@ -276,7 +276,7 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   // Solo is always available; attention and lifecycle actions remain divider-free.
   await beta.click({ button: "right" });
   await expect(menu.getByRole("menuitem")).toHaveText([
-    "Move channel",
+    "Move to…",
     "Mute",
     "Mark as unread",
     "Copy link",

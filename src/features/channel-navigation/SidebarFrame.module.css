@@ -1,6 +1,7 @@
 /* Shared sidebar frame and scrollport. Callers own their rows; these rules
    give every row inside the frame the sidebar's geometry and ink. */
 .sidebar {
+  position: relative;
   height: 100%;
   min-width: 0;
   min-height: 0;
@@ -159,4 +160,12 @@
     [aria-current="page"]
   ) {
   --text-standard: var(--text-row-selected);
+}
+/* Room for a floating sidebar action (MessagesSidebar's New menu). */
+.sidebar:has([data-sidebar-floating-action]) .channelList {
+  padding-block-end: calc(
+    var(--size-control) +
+    var(--space-2) +
+    var(--space-3)
+  );
 }

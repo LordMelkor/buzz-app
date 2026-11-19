@@ -223,8 +223,10 @@ for (const action of ["archive", "delete"]) {
         ).toBeFocused();
         await expect(composer).toHaveCount(0);
         await expect(
-          page.getByRole("region", { name: "Archived channel", exact: true }),
-        ).toHaveText("This channel is archived");
+          page
+            .getByRole("region", { name: "Archived channel", exact: true })
+            .getByText(/^This channel is archived\b/),
+        ).toBeVisible();
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
         ).toHaveCount(0);
@@ -247,8 +249,10 @@ for (const action of ["archive", "delete"]) {
         ).toBeVisible();
         await expect(composer).toHaveCount(0);
         await expect(
-          page.getByRole("region", { name: "Archived channel", exact: true }),
-        ).toHaveText("This channel is archived");
+          page
+            .getByRole("region", { name: "Archived channel", exact: true })
+            .getByText(/^This channel is archived\b/),
+        ).toBeVisible();
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
         ).toHaveCount(0);
@@ -297,8 +301,10 @@ for (const action of ["archive", "delete"]) {
         await expect(restore).toBeVisible();
         await expect(composer).toHaveCount(0);
         await expect(
-          page.getByRole("region", { name: "Archived channel", exact: true }),
-        ).toHaveText("This channel is archived");
+          page
+            .getByRole("region", { name: "Archived channel", exact: true })
+            .getByText(/^This channel is archived\b/),
+        ).toBeVisible();
         await expect(
           panel.getByRole("button", { name: "Archive channel", exact: true }),
         ).toHaveCount(0);

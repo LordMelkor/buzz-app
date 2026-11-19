@@ -104,6 +104,7 @@ import {
 } from "../../features/search/people-rank";
 import { peopleRelationships } from "../../features/profiles/relationships";
 import { knownAgentPubkeys } from "../../features/agents/known";
+import { useBestieConversation } from "./bestie-context";
 import { usePersonDirectory } from "./usePersonDirectory";
 import {
   isChannelUuid,
@@ -125,6 +126,10 @@ import {
   verifiedLabel,
 } from "../../features/profiles/name-preference";
 import { sortParticipantNames } from "../../features/identity-names/participant-order";
+import {
+  directMessageWith,
+  messagePerson,
+} from "../../features/direct-messages/message-person";
 
 function conversationName(
   channel: ChannelSummary,
@@ -218,6 +223,7 @@ export function SearchResults({
   currentChannelId,
   onScopeChange,
   openConversation,
+  openNewMessage,
   openAgentSession,
   usageScope,
   sidebarScope,
@@ -241,6 +247,8 @@ export function SearchResults({
     messageId?: string,
     threadRootId?: string,
   ) => void;
+  /** Open a New message draft to someone the viewer has no DM with. */
+  openNewMessage: (pubkey: string) => void;
   /** Open a new Solo chat with one of the viewer's agents. Without it,
    * choosing one of their agents opens a direct message, as for anyone else. */
   openAgentSession?: ((pubkey: string) => void) | undefined;
@@ -1234,6 +1242,7 @@ export function SearchResults({
   // DMs, are where the viewer works with their agents. Removing DM-listed
   // people below only lifts the rest, so a row shown here still shows in the
   // Agents group.
+  const bestieDmId = useBestieConversation(session);
   const newChats = new Map(
     rankPeople(
       people.filter(({ agent }) => agent),
@@ -1405,7 +1414,7 @@ export function SearchResults({
         }
       : destination;
   };
-  // Choosing a person opens your DM with them, starting it when needed.
+  // Choosing a person opens your DM with them, or a draft until the first send.
   const [personOpen, setPersonOpen] = useState<{
     name: string;
     error?: string;
@@ -1428,15 +1437,10 @@ export function SearchResults({
   }, [open]);
   const openPerson = async (pubkey: string, name: string, agent: boolean) => {
     if (personAttempt.current) return;
-    const existing = session.channels
-      .list()
-      .channels.find(
-        (channel) =>
-          channel.channelType === "dm" &&
-          !channel.archived &&
-          channel.participants?.length === 1 &&
-          channel.participants[0] === pubkey,
-      );
+    const existing = directMessageWith(
+      session.channels.list().channels,
+      pubkey,
+    );
     // Opening a DM hidden on this device goes through the confirmed open,
     // which restores its sidebar row. So does any DM opened while the relay's
     // hidden set is not ready, since it may be hidden: before the first load,
@@ -1470,13 +1474,15 @@ export function SearchResults({
     personAttempt.current = { key: personKey(pubkey), controller };
     setPersonOpen({ name });
     try {
-      const channelId = await session.directMessages.open(
-        [pubkey],
+      const destination = await messagePerson(
+        session,
+        pubkey,
         controller.signal,
       );
       if (controller.signal.aborted) return;
       setPersonOpen(undefined);
-      openConversation(channelId);
+      if ("channelId" in destination) openConversation(destination.channelId);
+      else openNewMessage(destination.draftTo);
     } catch (reason) {
       if (!controller.signal.aborted)
         setPersonOpen({
@@ -1500,13 +1506,7 @@ export function SearchResults({
     const matches = matchPerson(person.label, peopleNeedle)?.positions;
     const key = personKey(person.pubkey);
     const newSession = !!openAgentSession && sessionAgents.has(person.pubkey);
-    const dm = list.channels.some(
-      (channel) =>
-        channel.channelType === "dm" &&
-        !channel.archived &&
-        channel.participants?.length === 1 &&
-        channel.participants[0] === person.pubkey,
-    );
+    const dm = !!directMessageWith(list.channels, person.pubkey);
     return {
       key,
       label: person.label,
@@ -1540,10 +1540,45 @@ export function SearchResults({
     .filter(({ person }) => !person.agent)
     .slice(0, PERSON_ROWS)
     .map(personDestination);
-  const agentResults = rankedPeople
+  // The viewer's Bestie is reached through its DM, so that DM follows its
+  // "New chat" row directly rather than its chats; other agents keep #1471's
+  // order. The row finds Bestie by any of its names (with or without "@"), so
+  // its DM comes from the eligible channels, after the hidden-DM rule but
+  // before the label match and the Direct messages cap, and shows only beside
+  // Bestie's shown "New chat" row. Top results keeps the two together where
+  // it cuts the Agents group short.
+  const bestieDm = channels.find(
+    (channel) =>
+      channel.id === bestieDmId &&
+      channel.channelType === "dm" &&
+      !channel.archived &&
+      !sidebarHidden(channel) &&
+      dmAgent(channel),
+  );
+  const bestieKey = personKey(bestieDm?.participants?.[0] ?? "");
+  const agentRows = rankedPeople
     .filter(({ person }) => person.agent)
     .slice(0, PERSON_ROWS)
     .map(personDestination);
+  const bestieShown =
+    !!openAgentSession &&
+    !!bestieDm &&
+    agentRows.some(({ key }) => key === bestieKey);
+  const agentResults = agentRows.flatMap((row) =>
+    bestieShown && bestieDm && row.key === bestieKey
+      ? [
+          row,
+          {
+            ...conversationDestination(bestieDm),
+            score: row.score,
+            attached: true,
+          },
+        ]
+      : [row],
+  );
+  const dmResults = directMessageResults.filter(
+    (channel) => !bestieShown || channel.id !== bestieDm?.id,
+  );
   const suggestions = channels
     .filter(
       (channel) =>
@@ -1865,8 +1900,8 @@ export function SearchResults({
       label: "Direct messages",
       tone: "person" as const,
       icon: UsersIcon,
-      destinations: directMessageResults.map(conversationDestination),
-      best: Math.min(...directMessageResults.map(dmRank)),
+      destinations: dmResults.map(conversationDestination),
+      best: Math.min(...dmResults.map(dmRank)),
     },
     {
       label: "Pages",
@@ -2277,6 +2312,15 @@ export function SearchResults({
           )
         }
         isAction={isSearchAction}
+        completing={
+          pickerPrompt ||
+          showAmbiguousPicker ||
+          showDateChoices ||
+          showChannelPicker
+        }
+        completionPending={
+          showAuthorPicker && !authorAnswer && !authorChoices.length
+        }
         footer={offline}
         peek={{
           // A filter or a conversation's own search asks for messages

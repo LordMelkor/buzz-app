@@ -159,6 +159,7 @@ function setup(messageId = "root") {
       subscribe: () => () => {},
       snapshot: () => undefined,
       attention: () => ({ unread: false }),
+      threadReadThrough: () => -1,
     },
   } as unknown as RelaySession;
   render(
@@ -560,6 +561,47 @@ it("does not silently retarget a deleted parent to the root", () => {
   expect(
     screen.getByRole("button", { name: "Send fixture reply" }),
   ).toBeEnabled();
+});
+/** What the banner reads below its "Replying to …" line after choosing Reply on `target`. */
+function replyBannerText(target: Partial<ChannelMessage>) {
+  setup().update([{ ...row("target", "root"), ...target }]);
+  const reply = document.querySelector('[data-message-id="target"]');
+  fireEvent.click(
+    within(reply as HTMLElement).getByRole("button", { name: /^Reply to / }),
+  );
+  const label = within(screen.getByLabelText("Composer")).getByText(
+    /^Replying to /,
+  );
+  // The text column holds the label and whatever is said about the target.
+  return label.parentElement?.textContent.slice(label.textContent.length);
+}
+it("summarises the reply target as prose, not its Markdown source", () => {
+  expect(
+    replyBannerText({
+      content:
+        "**Status:** two items left, see [the rollout PR](https://github.com/example-org/app/pull/42) and run `just iterate` first.",
+    }),
+  ).toBe(
+    "Status: two items left, see the rollout PR and run just iterate first.",
+  );
+});
+it("names only the author when the reply target has no prose to show", () => {
+  expect(
+    replyBannerText({ content: "[rollout]: https://example.org/rollout" }),
+  ).toBe("");
+});
+it("summarises a diff reply target by its file and description, not its patch", () => {
+  expect(
+    replyBannerText({
+      content:
+        "diff --git a/src/__init__.py b/src/__init__.py\n+Hello *world*\n",
+      diff: {
+        filePath: "src/__init__.py",
+        description: "Greet the world",
+        truncated: false,
+      },
+    }),
+  ).toBe("Diff: src/__init__.py — Greet the world");
 });
 
 it("starts replies with a full author header and only groups replies within the time window", () => {

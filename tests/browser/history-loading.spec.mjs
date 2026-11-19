@@ -258,6 +258,29 @@ test.describe("pages inside one second", () => {
       await expectAnchor(page, before);
     });
 
+  test.describe("split before the first loaded row", () => {
+    // With these keys and send times, the next page lands above the first
+    // loaded row and takes its day divider, byline and group spacing.
+    test.use({ historyRowsPerSecond: 27, fixedKeys: true });
+    test("an older page keeps a reader on the first loaded row", async ({
+      page,
+      app,
+    }) => {
+      const pending = await reading(page, app, 3000);
+      const before = await anchor(page);
+      const first = history(page).locator("[data-message-id]").first();
+      await expect(first).toHaveAttribute("data-message-id", before.id);
+      const height = await history(page).evaluate((e) => e.scrollHeight);
+      pending.release();
+      await expect
+        .poll(() => history(page).evaluate((e) => e.scrollHeight))
+        .toBeGreaterThan(height);
+      await expect(first).not.toHaveAttribute("data-message-id", before.id);
+      await settle(page);
+      await expectAnchor(page, before);
+    });
+  });
+
   test("input after the page lands starts from the reader's row", async ({
     page,
     app,

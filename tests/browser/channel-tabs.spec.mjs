@@ -258,7 +258,7 @@ test("content-opened tabs restore drafts without offering blank-tab creation", a
   await expect(reply).toBeFocused();
   await reply.fill("Alpha reply draft");
   // Shared Beta lists with the viewer's chats.
-  await page.locator('button[data-solo-channel-id="beta"]').click();
+  await page.locator('button[data-solo-destination-id="beta"]').click();
   await expect(workspace).toHaveCount(0);
   await page.locator('button[data-channel-id="alpha"]').click();
   await expect(
@@ -548,7 +548,7 @@ test("Canvas opens once beside Thread and retains its channel draft", async ({
   await edit.click();
   await expect(text).toHaveValue("Channel-scoped draft");
   // Leaving a channel keeps its Canvas tab open for the return.
-  await page.locator('button[data-solo-channel-id="beta"]').click();
+  await page.locator('button[data-solo-destination-id="beta"]').click();
   await expect(workspace).toHaveCount(0);
   await page.locator('button[data-channel-id="alpha"]').click();
   await expect(thread).toBeVisible();

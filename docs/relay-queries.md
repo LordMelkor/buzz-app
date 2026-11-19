@@ -230,8 +230,10 @@ including empty pages whose raw scan cursor does not occur among delivered event
 
 Strict root admission/validation runs once before each load or refresh traversal,
 not between the pages of a retained-range repair: repairing N pages uses one root
-read plus N independently verified window reads. Each separate scrollback load
-still reads the root. Root deletion observed live and access revocation retain their
+read plus N independently verified window reads. A load given a read frontier
+pages until it reaches a reply at or before that time the same way, so the
+older paging that reaches the first unread reply reads the root once. Each separate scrollback
+load still reads the root. Root deletion observed live and access revocation retain their
 existing session paths; a later refresh/load revalidates the root. Neither the root
 lookup nor the page sequence provides an atomic snapshot.
 
@@ -1241,11 +1243,14 @@ outcomes retain their exact signed event and are never transparently re-signed.
 The relay WebSocket keeps retrying transient disconnects and authentication
 timeouts while its session is active. Its exponential delay starts at 250–500ms
 and caps at 15–30s, with jitter on each attempt. A full minute authenticated
-resets that backoff; a brief successful authentication does not. After a close with
-code 1012 (Service Restart) or 1001 (Going Away), as a rolling deploy sends to every
-client at once, the first attempt instead waits a uniform random time up to 10 s
-(more once repeated bounces have grown the backoff past that), so a fleet the relay
-closed at once does not return at once. Authentication rejection
+resets that backoff; a brief successful authentication does not. When a socket that
+had authenticated drops, whether through a deploy's 1012 (Service Restart) or 1001
+(Going Away) close or an abnormal drop, the first attempt instead waits a uniform
+random time up to 10 s (more once repeated bounces have grown the backoff past that),
+so a fleet the relay dropped at once does not return at once. A socket that never
+opened keeps the fast backoff. While that reconnect is scheduled, the background
+recovery retry leaves it alone and retries only failed reads; wake, network, focus,
+sign-in and the Retry button reconnect right away. Authentication rejection
 or signing failure keeps its error visible and reconnects on a slow timer, 60 s
 doubling to 10 minutes, because access or a locked signer can change later; a
 signer that does not match the viewer stays terminal. A route the relay CLOSED

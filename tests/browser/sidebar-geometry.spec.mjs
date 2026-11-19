@@ -36,11 +36,12 @@ test("Team and Solo working badges share the painted row inset", async ({
       generateSecretKey(),
     );
   }
-  const soloRow = page.locator(`[data-solo-menu-id="${solo}"]`);
-  const teamRow = page
-    .locator("[data-channel-sidebar-row]")
-    .filter({ has: page.locator('[data-channel-id="beta"]') });
-  for (const row of [soloRow, teamRow]) {
+  const rows = [solo, "beta"].map((id) =>
+    page.locator("[data-channel-sidebar-row]").filter({
+      has: page.locator(`button[data-channel-id="${id}"]`),
+    }),
+  );
+  for (const row of rows) {
     await expect(row.locator("[data-channel-working]")).toBeVisible();
   }
   await page.mouse.move(0, 0);
@@ -56,7 +57,7 @@ test("Team and Solo working badges share the painted row inset", async ({
       },
       { mode, fontSize },
     );
-    for (const row of [soloRow, teamRow]) {
+    for (const row of rows) {
       await expect
         .poll(() =>
           row.evaluate((element) => {
@@ -144,39 +145,31 @@ function columnsAgainstChannelRow(row) {
   };
 }
 
-// Only the page rows reserve the channel list's gutter. The segmented control
-// still starts, and New still ends, the controls row inside the header's
-// padding, and the control fills the row up to New. Where New wraps below it,
-// the control fills the first line and New starts the second.
-function controlsAgainstHeader(tablist) {
-  const header = [...tablist.closest(".buzz-sidebar-navigation").children].find(
-    (child) => child.contains(tablist),
-  );
-  const row = [...header.children].find((child) => child.contains(tablist));
-  const control = tablist.closest(".buzz-tabs").getBoundingClientRect();
-  const create = row
-    .querySelector('button[aria-label="New"]')
-    .getBoundingClientRect();
-  const box = header.getBoundingClientRect();
-  const padding = getComputedStyle(header);
-  const margin = getComputedStyle(row);
-  const start =
-    box.left + parseFloat(padding.paddingLeft) + parseFloat(margin.marginLeft);
-  const end =
-    box.right -
-    parseFloat(padding.paddingRight) -
-    parseFloat(margin.marginRight);
-  const wrapped = create.top >= control.bottom;
-  const round = (value) => Math.round(value * 4) / 4 + 0;
+const newOptions = (page) =>
+  page.locator('[data-sidebar-section="solo"]').getByRole("button", {
+    name: "New chat in Solo",
+    exact: true,
+  });
+
+// Solo's New chat action stays in its heading at every scale.
+function controlsAgainstHeading(button) {
+  const heading = button.closest(".navigation-section-heading");
+  const summary = heading.querySelector("summary").getBoundingClientRect();
+  const control = button.getBoundingClientRect();
+  const box = heading.getBoundingClientRect();
+  const center = (rect) => rect.top + rect.height / 2;
   return {
-    start: round(control.left - start),
-    fill: round(
-      (wrapped ? end : create.left - parseFloat(margin.columnGap)) -
-        control.right,
-    ),
-    end: round(wrapped ? create.left - start : end - create.right),
+    afterHeadingLabel: control.left >= summary.right - 0.5,
+    centered: Math.abs(center(control) - center(box)) < 1,
+    withinHeading: control.right <= box.right + 0.5,
   };
 }
+
+const expectedHeadingControls = {
+  afterHeadingLabel: true,
+  centered: true,
+  withinHeading: true,
+};
 
 // Page rows reserve their gutter in a scroll container, which clips: their
 // focus rings must still fit inside it and every other clipping ancestor.
@@ -228,7 +221,7 @@ test("the Drafts & sent row shares channel rows' columns and inset without movin
 }) => {
   await page.goto(app.origin);
   const drafts = await draftsWithCount(page);
-  const scope = page.getByRole("tablist", { name: "Navigation scope" });
+  const create = newOptions(page);
   const rows = page
     .getByRole("navigation", { name: "Pages", exact: true })
     .getByRole("button");
@@ -251,9 +244,10 @@ test("the Drafts & sent row shares channel rows' columns and inset without movin
         trailing: 0,
         end: 0,
       });
+    await create.focus();
     await expect
-      .poll(() => scope.evaluate(controlsAgainstHeader))
-      .toEqual({ start: 0, fill: 0, end: 0 });
+      .poll(() => create.evaluate(controlsAgainstHeading))
+      .toEqual(expectedHeadingControls);
     for (const row of [rows.first(), rows.last()]) {
       await row.focus();
       await expect(row).toHaveCSS("outline-style", "solid");
@@ -285,13 +279,14 @@ test("beside a classic scrollbar, the Drafts & sent row ends in channel rows' co
   await expect
     .poll(() => drafts.evaluate(columnsAgainstChannelRow))
     .toMatchObject({ trailing: 0, end: 0 });
+  const create = newOptions(page);
+  await create.focus();
   await expect
-    .poll(() =>
-      page
-        .getByRole("tablist", { name: "Navigation scope" })
-        .evaluate(controlsAgainstHeader),
-    )
-    .toEqual({ start: 0, fill: 0, end: 0 });
+    .poll(() => create.evaluate(controlsAgainstHeading))
+    .toEqual(expectedHeadingControls);
+  await expect
+    .poll(() => drafts.evaluate(columnsAgainstChannelRow))
+    .toMatchObject({ trailing: 0, end: 0 });
 });
 
 test("a presence badge preserves the sidebar avatar center and header insets", async ({
@@ -406,35 +401,47 @@ test("a presence badge preserves the sidebar avatar center and header insets", a
 
 // The sidebar is fluid, like auto layout: rows and headings fill their list,
 // a heading's label fills and its actions hug, and nothing floats over or
-// reserves space for anything else. Every tab, at both width limits, has to
-// hold that without per-tab adjustments.
-test("every sidebar tab fills its rows and keeps heading actions in their row at any width", async ({
+// reserves space for anything else. Workspaces and built-in sections share
+// these bounds even at the narrowest sidebar width.
+test("the unified sidebar fills its rows and keeps heading actions in their row at any width", async ({
   page,
   app,
 }) => {
   await page.goto(app.origin);
   await newChat(page);
-  const soloRow = page.locator(`[data-solo-menu-id="${solo}"]`);
-  // A workspace gives Solo its own collapsible heading with actions.
-  await page.getByRole("tab", { name: "Solo" }).click();
+  const soloRow = page.locator(`button[data-solo-destination-id="${solo}"]`);
+  // A workspace gives this chat a collapsible heading with its own actions.
   await soloRow.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
-  await page.getByRole("menuitem", { name: "New workspace" }).click();
-  const dialog = page.getByRole("dialog");
-  const field = dialog.getByRole("textbox", { name: "Workspace name" });
+  const move = page.getByRole("menuitem", { name: "Move to…", exact: true });
+  await move.focus();
+  await move.press("ArrowRight");
+  await page
+    .getByRole("menuitem", { name: "Create new…", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Move to new workspace" });
+  const field = dialog.getByRole("textbox", { name: "Name", exact: true });
   await expect(field).toBeFocused();
   await field.fill("Work");
   await dialog.getByRole("button", { name: "Create and move" }).click();
   await expect(dialog).not.toBeVisible();
 
   const sidebar = page.getByRole("complementary", { name: "Sidebar" });
+  const workspace = sidebar.locator('[data-sidebar-section^="group:"]').filter({
+    has: page.locator('summary[aria-label="Work"]'),
+  });
+  await expect(
+    workspace.locator(`button[data-channel-id="${solo}"]`),
+  ).toBeVisible();
+  await expect(
+    sidebar.locator(
+      '[data-sidebar-section="channels"] button[data-channel-id="beta"]',
+    ),
+  ).toBeVisible();
   const layout = () =>
     sidebar.evaluate((aside) => {
       const shown = (element) => element.getClientRects().length > 0;
       const rows = [
-        ...aside.querySelectorAll(
-          '[data-channel-sidebar-row], [data-solo-menu-id]:not([data-solo-menu-id^="project-"])',
-        ),
+        ...aside.querySelectorAll("[data-channel-sidebar-row]"),
       ].filter(shown);
       if (!rows.length) return { problems: ["no rows"] };
       let scroller = rows[0];
@@ -460,8 +467,8 @@ test("every sidebar tab fills its rows and keeps heading actions in their row at
         )
         .filter((end) => end !== undefined);
       if (spread(ends) >= 1) problems.push(`rows end ${spread(ends)}px apart`);
-      // Headings share one leading text inset and one trailing action edge.
-      const textStarts = [];
+      // Headings share one leading inset and one trailing action edge.
+      const leadingEdges = [];
       const actionEnds = [];
       for (const box of [
         ...rows,
@@ -526,26 +533,9 @@ test("every sidebar tab fills its rows and keeps heading actions in their row at
             parseFloat(style.paddingInlineStart)
           )
             problems.push(`${name}: reserves trailing space`);
-          // Where the title's first glyph paints, whatever wraps it.
-          const walker = document.createTreeWalker(
-            trigger,
-            NodeFilter.SHOW_TEXT,
-            {
-              // Skip blank and visually hidden text.
-              acceptNode: (node) =>
-                node.data.trim() &&
-                node.parentElement.getBoundingClientRect().width > 1
-                  ? NodeFilter.FILTER_ACCEPT
-                  : NodeFilter.FILTER_SKIP,
-            },
-          );
-          const text = walker.nextNode();
-          if (text) {
-            const range = document.createRange();
-            range.setStart(text, text.data.search(/\S/));
-            range.setEnd(text, text.data.search(/\S/) + 1);
-            textStarts.push(range.getBoundingClientRect().left);
-          }
+          // Starred and custom workspaces can lead with an icon.
+          const leading = trigger.firstElementChild?.firstElementChild;
+          if (leading) leadingEdges.push(leading.getBoundingClientRect().left);
         }
         const buttons =
           actions && !collapsed ? [...actions.children].filter(shown) : [];
@@ -561,21 +551,11 @@ test("every sidebar tab fills its rows and keeps heading actions in their row at
         if (buttons.length)
           actionEnds.push(buttons.at(-1).getBoundingClientRect().right);
       }
-      if (textStarts.length && spread(textStarts) >= 1)
-        problems.push(`heading text starts ${spread(textStarts)}px apart`);
+      if (leadingEdges.length && spread(leadingEdges) >= 1)
+        problems.push(`headings start ${spread(leadingEdges)}px apart`);
       if (actionEnds.length && spread(actionEnds) >= 1)
         problems.push(`heading actions end ${spread(actionEnds)}px apart`);
-      // Where the tab's first row or heading starts: an empty band moves it.
-      const start = Math.min(
-        ...[...rows, ...headings].map((box) => box.getBoundingClientRect().top),
-      );
-      return {
-        end: ends[0],
-        problems,
-        rows: rows.length,
-        headings: headings.length,
-        start: Math.round(start - bounds.top + scroller.scrollTop),
-      };
+      return { problems, rows: rows.length, headings: headings.length };
     });
   const separator = page.getByRole("separator", {
     name: "Resize sidebar",
@@ -584,64 +564,48 @@ test("every sidebar tab fills its rows and keeps heading actions in their row at
   for (const limit of ["Home", "End"]) {
     await separator.focus();
     await separator.press(limit);
-    const starts = {};
-    const ends = [];
-    for (const tab of ["All", "Team", "Solo"]) {
-      await page.getByRole("tab", { name: tab }).click();
-      await page.mouse.move(0, 0);
-      const result = await layout();
-      expect(result.problems, `${tab} at ${limit}`).toEqual([]);
-      expect(result.rows, `${tab} at ${limit}`).toBeGreaterThan(0);
-      expect(result.headings, `${tab} at ${limit}`).toBeGreaterThan(0);
-      ends.push(result.end);
-      starts[tab] = result.start;
-    }
-    // Every tab's rows end on the same edge at a given width.
-    expect(Math.max(...ends) - Math.min(...ends), limit).toBeLessThan(1);
-    // Solo starts its list exactly where Team does.
-    expect(starts.Solo, limit).toBe(starts.Team);
+    await page.mouse.move(0, 0);
+    await expect
+      .poll(async () => (await layout()).problems, {
+        message: `layout at ${limit}`,
+      })
+      .toEqual([]);
+    const result = await layout();
+    expect(result.rows).toBeGreaterThanOrEqual(2);
+    expect(result.headings).toBeGreaterThanOrEqual(6);
   }
 
-  // No heading control is ever invisible: hovering any heading reveals every
-  // button in it, so nothing clickable or focusable hides behind a rule that
-  // can never switch on.
-  for (const tab of ["All", "Team", "Solo"]) {
-    await page.getByRole("tab", { name: tab, exact: true }).click();
-    // Headings leave creation to New beside the tabs.
-    await expect(
-      sidebar.getByRole("button", { name: "New chat or workspace" }),
-    ).toHaveCount(0);
-    const headings = sidebar.locator(".navigation-section-heading");
-    for (let index = 0; index < (await headings.count()); index += 1) {
-      const heading = headings.nth(index);
-      if (!(await heading.isVisible())) continue;
-      await heading.hover();
-      await expect
-        .poll(
-          () =>
-            heading.evaluate((row) =>
-              [...row.querySelectorAll("button")]
-                .filter((button) => button.getClientRects().length)
-                .filter((button) => {
-                  let opacity = 1;
-                  for (let node = button; node; node = node.parentElement)
-                    opacity *= parseFloat(getComputedStyle(node).opacity);
-                  return opacity < 1;
-                })
-                .map((button) => button.getAttribute("aria-label")),
-            ),
-          { message: `${tab} heading ${index} hides a control` },
-        )
-        .toEqual([]);
-    }
+  // Hovering any heading reveals every control that belongs to it.
+  const headings = sidebar.locator(".navigation-section-heading");
+  for (let index = 0; index < (await headings.count()); index += 1) {
+    const heading = headings.nth(index);
+    if (!(await heading.isVisible())) continue;
+    await heading.hover();
+    await expect
+      .poll(
+        () =>
+          heading.evaluate((row) =>
+            [...row.querySelectorAll("button")]
+              .filter((button) => button.getClientRects().length)
+              .filter((button) => {
+                let opacity = 1;
+                for (let node = button; node; node = node.parentElement)
+                  opacity *= parseFloat(getComputedStyle(node).opacity);
+                return opacity < 1;
+              })
+              .map((button) => button.getAttribute("aria-label")),
+          ),
+        { message: `Heading ${index} hides a control` },
+      )
+      .toEqual([]);
   }
-  await page.getByRole("tab", { name: "Solo", exact: true }).click();
 
   // A workspace's actions reveal on hover, centered on its own heading.
-  const nav = page.getByRole("navigation", { name: "Solo conversations" });
-  const work = nav.getByRole("button", { name: "Work", exact: true });
-  const create = nav.getByRole("button", { name: "New chat in Work" });
-  const options = nav.getByRole("button", { name: "Actions for Work" });
+  const work = workspace.locator("summary");
+  const create = workspace.getByRole("button", { name: "New chat in Work" });
+  const options = workspace.getByRole("button", {
+    name: "More actions for Work",
+  });
   // What the eye sees: every ancestor's opacity multiplies.
   const seen = (locator) =>
     locator.evaluate((element) => {

@@ -1465,6 +1465,7 @@
   --size-emoji-display: calc(var(--type-rem) * 2.625);
   --size-emoji-line: calc(var(--type-rem) * 3);
   --size-emoji-inline: calc(var(--type-rem) * 1.375);
+  --size-emoji-picker: calc(var(--type-rem) * 1.75);
 
   --text-primary: var(--text-standard);
   --text-secondary: var(--text-subtle);

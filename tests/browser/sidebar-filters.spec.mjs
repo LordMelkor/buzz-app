@@ -43,7 +43,9 @@ test("section filters save activity windows and recover hidden channels", async 
   // Filters preserve the current channel; choose a different destination from
   // the row whose exclusion this journey exercises, regardless of startup order.
   await page
-    .locator('[data-sidebar-section] [data-channel-id="alpha"]')
+    // A row leaving its startup section stays mounted without a name.
+    .getByRole("navigation", { name: "Subscribed channels" })
+    .getByRole("button", { name: "General", exact: true })
     .click();
   await expect(
     page.getByRole("textbox", { name: "Message #General" }),
@@ -73,12 +75,12 @@ test("section filters save activity windows and recover hidden channels", async 
   };
   const menu = async () => {
     await page
-      .getByRole("button", { name: "More actions for Channels", exact: true })
+      .getByRole("button", { name: "More actions for Team", exact: true })
       .click();
     const trigger = page.getByRole("menuitem", { name: "Filter", exact: true });
     await trigger.hover();
     await expect(
-      page.getByRole("menu", { name: "Filter Channels", exact: true }),
+      page.getByRole("menu", { name: "Filter Team", exact: true }),
     ).toBeVisible();
   };
   const active = async () => {
@@ -366,13 +368,15 @@ test("failed activity reads explain the filter and recover on Retry", async ({
   // Filters preserve the current channel; choose a different destination from
   // the row whose exclusion this journey exercises, regardless of startup order.
   await page
-    .locator('[data-sidebar-section] [data-channel-id="alpha"]')
+    // A row leaving its startup section stays mounted without a name.
+    .getByRole("navigation", { name: "Subscribed channels" })
+    .getByRole("button", { name: "General", exact: true })
     .click();
   await expect(
     page.getByRole("textbox", { name: "Message #General" }),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "More actions for Channels", exact: true })
+    .getByRole("button", { name: "More actions for Team", exact: true })
     .click();
   await page.getByRole("menuitem", { name: "Filter", exact: true }).hover();
   await page.getByRole("menuitemradio", { name: /Active in the last/ }).click();
@@ -450,7 +454,9 @@ test.describe("filter action focus", () => {
     // Filters preserve the current channel; keep it away from the row whose
     // exclusion this journey exercises.
     await page
-      .locator('[data-sidebar-section] [data-channel-id="alpha"]')
+      // A row leaving its startup section stays mounted without a name.
+      .getByRole("navigation", { name: "Subscribed channels" })
+      .getByRole("button", { name: "General", exact: true })
       .click();
     await expect(
       page.getByRole("textbox", { name: "Message #General" }),
@@ -468,7 +474,7 @@ test.describe("filter action focus", () => {
     await expect(row).toBeVisible();
     // Unreads keeps only rows with observed unread history; wait for it first.
     await expect(row.getByRole("img", { name: /unread/ })).toBeVisible();
-    await filter(channels, "Channels", "Unreads");
+    await filter(channels, "Team", "Unreads");
     await expect(row).toBeVisible();
     await row.click({ button: "right" });
     await page
@@ -477,12 +483,10 @@ test.describe("filter action focus", () => {
     await expect(row).toHaveCount(0);
     await expect(channels.locator("details > summary")).toBeFocused();
     await filter(work, "Work", "Unreads");
-    await filter(channels, "Channels", "All");
+    await filter(channels, "Team", "All");
     await expect(row).toBeVisible();
     await row.click({ button: "right" });
-    await page
-      .getByRole("menuitem", { name: "Move channel", exact: true })
-      .hover();
+    await page.getByRole("menuitem", { name: "Move to…", exact: true }).hover();
     await page
       .getByRole("menuitemradio", { name: "Work", exact: true })
       .click();

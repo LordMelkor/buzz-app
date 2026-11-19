@@ -4,6 +4,7 @@ import { isBestiePage, useBestieConversation } from "./bestie-context";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -28,13 +29,18 @@ import { conversationFocusTarget } from "../focus-navigation";
 import { orderPages, shellPresentation } from "./presentation";
 import { matchName } from "../../features/search/match";
 import {
+  DEFAULT_SEARCH_STEPS,
   SearchChoices,
+  SearchStepsContext,
   type SearchInputProps,
   type SearchDestination,
   type SearchPlace,
 } from "./SearchChoices";
 import { SearchResults } from "./SearchResults";
-import { soloDraftTarget } from "../../features/channel-navigation/routes";
+import {
+  newMessageTarget,
+  soloDraftTarget,
+} from "../../features/channel-navigation/routes";
 import { readView, writeView } from "../../shared/view-state";
 import {
   hasDraftContent,
@@ -65,6 +71,8 @@ const SEARCH_BINDING: KeyBinding = { key: "k", mod: true };
 const SEARCH_BINDINGS = [SEARCH_BINDING, { key: "t", mod: true }];
 const CONVERSATION_SEARCH_ID = "conversation-search";
 const CONVERSATION_SEARCH_BINDING: KeyBinding = { key: "f", mod: true };
+const PREVIOUS_RESULT_ID = "search-previous-result";
+const NEXT_RESULT_ID = "search-next-result";
 const NO_OVERRIDES: ShortcutBindingsSnapshot = { overrides: {}, error: null };
 const noSubscribe = () => () => {};
 const noOverrides = () => NO_OVERRIDES;
@@ -204,12 +212,46 @@ export function PageSearch({
       }),
     [services, currentChannelId, beginScoped],
   );
+  // The search field matches these itself: Base UI dialogs stop Up and Down
+  // before they reach the window dispatcher. Registering them lists them in
+  // Settings and saves rebinds; as local rows they never reserve or run.
+  useEffect(() => {
+    if (!services) return;
+    const remove = (
+      [
+        [
+          PREVIOUS_RESULT_ID,
+          "Previous search result",
+          DEFAULT_SEARCH_STEPS.previous,
+        ],
+        [NEXT_RESULT_ID, "Next search result", DEFAULT_SEARCH_STEPS.next],
+      ] as const
+    ).map(([id, title, binding], index) =>
+      services.shortcuts.registerHost(
+        {
+          id,
+          title,
+          binding,
+          order: HOST_SHORTCUT_ORDER.search + 3 + index,
+          run: () => {},
+        },
+        { local: true },
+      ),
+    );
+    return () => {
+      for (const dispose of remove) dispose();
+    };
+  }, [services]);
   // The hint follows the person's rebind, derived from the same binding object.
   const { overrides } = useSyncExternalStore(
     services?.shortcutBindings.subscribe ?? noSubscribe,
     services?.shortcutBindings.snapshot ?? noOverrides,
   );
   const binding = overrides[SEARCH_ID] ?? SEARCH_BINDING;
+  const previous =
+    overrides[PREVIOUS_RESULT_ID] ?? DEFAULT_SEARCH_STEPS.previous;
+  const next = overrides[NEXT_RESULT_ID] ?? DEFAULT_SEARCH_STEPS.next;
+  const steps = useMemo(() => ({ previous, next }), [previous, next]);
   const apple = isApplePlatform(navigator.platform);
   // Every search surface reads pages from here, so rank and underline them
   // here too: the disconnected and personal-space views show this list as is.
@@ -260,7 +302,7 @@ export function PageSearch({
       },
     }));
   return (
-    <>
+    <SearchStepsContext.Provider value={steps}>
       <Button
         ref={trigger}
         variant="inverted"
@@ -366,7 +408,7 @@ export function PageSearch({
             />
           ))}
       </Dialog>
-    </>
+    </SearchStepsContext.Provider>
   );
 }
 
@@ -561,6 +603,11 @@ function CommunitySearch({
         views={views}
         offline={saved ? offline : undefined}
         openConversation={openConversation}
+        openNewMessage={(pubkey) => {
+          if (!current()) return;
+          close();
+          void services.navigation.open(newMessageTarget(scope, pubkey));
+        }}
         openAsk={(question, agent) => {
           const current = services.communities.snapshot();
           const relay = services.communities.relay.snapshot();

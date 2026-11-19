@@ -297,8 +297,13 @@ test("long recovery stays above the composer at enlarged text size", async ({
 async function openDiagnostics(page) {
   // A quick reopen can retain the outgoing settings DOM during its exit.
   const summary = page.getByText("Diagnostics", { exact: true });
-  if ((await summary.locator("..").getAttribute("open")) === null)
-    await summary.click();
+  // A recovery toast can cover the bottom of Channel settings.
+  if ((await summary.locator("..").getAttribute("open")) === null) {
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    // Move the mouse off Channel actions, which a wider viewport puts over Activity's hover preview.
+    await summary.hover({ force: true });
+  }
   await expect(summary.locator("..")).toHaveAttribute("open", "");
 }
 

@@ -74,6 +74,7 @@ export function createChannelLifecycle({
   canAccess,
   acceptDiscovery,
   removed,
+  deleted,
 }: {
   reader?: RelayReader | undefined;
   writer?: RelayWriter | undefined;
@@ -82,6 +83,7 @@ export function createChannelLifecycle({
   canAccess(id: string): boolean;
   acceptDiscovery(events: readonly RelayEvent[]): void;
   removed(id: string): void;
+  deleted?: (id: string) => void;
 }) {
   let closed = false;
   let busy = false;
@@ -581,6 +583,7 @@ export function createChannelLifecycle({
                 }
               } else if (!record) {
                 removed(id);
+                if (action === "delete") deleted?.(id);
                 for (const listener of removalListeners) listener(id);
                 return;
               }

@@ -1,5 +1,7 @@
 import { matchRank } from "../../features/search/match";
 import {
+  createContext,
+  useContext,
   useLayoutEffect,
   useRef,
   useEffect,
@@ -17,7 +19,11 @@ import { Badge } from "../../shared/design-system/ui/Badge";
 import { Button } from "../../shared/design-system/ui/Button";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { SearchField } from "../../shared/design-system/ui/SearchField";
-import { isApplePlatform } from "../../features/shortcuts/format";
+import { matches, type KeyBinding } from "../../features/shortcuts/bindings";
+import {
+  formatBinding,
+  isApplePlatform,
+} from "../../features/shortcuts/format";
 import { MatchedLabel } from "../../features/search/MatchedLabel";
 import { useSearchHighlight } from "../../features/search/use-search-highlight";
 import { channelIconClass } from "../../shared/inline-reference";
@@ -67,6 +73,10 @@ export type SearchDestination = {
   /** What choosing the row does, said in a preview that has nothing else to
    * show, e.g. "Open Activity". */
   action?: string | undefined;
+  /** Stays with the row above it: a group cut short in Top results keeps
+   * the two together, one row past its usual limit if need be. A cut that
+   * hides the row above still shows this one, after the rows shown. */
+  attached?: boolean | undefined;
   run: () => void;
 };
 
@@ -137,6 +147,15 @@ export type SearchPeek = {
    * with the reason shown while it's chosen. */
   unsearched?: Readonly<Record<string, ReactNode>> | undefined;
 };
+
+/** The person's keys for the previous and next result, which the field
+ * matches and the key hints show. */
+export type SearchSteps = { previous: KeyBinding; next: KeyBinding };
+export const DEFAULT_SEARCH_STEPS: SearchSteps = {
+  previous: { key: "ArrowUp" },
+  next: { key: "ArrowDown" },
+};
+export const SearchStepsContext = createContext(DEFAULT_SEARCH_STEPS);
 
 /** Top results shows this many rows of its first group, and of the rest. */
 const LEAD_ROWS = 5;
@@ -225,6 +244,8 @@ export function SearchChoices({
   highlightEmpty = false,
   onRowsShown,
   peek,
+  completing = false,
+  completionPending = false,
 }: SearchInputProps & {
   groups: readonly SearchGroup[];
   children?: ReactNode;
@@ -245,6 +266,12 @@ export function SearchChoices({
    * reading only for the rows someone can see. */
   onRowsShown?: ((keys: readonly string[]) => void) | undefined;
   peek?: SearchPeek | undefined;
+  /** The rows complete an unfinished filter, such as `in:` or `from:`, so
+   * Tab chooses the highlighted one as Enter does. */
+  completing?: boolean;
+  /** The suggestions that would complete the filter are still loading, so
+   * Tab stays in the field rather than leaving before they arrive. */
+  completionPending?: boolean;
 }) {
   const palette = useRef<HTMLDivElement>(null);
   // A hidden preview would still read; it mounts only where it shows.
@@ -364,7 +391,8 @@ export function SearchChoices({
             const place = ranked.indexOf(group);
             if (place < 0) return group;
             const rows = resultRows(group);
-            const limit = place === 0 ? LEAD_ROWS : GROUP_ROWS;
+            const cap = place === 0 ? LEAD_ROWS : GROUP_ROWS;
+            const limit = rows[cap]?.attached ? cap + 1 : cap;
             if (rows.length <= limit && !group.count)
               return { ...group, destinations: rows };
             truncated.set(group.label, rows.length);
@@ -373,7 +401,10 @@ export function SearchChoices({
             const count = countOf(group);
             return {
               ...group,
-              destinations: rows.slice(0, limit),
+              destinations: [
+                ...rows.slice(0, limit),
+                ...rows.slice(limit).filter((row) => row.attached),
+              ],
               total: /^\d+$/.test(count) ? Number(count) : -1,
             };
           });
@@ -414,6 +445,7 @@ export function SearchChoices({
   });
   const selected = highlight.active;
   const moved = previewing && highlight.moved;
+  const steps = useContext(SearchStepsContext);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Freezes the order just shown, once per text.
   useLayoutEffect(() => {
     if (!moved || frozen.current) return;
@@ -811,6 +843,29 @@ export function SearchChoices({
           autoComplete="off"
           maxLength={256}
           onKeyDown={(event) => {
+            const native = event.nativeEvent;
+            // The person's result keys come first, so no other key in the
+            // field takes a chord Settings accepted for them. Bare Up and
+            // Down always move too, as a combobox's arrows do. As in the
+            // dispatcher, composition and AltGr never match.
+            if (!native.isComposing && native.keyCode !== 229) {
+              const step = (
+                [
+                  [steps.next, true],
+                  [steps.previous, false],
+                  [DEFAULT_SEARCH_STEPS.next, true],
+                  [DEFAULT_SEARCH_STEPS.previous, false],
+                ] as const
+              ).find(([binding]) => matches([binding], native, apple));
+              if (step && !native.getModifierState("AltGraph")) {
+                event.preventDefault();
+                restore.current = 0;
+                highlight.move(step[1]);
+                return;
+              }
+              // Other arrow chords, such as Shift+Down, edit the text.
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") return;
+            }
             const shortcutNumber = /^Digit([1-9])$/.exec(event.code)?.[1];
             if (
               !event.nativeEvent.isComposing &&
@@ -838,8 +893,28 @@ export function SearchChoices({
               onEditLastChip?.();
               return;
             }
-            if (event.key === "ArrowDown" || event.key === "ArrowUp")
-              restore.current = 0;
+            // Tab completes a filter with its highlighted row, and stays in
+            // the field while its suggestions are still loading. With nothing
+            // to complete it moves on, so other controls stay in reach.
+            if (
+              completing &&
+              event.key === "Tab" &&
+              !event.shiftKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              if (keys.includes(selected)) {
+                event.preventDefault();
+                if (!event.repeat) highlight.choose(selected);
+                return;
+              }
+              if (completionPending) {
+                event.preventDefault();
+                return;
+              }
+            }
             // Tab moves between groups, and stays in the field while results
             // are still landing. Past the first or last group it moves on as
             // Tab does, so retry and other controls stay in reach.
@@ -1151,8 +1226,8 @@ export function SearchChoices({
           aria-hidden="true"
         >
           <span>
-            <kbd>↑</kbd>
-            <kbd>↓</kbd> Move
+            <kbd>{formatBinding(steps.previous, apple).text}</kbd>
+            <kbd>{formatBinding(steps.next, apple).text}</kbd> Move
           </span>
           {ranked.length > 0 && (
             <span>

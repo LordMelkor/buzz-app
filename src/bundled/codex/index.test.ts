@@ -94,6 +94,7 @@ it("adopts and carries an agent's instructions and workspace, nothing else", () 
   expect(type?.describeMigration?.(saved)).toEqual([
     { id: "model", label: "Model", isOverride: false },
     { id: "thinking", label: "Thinking", isOverride: false },
+    { id: "voice", label: "Voice", isOverride: false },
     {
       id: "sessions",
       label: "Sessions",
@@ -107,10 +108,12 @@ it("adopts and carries an agent's instructions and workspace, nothing else", () 
       model: "gpt-5",
       effort: "high",
       scope: "channel",
+      voice: "maple",
     }),
   ).toEqual([
     { id: "model", label: "Model", isOverride: true },
     { id: "thinking", label: "Thinking", isOverride: true },
+    { id: "voice", label: "Voice", isOverride: true },
     {
       id: "sessions",
       label: "Sessions",

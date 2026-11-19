@@ -95,7 +95,7 @@ export class SoloNavigationService extends Service implements SoloNavigation {
     this.workspaces = createSoloWorkspaces(
       (binding) =>
         sameBinding(this.binding, binding)
-          ? this.session?.soloPreferences
+          ? this.session?.sidebarPreferences
           : undefined,
       relay.subscribe,
     );

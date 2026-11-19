@@ -31,28 +31,30 @@ it("identifies custom and general channel sections", () => {
   expect(isChannelSectionKey("forums")).toBe(false);
   expect(isChannelSectionKey("dms")).toBe(false);
 });
-it("allows channel and DM drops into Starred and groups, and each back to its own section", () => {
+it("allows every kind in Starred and workspaces, and each kind in its home section", () => {
   for (const [key, kinds] of [
-    ["starred", ["channel", "dm"]],
-    ["group:work", ["channel", "dm"]],
+    ["starred", ["solo", "channel", "forum", "dm"]],
+    ["group:work", ["solo", "channel", "forum", "dm"]],
+    ["solo", ["solo"]],
     ["channels", ["channel"]],
     ["dms", ["dm"]],
-    ["forums", []],
+    ["forums", ["forum"]],
   ] as const)
     expect(sidebarDropRowKinds(key)).toEqual(kinds);
   expect(isChannelSectionKey("starred")).toBe(false);
 });
-it("hides empty Starred and shows it only for an authorized starred row", () => {
-  expect(sidebarSections([]).some(({ key }) => key === "starred")).toBe(false);
+it("keeps Starred visible and lists only authorized starred rows", () => {
+  expect(sidebarSections([])[0]).toMatchObject({ key: "starred", rows: [] });
   const preferences = {
     sections: [],
     assignments: {},
     starred: ["alpha"],
     muted: [],
   };
-  expect(
-    sidebarSections([], preferences).some(({ key }) => key === "starred"),
-  ).toBe(false);
+  expect(sidebarSections([], preferences)[0]).toMatchObject({
+    key: "starred",
+    rows: [],
+  });
   expect(sidebarSections([row("alpha")], preferences)[0]).toMatchObject({
     key: "starred",
     rows: [row("alpha")],
@@ -116,10 +118,11 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       ).toHaveLength(1);
   };
   const expectedProjection = [
-    { key: "starred", ids: ["solo", "star", "starred-dm"] },
+    { key: "starred", ids: ["forum", "solo", "star", "starred-dm"] },
     { key: "group:channels", ids: ["grouped-dm", "work"] },
+    { key: "solo", ids: [] },
     { key: "channels", ids: ["other"] },
-    { key: "forums", ids: ["forum"] },
+    { key: "forums", ids: [] },
     { key: "dms", ids: ["home-dm"] },
   ];
   expect(project(roster, new Set(["hidden-dm"]))).toEqual(expectedProjection);
@@ -142,9 +145,12 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       roster.filter((channel) => channel.id !== "starred-dm"),
       new Set(["hidden-dm"]),
     ).find(({ key }) => key === "starred")?.ids,
-  ).toEqual(["solo", "star"]);
+  ).toEqual(["forum", "solo", "star"]);
   expect(sidebarSections([])).toEqual([
-    { key: "channels", title: "Channels", icon: undefined, rows: [] },
+    { key: "starred", title: "Starred", icon: undefined, rows: [] },
+    { key: "solo", title: "Solo", icon: undefined, rows: [] },
+    { key: "channels", title: "Team", icon: undefined, rows: [] },
+    { key: "forums", title: "Forums", icon: undefined, rows: [] },
     { key: "dms", title: "Direct messages", icon: undefined, rows: [] },
   ]);
   expect(
@@ -152,8 +158,8 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       (section) => section.rows.map((channel) => channel.id),
     ),
   ).toEqual([
-    "other",
     "solo",
+    "other",
     "star",
     "work",
     "forum",
@@ -200,14 +206,18 @@ it("sorts every section independently with deterministic inactive and tie fallba
       section.rows.map((channel) => channel.id),
     ]),
   ).toEqual([
+    ["starred", []],
     ["group:work", ["new", "a-id", "z-id", "quiet-a", "quiet-b"]],
+    ["solo", []],
     ["channels", []],
     ["forums", ["forum-new", "forum-old"]],
     ["dms", []],
   ]);
-  expect(sidebarSections(roster)[0]?.rows.map((channel) => channel.id)).toEqual(
-    ["quiet-a", "quiet-b", "a-id", "z-id", "new"],
-  );
+  expect(
+    sidebarSections(roster)
+      .find(({ key }) => key === "channels")
+      ?.rows.map((channel) => channel.id),
+  ).toEqual(["quiet-a", "quiet-b", "a-id", "z-id", "new"]);
 });
 it("Star projection is exclusive and retains empty saved groups", () => {
   const channels = [row("alpha"), row("beta")];
@@ -225,13 +235,17 @@ it("Star projection is exclusive and retains empty saved groups", () => {
   expect(placements(saved.starred)).toEqual([
     ["starred", ["alpha", "beta"]],
     ["group:work", []],
+    ["solo", []],
     ["channels", []],
+    ["forums", []],
     ["dms", []],
   ]);
   expect(placements(["alpha"])).toEqual([
     ["starred", ["alpha"]],
     ["group:work", ["beta"]],
+    ["solo", []],
     ["channels", []],
+    ["forums", []],
     ["dms", []],
   ]);
   expect(saved.assignments).toEqual({ beta: "work" });
@@ -269,7 +283,9 @@ it.each(["starred", "section:work", "channels", "forums", "dms"])(
       sort: { [key]: "recent" },
     });
     expect(
-      sections.map((section) => section.rows.map((row) => row.name)),
+      sections
+        .filter((section) => section.key !== "solo")
+        .map((section) => section.rows.map((row) => row.name)),
     ).toEqual(
       keys.map((section) =>
         section === key ? ["Zulu", "Alpha"] : ["Alpha", "Zulu"],

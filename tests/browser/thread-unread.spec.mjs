@@ -473,7 +473,7 @@ test("thread buttons show observed unread independently, clear only after readin
   await openChannelDetails(page);
   await page.getByText("Diagnostics", { exact: true }).click();
   await page
-    .getByRole("button", { name: "Mark unread on this device", exact: true })
+    .getByRole("button", { name: "Mark as unread on this device", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Close Channel settings tab", exact: true })

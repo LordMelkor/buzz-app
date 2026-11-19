@@ -16,7 +16,6 @@ import { moveMessageSelection } from "./message-selection";
 import { MessageSelection } from "./use-message-selection";
 import { MessageEditScope } from "./MessageEditScope";
 import { useMessageSelectionCopy } from "./selection-copy";
-import { SelectionQuote } from "./SelectionQuote";
 import { ReplySummary } from "./ReplySummary";
 import { ReplyBranch } from "./ReplyBranch";
 import { replyTree } from "./reply-tree";
@@ -47,7 +46,8 @@ import {
   type ThreadView,
 } from "../relay/threads";
 import { useProfileGeneration, useRowProfiles } from "../relay/react";
-import { rowProfileIds } from "../relay/membership";
+import { diffPreview, rowProfileIds } from "../relay/membership";
+import { plainText } from "../notifications/content";
 import { MessageRow, type MessageLinkOrigin } from "./MessageRow";
 import { MessageContextMenus } from "./MessageActionBar";
 import {
@@ -1081,16 +1081,21 @@ function ThreadMessages({
       (row) => row && session.unread.attention(channelId, row.id).unread,
     ).length;
     const unreadOlder = (threadUnread?.observedCount ?? 0) > loadedUnread;
+    const readThrough =
+      since ?? session.unread.threadReadThrough(channelId, messageId);
     if (
       known &&
       snapshot.direction === "older" &&
       (snapshot.canLoadMore || snapshot.limited) &&
       oldest &&
-      (unreadOlder ||
-        oldest.createdAt >
-          (since ?? session.unread.threadReadThrough(channelId, messageId)))
+      (unreadOlder || oldest.createdAt > readThrough)
     ) {
-      if (snapshot.canLoadMore) void view.loadMore();
+      // Page to the frontier in one read, not one page per decision. Read
+      // per page: a read synced mid-load can move it.
+      if (snapshot.canLoadMore)
+        void view.loadMore(
+          () => since ?? session.unread.threadReadThrough(channelId, messageId),
+        );
       // Past the page limit the first unread reply stays unknown.
       else setBoundary({ ...boundary, id: null });
       return;
@@ -1915,7 +1920,9 @@ function ThreadMessages({
               <ReplySummary
                 count={descendants.length}
                 participants={[
-                  ...new Set(descendants.map((reply) => reply.authorId)),
+                  ...new Set(
+                    descendants.map((reply) => reply.authorId).reverse(),
+                  ),
                 ]}
                 profiles={profiles}
                 agentPubkeys={agentPubkeys}
@@ -1951,6 +1958,20 @@ function ThreadMessages({
     });
   }
   const selectedParent = snapshot.replies.find((row) => row.id === replyParent);
+  // The banner's one line about its target. `plainText` flattens CommonMark,
+  // replaces control characters and cuts the result at 200 characters; GFM
+  // that the row renders (strikethrough, tables, task-list boxes) still
+  // reaches the banner as source. A diff's content is a raw patch, never
+  // Markdown, so it gets the sidebar's summary instead. `diffPreview` prints
+  // the diff's file and description tags as sent: no length bound and no
+  // control-character cleanup.
+  const selectedParentText = useMemo(
+    () =>
+      selectedParent?.diff
+        ? diffPreview(selectedParent.diff)
+        : plainText(selectedParent?.content ?? ""),
+    [selectedParent?.diff, selectedParent?.content],
+  );
   const captureOlderAnchor = (element: HTMLElement) => {
     follow.current = false;
     const row = [
@@ -2272,8 +2293,12 @@ function ThreadMessages({
         />
       </section>
       {/* After the scroller, so its ref is attached when this registers. */}
-      <MessageSelection list={scroller} rows={rows} session={session} />
-      <SelectionQuote list={scroller} />
+      <MessageSelection
+        list={scroller}
+        rows={rows}
+        session={session}
+        conversationId={rootId}
+      />
       {preview && (
         <ChannelJoinNotice
           ready={
@@ -2334,7 +2359,7 @@ function ThreadMessages({
                   />
                   <div>
                     <span>Replying to {senderName(selectedParent)}</span>
-                    <p>{selectedParent.content}</p>
+                    {selectedParentText && <p>{selectedParentText}</p>}
                   </div>
                   <IconButton
                     size="sm"

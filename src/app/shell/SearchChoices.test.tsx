@@ -10,7 +10,13 @@ import {
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ChatCircleIcon } from "../../shared/design-system/icons";
-import { SearchChoices, type SearchViews } from "./SearchChoices";
+import {
+  SearchChoices,
+  SearchStepsContext,
+  type SearchDestination,
+  type SearchSteps,
+  type SearchViews,
+} from "./SearchChoices";
 
 const ROW = 40;
 const VIEW = 200;
@@ -414,6 +420,77 @@ it("opens the whole result group from its header while keeping typing focus", ()
   expect(field).toHaveFocus();
 });
 
+it("keeps an attached row with the row above it where Top results cuts a group", () => {
+  const attach = (rows: typeof destinations, at: number) =>
+    rows.map((row, index) => (index === at ? { ...row, attached: true } : row));
+  render(
+    <SearchChoices
+      query="channel"
+      onQueryChange={() => {}}
+      input={createRef<HTMLInputElement>()}
+      groups={[
+        // The lead group shows five rows; the sixth is attached to the fifth.
+        { label: "Agents", destinations: attach(destinations.slice(0, 6), 5) },
+        // Later groups show three rows; the fourth is attached to the third.
+        {
+          label: "Channels",
+          destinations: attach(destinations.slice(6, 12), 3),
+        },
+        // Unattached rows past the limit are still cut.
+        { label: "Pages", destinations: destinations.slice(12, 17) },
+      ]}
+      peek={{ ranked: true, preview: () => null }}
+    />,
+  );
+  const shown = (label: string) =>
+    within(screen.getByRole("group", { name: label }))
+      .getAllByRole("option")
+      .map((row) => row.textContent);
+  expect(shown("Agents")).toEqual(
+    destinations.slice(0, 6).map(({ label }) => label),
+  );
+  expect(
+    within(screen.getByRole("group", { name: "Agents" })).queryByRole(
+      "button",
+      { name: "Show all Agents" },
+    ),
+  ).toBeNull();
+  expect(shown("Channels")).toEqual(
+    destinations.slice(6, 10).map(({ label }) => label),
+  );
+  expect(shown("Pages")).toEqual(
+    destinations.slice(12, 15).map(({ label }) => label),
+  );
+});
+
+it("still shows an attached row when Top results cuts the row above it", () => {
+  // Five rows show; the row above the attached one (index 6) is cut.
+  const rows = destinations
+    .slice(0, 8)
+    .map((row, index) => (index === 6 ? { ...row, attached: true } : row));
+  render(
+    <SearchChoices
+      query="channel"
+      onQueryChange={() => {}}
+      input={createRef<HTMLInputElement>()}
+      groups={[{ label: "Agents", destinations: rows }]}
+      peek={{ ranked: true, preview: () => null }}
+    />,
+  );
+  const group = within(screen.getByRole("group", { name: "Agents" }));
+  expect(group.getAllByRole("option").map((row) => row.textContent)).toEqual([
+    ...destinations.slice(0, 5).map(({ label }) => label),
+    "channel-6",
+  ]);
+  // The rest are still a click away, in their own order.
+  fireEvent.click(group.getByRole("button", { name: "Show all Agents" }));
+  expect(
+    within(screen.getByRole("group", { name: "Agents" }))
+      .getAllByRole("option")
+      .map((row) => row.textContent),
+  ).toEqual(destinations.slice(0, 8).map(({ label }) => label));
+});
+
 it("keeps a chosen group while an edited query's results land, and lets it go if they settle without it", () => {
   const peekOf = (query: string, rows: number, busy: boolean) => (
     <SearchChoices
@@ -530,4 +607,89 @@ it("lets Escape through once Peek turns off under a chosen group", () => {
   expect(
     screen.getByRole("button", { pressed: true }).textContent ?? "",
   ).toMatch(/^Top results/);
+});
+
+it("gives the person's result keys precedence over the field's other keys, consumes them without rows and ignores AltGr", () => {
+  const onEditLastChip = vi.fn();
+  const field = (
+    steps: SearchSteps,
+    rows: readonly SearchDestination[] = destinations.slice(0, 3),
+  ) => (
+    <SearchStepsContext.Provider value={steps}>
+      <SearchChoices
+        query="channel"
+        onQueryChange={() => {}}
+        input={createRef<HTMLElement>()}
+        chips={[
+          {
+            operand: "from:ada",
+            text: "from:@ada",
+            edit: "from:@ada",
+            label: "Remove from:@ada",
+          },
+        ]}
+        onEditLastChip={onEditLastChip}
+        groups={[{ label: "Channels", destinations: rows }]}
+      />
+    </SearchStepsContext.Provider>
+  );
+  const highlighted = () =>
+    screen.getByRole("option", { selected: true }).textContent;
+  // Ctrl+Shift+1 (⌘⇧1 on a Mac) otherwise opens the first row.
+  const view = render(
+    field({
+      previous: { key: "ArrowUp" },
+      next: { key: "!", mod: true, shift: true },
+    }),
+  );
+  const combobox = () => screen.getByRole("combobox");
+  expect(highlighted()).toContain("channel-0");
+  expect(
+    fireEvent.keyDown(combobox(), {
+      key: "!",
+      code: "Digit1",
+      ctrlKey: true,
+      shiftKey: true,
+    }),
+  ).toBe(false);
+  expect(run).not.toHaveBeenCalled();
+  expect(highlighted()).toContain("channel-1");
+  // Ctrl+Backspace at the start of the text otherwise edits the last chip.
+  view.rerender(
+    field({
+      previous: { key: "Backspace", mod: true },
+      next: { key: "ArrowDown" },
+    }),
+  );
+  const input = combobox() as HTMLInputElement;
+  input.setSelectionRange(0, 0);
+  fireEvent.keyDown(input, { key: "Backspace", ctrlKey: true });
+  expect(onEditLastChip).not.toHaveBeenCalled();
+  expect(highlighted()).toContain("channel-0");
+  // AltGr can report Control and Alt; it types a character, never a step.
+  view.rerender(
+    field({
+      previous: { key: "ArrowUp" },
+      next: { key: "@", mod: true, alt: true },
+    }),
+  );
+  expect(
+    fireEvent.keyDown(combobox(), {
+      key: "@",
+      ctrlKey: true,
+      altKey: true,
+      modifierAltGraph: true,
+    } as KeyboardEventInit),
+  ).toBe(true);
+  expect(highlighted()).toContain("channel-0");
+  // With no rows, a matched key is still consumed, so it never edits.
+  view.rerender(
+    field(
+      { previous: { key: "k", mod: true }, next: { key: "ArrowDown" } },
+      [],
+    ),
+  );
+  expect(fireEvent.keyDown(combobox(), { key: "k", ctrlKey: true })).toBe(
+    false,
+  );
 });

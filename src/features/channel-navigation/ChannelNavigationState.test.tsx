@@ -24,6 +24,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   localStorage.clear();
 });
 function fixture(
@@ -342,6 +343,10 @@ it("retires only the originating header confirmation and rejects its deferred re
 });
 
 it("runs a chat archive's Undo through the lifecycle gate, after any action holding it", async () => {
+  // The slow-Undo notice is due after the dialog's own 1 s timer; drive that
+  // clock so a busy runner cannot race it.
+  vi.useFakeTimers();
+  const settle = () => act(() => vi.advanceTimersByTimeAsync(0));
   const pending = new Map<string, () => void>();
   const run = vi.fn(
     (action: string, id: string) =>
@@ -351,14 +356,17 @@ it("runs a chat archive's Undo through the lifecycle gate, after any action hold
   const planning = { id: "a", name: "Planning", channelType: "solo" as const };
   const roadmap = { id: "b", name: "Roadmap", channelType: "solo" as const };
   act(() => view.result.current.openLifecycle(planning, "archive"));
-  await waitFor(() => expect(pending.has("archive:a")).toBe(true));
+  await settle();
+  expect(pending.has("archive:a")).toBe(true);
   await act(async () => pending.get("archive:a")?.());
-  await screen.findByRole("dialog", { name: "Chat archived: Planning" });
+  await settle();
+  screen.getByRole("dialog", { name: "Chat archived: Planning" });
   expect(view.result.current.lifecycleDialog).toBeUndefined();
 
   // Another archive holds the session's one lifecycle slot.
   act(() => view.result.current.openLifecycle(roadmap, "archive"));
-  await waitFor(() => expect(pending.has("archive:b")).toBe(true));
+  await settle();
+  expect(pending.has("archive:b")).toBe(true);
   const [undo] = screen.getAllByRole("button", { name: "Undo" });
   if (!undo) throw new Error("Missing Undo");
   fireEvent.click(undo);
@@ -366,13 +374,12 @@ it("runs a chat archive's Undo through the lifecycle gate, after any action hold
   expect(view.result.current.lifecycleDialog?.channel).toBe(roadmap);
 
   await act(async () => pending.get("archive:b")?.());
+  await settle();
   // Undo then holds the gate, so lifecycle menus stay disabled until it settles.
-  await waitFor(() =>
-    expect(run).toHaveBeenLastCalledWith(
-      "unarchive",
-      "a",
-      expect.any(AbortSignal),
-    ),
+  expect(run).toHaveBeenLastCalledWith(
+    "unarchive",
+    "a",
+    expect.any(AbortSignal),
   );
   expect(view.result.current.lifecycleDialog).toMatchObject({
     channel: planning,
@@ -380,15 +387,19 @@ it("runs a chat archive's Undo through the lifecycle gate, after any action hold
     confirmed: true,
   });
   // A slow Undo is announced instead of leaving the click unanswered.
+  await act(() => vi.advanceTimersByTimeAsync(999));
+  await settle();
   expect(
-    await screen.findByRole(
-      "dialog",
-      { name: "Unarchiving chat…" },
-      { timeout: 2000 },
-    ),
+    screen.queryByRole("dialog", { name: "Unarchiving chat…" }),
+  ).toBeNull();
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  await settle();
+  expect(
+    screen.getByRole("dialog", { name: "Unarchiving chat…" }),
   ).toBeDefined();
   await act(async () => pending.get("unarchive:a")?.());
-  await screen.findByRole("dialog", { name: "Chat unarchived: Planning" });
+  await settle();
+  screen.getByRole("dialog", { name: "Chat unarchived: Planning" });
   expect(view.result.current.lifecycleDialog).toBeUndefined();
   expect(run).toHaveBeenCalledTimes(3);
 });

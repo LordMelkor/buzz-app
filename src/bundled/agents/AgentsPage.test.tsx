@@ -5367,8 +5367,10 @@ it("asks before Create or another card's Open settings replaces an unsaved draft
 });
 
 it("announces the Bestie on its card without repeating it in actions", async () => {
+  const user = userEvent.setup();
   const ada = agent("Ada", 1);
   const view = setup([ada]);
+  const copy = vi.spyOn(navigator.clipboard, "writeText");
   const choices = {
     status: "ready",
     complete: true,
@@ -5404,10 +5406,17 @@ it("announces the Bestie on its card without repeating it in actions", async () 
     within(menu).queryByRole("menuitem", { name: "Remove as bestie" }),
   ).toBeNull();
   // Right-click carries the same ordinary actions as the card's "..." menu.
-  expect(
-    within(menu).getByRole("menuitem", { name: "Copy public key" }),
-  ).toBeVisible();
+  const copyKey = within(menu).getByRole("menuitem", {
+    name: "Copy public key",
+  });
+  expect(copyKey).toBeVisible();
   expect(within(menu).queryByRole("menuitemcheckbox")).toBeNull();
+  // It copies the npub that the Settings row copies, never the raw hex key.
+  await user.click(copyKey);
+  expect(copy).toHaveBeenCalledExactlyOnceWith(
+    "npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h",
+  );
+  copy.mockRestore();
 });
 
 it("offers Make my bestie from the card's actions button", async () => {

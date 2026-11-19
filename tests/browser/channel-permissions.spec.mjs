@@ -56,7 +56,7 @@ async function readPermalink(page, app, messageId, joined = false) {
     page.getByRole("button", { name: /^(React|Add reaction)/ }),
   ).toHaveCount(0);
   const readAction = page.getByRole("menuitem", {
-    name: /^(Mark read|Mark unread)$/,
+    name: /^(Mark as read|Mark as unread)$/,
   });
   const followAction = page.getByRole("menuitem", {
     name: /^(Follow thread|Unfollow thread)$/,

@@ -1,6 +1,8 @@
 import { PRESET } from "../../features/agents/recommended";
 
 export type Config = {
+  /** Empty follows Codex's voice default. Applies when the next seat starts. */
+  voice?: string;
   model: string;
   effort: string;
   instructions: string;
@@ -51,6 +53,9 @@ export function config(raw: unknown): Config {
   const value =
     raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
+    ...(typeof value.voice === "string" && value.voice
+      ? { voice: value.voice }
+      : {}),
     model: typeof value.model === "string" ? value.model : "",
     effort: typeof value.effort === "string" ? value.effort : "",
     instructions:

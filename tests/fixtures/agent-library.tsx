@@ -31,7 +31,7 @@ import "../../src/shared/styles/globals.css";
 const harness = new URLSearchParams(location.search).get("harness");
 const settingsSync = new URLSearchParams(location.search).has("settingsSync");
 const thinkingHarness = settingsSync
-  ? "claude"
+  ? new URLSearchParams(location.search).get("settingsSync") || "claude"
   : new URLSearchParams(location.search).get("thinking");
 const importing = new URLSearchParams(location.search).has("import");
 const teamImport = new URLSearchParams(location.search).has("teamImport");
@@ -219,12 +219,28 @@ if (thinkingHarness === "claude") {
   const providerState = {
     readiness: "ready",
     checking: false,
-    data: { models: [model] },
+    data: {
+      models: [model],
+      defaultVoice: "cove",
+      voices: ["cove", "maple", "vale", "porto"],
+      previews: Object.fromEntries(
+        ["cove", "maple", "vale"].map((voice) => [
+          voice,
+          `https://persistent.oaistatic.com/voice/previews/${voice}.m4a`,
+        ]),
+      ),
+      accents: {
+        cove: "American English",
+        maple: "American English",
+        vale: "British English",
+      },
+    },
     error: "",
     defaults: { model: "", effort: "" },
   };
   const provider = {
     ...staticStore(providerState),
+    check: async () => {},
     recommended: () => null,
     resolve: (value: unknown) => ({
       ...codexDefaults,
@@ -247,6 +263,15 @@ if (thinkingHarness === "claude") {
     id: "codex",
     title: "Codex",
     defaults: () => ({ config: { ...codexDefaults } }),
+    tabs: [
+      {
+        id: "settings",
+        title: "Settings",
+        role: "settings",
+        splitSettings: true,
+        component: tabs.SettingsTab,
+      },
+    ],
     CreateModel: tabs.CreateModel,
     CreateThinking: tabs.CreateThinking,
   };

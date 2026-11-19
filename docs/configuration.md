@@ -16,6 +16,7 @@ Build defaults are readable binary data, **never secret storage**.
 | `BUZZ_DEFAULT_COMMUNITY_URL` | Packaged frontend build: secure relay origin to select once, after identity setup, only when this viewer has no saved community record. Saved choices, including Personal space, always win. Unset in OSS builds. |
 | `BUZZ_BUILD_MANAGED_PLUGINS_URL` | Native build: `https` URL of a version 1 [managed plugin policy](managed-plugins.md#packaged-policy). The desktop app fetches it and keeps the last good copy, used when no `managed-plugins.json` exists. It only recommends. Unset in OSS builds. |
 | `BUZZ_DATABRICKS_HOST` | Frontend build and dev server: `https://` Databricks workspace URL passed as `DATABRICKS_HOST` to every bundled `goose-acp`, which then prefers it to the host in goose's config. Unset in OSS builds. See [Databricks host](#databricks-host). |
+| `BUZZ_AGENT_GATEWAY` | Shared frontend/native build, process environment only: non-secret agent gateway deployment descriptor (version 2: gateway origin, exact community IDs/origins, access check path, context header profile and per-harness upstream bases). Unset, the release default, leaves gateway routing off. See [Agent gateway](#agent-gateway). |
 | `BUZZ_MOBILE_APP_IOS_URL`, `BUZZ_MOBILE_APP_ANDROID_URL` | Frontend build: `https://` store listings for the build's mobile app, shown with QR codes on the mobile Settings card to people whose Builderlab account holds this device's backed-up key. Unset in OSS builds. See [Mobile app links](#mobile-app-links). |
 | `BUZZ_RECOMMENDED_AGENT` | Frontend build and dev server: JSON recommendation with optional `recommendedBy` attribution and candidates ordered best first, behind **Automatic** for new agents. Legacy candidate arrays also work. Unset in OSS builds, which don't offer the choice. See [Recommended agent](#recommended-agent). |
 | `BUZZ_RELAY_URL` | Live development broker's default community, not an agent relay override or a packaged default. |
@@ -87,6 +88,100 @@ plugin starts receives it as `DATABRICKS_HOST`, so goose reports Databricks as
 configured and ignores a host saved in goose's config. Only the host is set:
 the model, thinking level and sign-in stay goose's own. Leave it unset for OSS
 builds.
+
+## Agent gateway
+
+`BUZZ_AGENT_GATEWAY` describes one agent gateway and the communities whose
+local agent memberships route inference through it. It is a version 2 JSON
+object with these keys (`launcher_client` is optional):
+
+```json
+{
+  "version": 2,
+  "gateway": "https://gateway.example",
+  "communities": [{ "id": "<NIP-11 community UUID>", "origin": "wss://relay.example" }],
+  "access_path": "/v9/access",
+  "launcher_client": "client-a",
+  "headers": {
+    "launcher_client": "x-gw-launcher-client",
+    "launcher_session": "x-gw-launcher-session",
+    "human_pubkey": "x-gw-ctx-human-pubkey",
+    "agent_pubkey": "x-gw-ctx-agent-pubkey",
+    "community_id": "x-gw-ctx-community-id",
+    "channel_id": "x-gw-ctx-channel-id",
+    "message_id": "x-gw-ctx-message-id",
+    "thread_id": "x-gw-ctx-thread-id"
+  },
+  "reserved_prefixes": ["x-gw-ctx-"],
+  "upstreams": { "pi": { "base": "/upstream/pi" } }
+}
+```
+
+- `gateway`: an `https://` origin with no path or credentials.
+- `communities`: 1 to 16 unique entries, each a canonical NIP-11 community
+  UUID and a secure relay origin.
+- `access_path`: the gateway's readiness check, a plain absolute path.
+- `launcher_client`: the launcher name, defaulting to `"buzz"` when omitted.
+  An explicit value must be 1 to 64 letters, digits, `.`, `_` or `-`.
+- `headers`: the header name for each of the eight context roles, including
+  `launcher_client`. Names are lowercase, unique and may not collide
+  with protected headers (hop-by-hop, routing, credential, body protocol and
+  vendor SDK headers).
+- `reserved_prefixes`: up to 4 header prefixes only Buzz may set. Before the
+  context headers are added, every request header matching a profile name or
+  prefix is removed, compared case-insensitively with `_` read as `-`.
+- `upstreams`: an upstream base path per harness, for `claude-code`, `goose`,
+  `codex` or `pi`. A harness with no entry keeps the user's own
+  configuration, without a notice.
+
+The descriptor is public routing data with no credential. Only
+`launcher_client` has a default. Both the frontend build and the
+plugin-manager native build read it from the process environment only, never
+from `.env` files. Both builds validate the whole descriptor against
+the shared cases in `src/features/agents/gateway/descriptor-vectors.json`.
+The native build compiles its canonical form, including the default
+`launcher_client`. An invalid value, including
+a version 1 descriptor, fails the build that rejects it with a fixed message
+that never echoes it. A descriptor that is still invalid at runtime fails
+open: no harness gets an upstream, so turns run unchanged, with no notice.
+Leave it unset or blank (the release default) to keep every membership on its
+existing behavior.
+
+Native goose forwarding removes `Authorization` before sending discovery or
+inference requests to the gateway. The gateway must authenticate callers
+separately; Buzz context headers supply attribution, not authentication.
+
+With it set, a local agent membership in a listed community routes through the
+gateway only when the relay's NIP-11 `read_state_snapshot.community_id` is
+exactly the listed ID, the descriptor gives the agent type's declared harness
+an upstream, the gateway's access check succeeds, and the check's `harnesses`
+list names that harness. Any other field in the check's answer is the
+gateway's to enforce and is ignored. A type with no declared harness, no
+upstream, or a harness the gateway doesn't list keeps its existing behavior.
+While an access check is in flight, such as the first one at startup or the
+re-check after the gateway refuses a request, a turn waits for it for up to 5
+seconds; a turn after a failed check waits for its recheck the same way. If
+the check is still unresolved after the wait, the turn fails with a message
+asking the user to try again in a moment; it never falls back while access
+could yet be refused. A check that fails with anything but a 401 or 403 is
+tried once more after a short pause. If the gateway refuses access (a 401 or
+403), the turn fails with a message asking the user to sign in again; it never
+falls back.
+That refusal remains effective while access is checked again, including if
+the recheck hangs or fails with a network or gateway error. Only a successful
+access check or a changed membership context (identity, community or relay
+session) clears it. A 401/403 from discovery or inference applies the same rule.
+When the route is otherwise blocked (network, gateway error, or a community or
+identity problem), the harness runs with the user's own configuration and none
+of the Buzz request context, and the turn is noted "Ran without the agent
+gateway" with the reason: under the request for a mention, and in the
+harness's own turn activity for other turns, which receive it as
+`delivery.gatewayFallback`. The note stays under the request even when a
+later message supersedes it. That choice is made before dispatch; a turn whose
+gateway access is revoked after dispatch fails visibly and is never
+replayed. Memberships in other communities and hosted agents are unchanged.
+See `src/features/agents/gateway/` for the shared route, session and request
+context contract that harnesses consume.
 
 ## Recommended agent
 

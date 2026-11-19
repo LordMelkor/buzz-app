@@ -184,13 +184,16 @@ function setup(
   };
   // A reconnect is a new session to the same community.
   let connected = session;
+  const state = { status: "ready" };
   const relay = {
     snapshot: () => ({
-      status: "ready",
-      session: connected,
+      status: state.status,
+      session: state.status === "ready" ? connected : undefined,
       viewer: alice,
+      origin: "https://goose.example",
       scope: `https://goose.example:${alice}`,
     }),
+    subscribe: () => () => {},
   } as unknown as RelayData;
   const core = vi.fn(async () => options.core);
   const data = new Map<string, string>();
@@ -214,6 +217,7 @@ function setup(
     pubkey: self,
     name: "Gander",
     owner: alice,
+    relay: "wss://goose.example",
     ...(options.protection && { protection: options.protection }),
     publish: vi.fn(async (template: (typeof published)[number]) => {
       published.push(template);
@@ -250,6 +254,7 @@ function setup(
       prompt: async () => prompt,
     } as unknown as Parameters<GooseRuntime["runOnce"]>[0]);
   return {
+    state,
     agent,
     core,
     deliver,
@@ -1856,6 +1861,56 @@ it("gives the workflow reason for its owner's workflow mention that doesn't name
     { ignored },
   );
   expect(ignored).toHaveBeenCalledExactlyOnceWith("workflow");
+  expect(f.goose()).toBeUndefined();
+});
+
+it("waits for a workflow mention's community, not for its owner's", async () => {
+  const relay = keypair();
+  const f = setup({ workflowAuthority: relay.pubkey });
+  f.state.status = "connecting";
+  // The owner's own mention settles without waiting for the community.
+  await f.deliver(message("1", "Say hi"));
+  const stop = new AbortController();
+  const workflow = f.deliver(
+    eventDto(
+      signed(relay, {
+        kind: 9,
+        content: "@Agent workflow",
+        tags: [
+          ["h", channel],
+          ["p", self],
+          ["buzz:workflow", "true"],
+          ["buzz:workflow-owner", alice],
+        ],
+      }),
+    ),
+    { signal: stop.signal },
+  );
+  stop.abort();
+  await expect(workflow).rejects.toThrow("Workflow request could not start");
+});
+
+it("ignores a workflow mention whose agent was replaced during the wait", async () => {
+  const relay = keypair();
+  const f = setup({ workflowAuthority: relay.pubkey });
+  const ignored = vi.fn();
+  // The community is ready, so the wait ends at once; the agent is gone by then.
+  await f.deliver(
+    eventDto(
+      signed(relay, {
+        kind: 9,
+        content: "@Agent workflow",
+        tags: [
+          ["h", channel],
+          ["p", self],
+          ["buzz:workflow", "true"],
+          ["buzz:workflow-owner", alice],
+        ],
+      }),
+    ),
+    { ignored, current: () => false },
+  );
+  expect(ignored).toHaveBeenCalledExactlyOnceWith();
   expect(f.goose()).toBeUndefined();
 });
 

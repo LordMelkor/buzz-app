@@ -25,6 +25,22 @@
   position: relative;
   z-index: 1;
 }
+/* Hover moves the menu into the row's flow, so it must fit the row's height;
+   a compact IconButton's 2rem minimum would grow the row on hover. */
+.row [data-solo-row-action] {
+  flex-shrink: 0;
+  width: calc(var(--space-6) + var(--space-1));
+  height: calc(var(--space-6) + var(--space-1));
+  min-height: 0;
+}
+@media (hover: hover) and (pointer: fine) {
+  .row:not(:hover, :focus-within)
+    [data-solo-row-action]:not([aria-expanded="true"]) {
+    position: absolute;
+    inset-inline-end: var(--channel-row-fill-end, 0%);
+    opacity: 0;
+  }
+}
 .row:is(:hover, :has([data-context-menu-present])):not(
   [data-selected]
 )::before {

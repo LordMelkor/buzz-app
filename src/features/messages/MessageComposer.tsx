@@ -1379,6 +1379,7 @@ function Composer({
     `${scope}:${draftKey}`,
     channelId,
     !!submission?.attachments,
+    host ? [scope, `${draftKey}:files`] : undefined,
   );
   const picker = useRef<HTMLInputElement>(null);
   const pickerFocus = useRef<
@@ -1857,7 +1858,13 @@ function Composer({
     terminator?: string,
   ) {
     const separated = /^[ \t]/.test(valueRef.current.text.slice(at));
-    if (!insert(separated ? text : `${text} `, undefined, range, terminator))
+    const start = range?.start ?? input.current?.selectionStart ?? at;
+    const value =
+      /^:\d{1,64}:/.test(text) &&
+      /\d/.test(valueRef.current.text[start - 1] ?? "")
+        ? ` ${text}`
+        : text;
+    if (!insert(separated ? value : `${value} `, undefined, range, terminator))
       return false;
     const field = input.current;
     const end = field?.selectionEnd ?? 0;
@@ -2497,7 +2504,8 @@ function Composer({
   // until the composer is shown again, a newer message of the viewer's
   // lands, or a send here replaces the draft with the composer's own
   // follow-up. reset() replaces the editor without a change event, so
-  // nothing persists; focus stays with its current owner.
+  // nothing persists; focus stays with its current owner, and the caret
+  // follows the prefill.
   useEffect(() => {
     if (!presented) {
       seedApplied.current = undefined;
@@ -2558,8 +2566,9 @@ function Composer({
     automaticTag.current = seed.recipients.length
       ? JSON.stringify(seed)
       : undefined;
-    if (input.current && document.activeElement === input.current)
-      input.current.setSelectionRange(seed.text.length, seed.text.length);
+    // reset() leaves the caret at the start. Put it after the prefill even
+    // while unfocused: a retained editor keeps its caret when focused later.
+    input.current?.setSelectionRange(seed.text.length, seed.text.length);
   });
   // Alone in a Solo chat, a send addresses agents; with people it is a conversation.
   const needsRecipient = (requireMention || solo) && !withPeople;
@@ -3312,7 +3321,13 @@ function Composer({
               )
             )
               return "conflict";
-            const target = attachmentDraft(session, recoveryKey, channelId);
+            const target = attachmentDraft(
+              session,
+              recoveryKey,
+              channelId,
+              false,
+              host ? [scope, `${draftKey}:files`] : undefined,
+            );
             if (target.snapshot().length) return "conflict";
             if (
               current !== capturedRevision &&

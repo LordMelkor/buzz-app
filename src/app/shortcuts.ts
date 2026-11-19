@@ -275,7 +275,7 @@ function registerMessageShortcuts(shortcuts: ShortcutsService) {
     }),
     shortcuts.registerHost({
       id: "mark-message-unread",
-      title: "Mark unread from selected message",
+      title: "Mark as unread from selected message",
       binding: { key: "u" },
       order: HOST_SHORTCUT_ORDER.markMessageUnread,
       when: () => {

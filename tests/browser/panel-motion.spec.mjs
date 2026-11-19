@@ -79,6 +79,15 @@ test("joined header seams, drag feedback, and pointer-only overlay motion", asyn
   await launch.click();
   await expect(close).toBeVisible();
   await expect(dock).toHaveCSS("transition-duration", "0.18s, 0.18s");
+  // Visibility precedes the end of the dock transform and its grid resize.
+  // Measure settled seams, not WebKit's fractional bounds during motion.
+  await dock.evaluate(async (el) => {
+    await Promise.all(
+      [...el.getAnimations(), ...el.parentElement.getAnimations()].map(
+        (animation) => animation.finished,
+      ),
+    );
+  });
   for (const header of await page.locator(".shell-body .panel-header").all()) {
     // The shared header owns a full-width border, including in joined panes.
     await expect(header).toHaveCSS("border-bottom-width", "1px");

@@ -1,9 +1,10 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { readView, subscribeView, writeView } from "../../shared/view-state";
 import { contributedSidebarSectionKey } from "./sidebar-sections";
 
 type SidebarView = {
   collapsed: string[];
+  importedWorkspaceCollapse?: true;
   contributionOrder: string[];
   scrollTop: number;
   /** The destination whose sidebar entry the saved position shows. */
@@ -14,10 +15,18 @@ function restore(scope: string): SidebarView {
   const raw = readView<unknown>(scope, "channel-sidebar", null);
   const saved =
     raw && typeof raw === "object" ? (raw as Partial<SidebarView>) : {};
+  const collapsed = Array.isArray(saved.collapsed)
+    ? saved.collapsed.filter((key): key is string => typeof key === "string")
+    : [];
+  const legacy = saved.importedWorkspaceCollapse
+    ? []
+    : readView<unknown>(scope, "solo:collapsed-projects", []);
+  if (Array.isArray(legacy))
+    for (const id of legacy)
+      if (typeof id === "string") collapsed.push(id ? `group:${id}` : "solo");
   return {
-    collapsed: Array.isArray(saved.collapsed)
-      ? saved.collapsed.filter((key): key is string => typeof key === "string")
-      : [],
+    collapsed: [...new Set(collapsed)],
+    importedWorkspaceCollapse: true,
     contributionOrder: Array.isArray(saved.contributionOrder)
       ? saved.contributionOrder
           .filter((key): key is string => typeof key === "string")
@@ -41,6 +50,7 @@ export function expandSidebarSection(scope: string, key: string) {
   const saved = readView<object>(scope, "channel-sidebar", {});
   writeView(scope, "channel-sidebar", {
     ...saved,
+    importedWorkspaceCollapse: true,
     collapsed: restore(scope).collapsed.filter((id) => id !== key),
   });
 }
@@ -102,6 +112,7 @@ export function useSidebarView(
   preserve = false,
 ) {
   const [view, setView] = useState(() => restore(scope));
+  const savedLocation = useRef(view.location).current;
   const intent = useRef(view);
   const list = useRef<HTMLElement>(null);
   const pending = useRef(true);
@@ -279,14 +290,27 @@ export function useSidebarView(
     },
     [update],
   );
-  return {
-    list,
-    collapsed: view.collapsed,
-    contributionOrder: view.contributionOrder,
-    setContributionOrder,
-    toggle,
-    retryReveal,
-    revealAgain,
-    beforeReveal,
-  };
+  return useMemo(
+    () => ({
+      list,
+      savedLocation,
+      collapsed: view.collapsed,
+      contributionOrder: view.contributionOrder,
+      setContributionOrder,
+      toggle,
+      retryReveal,
+      revealAgain,
+      beforeReveal,
+    }),
+    [
+      savedLocation,
+      view.collapsed,
+      view.contributionOrder,
+      setContributionOrder,
+      toggle,
+      retryReveal,
+      revealAgain,
+      beforeReveal,
+    ],
+  );
 }

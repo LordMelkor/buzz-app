@@ -15,10 +15,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { PageSearch, type SearchServices } from "./PageSearch";
 import { BestieConversationContext } from "./bestie-context";
 import type { RegisteredPage } from "../../features/pages/service";
-import { createShortcutBindings } from "../../features/shortcuts/preferences";
+import {
+  createShortcutBindings,
+  SHORTCUT_BINDINGS_KEY,
+} from "../../features/shortcuts/preferences";
 import { ShortcutsService } from "../../features/shortcuts/service";
 import { isApplePlatform } from "../../features/shortcuts/format";
 import { createRelaySession } from "../../features/relay/session";
+import type { ChannelList } from "../../features/relay/contracts";
 import type { RelaySnapshot } from "../../features/relay/service";
 import {
   keypair,
@@ -602,7 +606,7 @@ it("opens nothing with Command F on another page while a Bestie DM exists", asyn
   }
 });
 
-it("does not open a DM that finishes starting after search closed and reopened", async () => {
+it("does not open a DM that finishes opening after search closed and reopened", async () => {
   const root = new Context();
   root.provide("pluginStatus", {
     isActive: () => true,
@@ -619,10 +623,32 @@ it("does not open a DM that finishes starting after search closed and reopened",
   });
   let started!: (channelId: string) => void;
   let attempt!: AbortSignal;
+  // Bob already has a DM, so choosing him waits on its confirmed open.
+  let listed: [ChannelList, ChannelList] | undefined;
   const session = {
     ...owner.session,
     channels: {
       ...owner.session.channels,
+      list: () => {
+        const base = owner.session.channels.list();
+        if (listed?.[0] !== base)
+          listed = [
+            base,
+            {
+              ...base,
+              channels: [
+                ...base.channels,
+                {
+                  id: "bob-dm",
+                  name: "",
+                  channelType: "dm",
+                  participants: [bob.pubkey],
+                },
+              ],
+            },
+          ];
+        return listed[1];
+      },
       // The started DM is known, so only the closed palette stops it.
       get: (id: string) =>
         id === "bob-dm"
@@ -1484,6 +1510,7 @@ function memorySearch() {
       expect(screen.queryByRole("dialog", { name: "Search Buzz" })).toBeNull(),
     );
   return {
+    bindings,
     navigate,
     field,
     closed,
@@ -1567,6 +1594,56 @@ it("keeps its place for under five minutes away, and starts fresh from five", as
     expect(t.field()).toHaveValue("");
   } finally {
     vi.useRealTimers();
+    await t.dispose();
+  }
+});
+
+it("moves through results with the person's own keys, saved, alongside the arrows", async () => {
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    value: "MacIntel",
+  });
+  const t = memorySearch();
+  try {
+    await t.open();
+    const rows = await t.recentRows();
+    const hints = () =>
+      [...document.querySelectorAll(".search-peek-keys kbd")]
+        .slice(0, 2)
+        .map((key) => key.textContent);
+    expect(hints()).toEqual(["↑", "↓"]);
+    act(() => {
+      t.bindings.set("search-previous-result", { key: "k", ctrl: true });
+      t.bindings.set("search-next-result", { key: "j", ctrl: true });
+    });
+    expect(hints()).toEqual(["⌃K", "⌃J"]);
+    expect(
+      JSON.parse(localStorage.getItem(SHORTCUT_BINDINGS_KEY) ?? "null"),
+    ).toEqual({
+      "search-previous-result": { key: "k", ctrl: true },
+      "search-next-result": { key: "j", ctrl: true },
+    });
+    const restored = createShortcutBindings(window);
+    expect(restored.resolve("search-next-result")).toEqual([
+      { key: "j", ctrl: true },
+    ]);
+    restored.dispose();
+    await userEvent.keyboard("{Control>}j{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+    await userEvent.keyboard("{Control>}j{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[1]?.id);
+    await userEvent.keyboard("{Control>}k{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+    // Up and Down still move, as a combobox's arrows do.
+    expect(fireEvent.keyDown(t.field(), { key: "ArrowDown" })).toBe(false);
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[1]?.id);
+    expect(fireEvent.keyDown(t.field(), { key: "ArrowUp" })).toBe(false);
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+    await userEvent.keyboard("j");
+    expect(t.field()).toHaveValue("j");
+  } finally {
+    localStorage.removeItem(SHORTCUT_BINDINGS_KEY);
+    Reflect.deleteProperty(navigator, "platform");
     await t.dispose();
   }
 });

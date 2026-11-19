@@ -222,11 +222,14 @@ async function mount(
     write: async () => saved,
     writeStar: async () => [],
     removeSection: async () => saved,
+    writeSort: async () => ({}),
     writeOrder: async () => saved,
-    groupsOnly: true,
   });
   await store.queries.ensure();
-  const solo = { ...session, soloPreferences: store.queries } as RelaySession;
+  const solo = {
+    ...session,
+    sidebarPreferences: store.queries,
+  } as RelaySession;
   const snapshot = {
     status: "ready",
     scope: "viewer:community",

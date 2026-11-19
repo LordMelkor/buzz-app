@@ -1312,6 +1312,8 @@ it("discards a pending observer decode after disconnect and reconnect", async ()
     }
     return original?.(command, args);
   });
+  // Draw no reconnect spread when the authenticated connection drops.
+  const random = vi.spyOn(Math, "random").mockReturnValue(0);
   const transport = await connectNativeTransport(community);
   const observer = vi.fn();
   const traffic = transport.subscribe?.({
@@ -1388,6 +1390,7 @@ it("discards a pending observer decode after disconnect and reconnect", async ()
     expect(observer.mock.calls[0]?.[0].id).toBe(fresh.id);
   } finally {
     traffic.dispose();
+    random.mockRestore();
   }
 });
 

@@ -6,7 +6,7 @@ import {
 import type { AddedTool } from "../../buzz-mcp/session-tools";
 import { pubkeyOf } from "../../features/agents/membership";
 import { PROMPTS_PREFIX } from "../../features/agents/session-prompts";
-import { ownerReads } from "../../features/agents/reads";
+import { type AgentReads, ownerReads } from "../../features/agents/reads";
 import type { MemoryEntry } from "../../features/agents/memory";
 import type {
   Agent,
@@ -18,8 +18,11 @@ import type { EventData, RelayEvent } from "../../features/relay/events";
 import { eventDto } from "../../features/relay/events";
 import { keypair, signed } from "../../features/relay/testing";
 import type { RelayData } from "../../features/relay/service";
-import { deferred, fakeHost, type Handler } from "./pi-testing";
+import { VECTOR_PROFILE } from "../../features/agents/gateway/vectors";
+import { turnContext } from "../../features/agents/gateway/turn";
+import { deferred, fakeHost, type Handler, PI_UPSTREAM } from "./pi-testing";
 import { type Config, DEFAULT_CONFIG, PiRuntime } from "./runtime";
+import type { GatewayRoute, GatewaySeam } from "./gateway";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -62,6 +65,7 @@ function setup(
   /** The channel's Canvas, as it reads now. */
   canvas?: { content: string; pubkey?: string },
   repositories?: (scope: string | undefined) => string,
+  seam?: GatewaySeam,
 ) {
   let submissions = 0;
   const host = fakeHost({
@@ -139,6 +143,10 @@ function setup(
       connection.live && key === self
         ? (agent as unknown as AgentHandle)
         : undefined,
+    undefined,
+    undefined,
+    undefined,
+    seam,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const agent = {
@@ -498,6 +506,68 @@ it("gives the workflow reason for its owner's workflow mention that doesn't name
   });
   await turn.run;
   expect(turn.ignored).toHaveBeenCalledExactlyOnceWith("workflow");
+  expect(host.processes).toEqual([]);
+});
+
+it("waits for a workflow mention's community, not for its owner's", async () => {
+  const { deliver, runtime } = setup();
+  const relay = keypair();
+  const readyReads = vi.fn(async () => runtime["reads"](self));
+  Object.assign(runtime, { readyReads });
+  const event = eventDto(
+    signed(relay, {
+      kind: 9,
+      content: "@Agent workflow",
+      tags: [
+        ["h", channel],
+        ["p", self],
+        ["buzz:workflow", "true"],
+        ["buzz:workflow-owner", alice],
+      ],
+    }),
+  );
+  await deliver({ type: "mention", event }).run;
+  expect(readyReads).toHaveBeenCalledOnce();
+  await deliver({ type: "mention", event: { ...event, pubkey: alice } }).run;
+  expect(readyReads).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ["checks authority with the reads it waited for", true, "workflow"],
+  ["ignores it when the agent was replaced during the wait", false, undefined],
+])("a waited-for workflow mention %s", async (_name, stays, reason) => {
+  const { host, deliver, runtime } = setup();
+  const relay = keypair();
+  const waited = {
+    workflowAuthority: vi.fn(() => relay.pubkey),
+    profiles: async () => {},
+    profile: () => undefined,
+  } as unknown as AgentReads;
+  let live = true;
+  Object.assign(runtime, {
+    readyReads: async () => {
+      live = stays;
+      return waited;
+    },
+  });
+  const event = eventDto(
+    signed(relay, {
+      kind: 9,
+      content: "@Agent workflow",
+      tags: [
+        ["h", channel],
+        ["p", self],
+        ["buzz:workflow", "true"],
+        ["buzz:workflow-owner", alice],
+      ],
+    }),
+  );
+  const turn = deliver({ type: "mention", event }, { current: () => live });
+  await turn.run;
+  if (reason) expect(waited.workflowAuthority).toHaveBeenCalled();
+  expect(turn.ignored).toHaveBeenCalledExactlyOnceWith(
+    ...(reason ? [reason] : []),
+  );
   expect(host.processes).toEqual([]);
 });
 
@@ -937,6 +1007,38 @@ it("stops a mention's run when the owner stops it, and posts nothing", async () 
     conversation: CONVERSATION,
   });
   await expect(settled(turn)).resolves.toEqual({ ok: true, stopped: true });
+  expect(published).toEqual([]);
+});
+
+it("withdraws a mention Pi doesn't have yet when the owner stops it, and stops no run", async () => {
+  const held = deferred<unknown>();
+  let delivers = 0;
+  const { host, deliver, settled, published } = setup({
+    // The second waits in the host, as for a run in the other mode.
+    deliver: () =>
+      ++delivers === 1
+        ? { submission: 1, conversation: CONVERSATION }
+        : held.promise,
+    cancel: () => {
+      held.resolve(false);
+      return {};
+    },
+  });
+  await deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+  const interruptible = vi.fn<NonNullable<Delivery["interruptible"]>>();
+  const turn = deliver(
+    { type: "mention", event: reply("3", "@Pi and this") },
+    { interruptible },
+  );
+  await turn.run;
+  await vi.waitFor(() => expect(host.requests("deliver")).toHaveLength(2));
+  await interruptible.mock.calls[0]?.[0]();
+  const sent = host.requests("deliver")[1]?.params;
+  expect(host.requests("cancel").map((r) => r.params)).toEqual([
+    { agent: self, key: sent?.key, request: sent?.request },
+  ]);
+  expect(host.requests("abort")).toEqual([]);
+  await expect(settled(turn)).resolves.toEqual({ ok: true });
   expect(published).toEqual([]);
 });
 
@@ -2676,3 +2778,170 @@ it.each(["stop", "retire"])(
     expect(check).not.toHaveBeenCalled();
   },
 );
+
+/** A gateway seam on a fixed route, whose bindings and context the tests
+ * read as the host sends them. */
+function routes(route: GatewayRoute) {
+  const seam: GatewaySeam = {
+    routeReady: async () => route,
+    routeFor: () => route,
+    subscribeRoute: () => () => {},
+    invalidateRoute: () => {},
+    bindSession: () => ({
+      ok: true,
+      binding: { v: 1, client_session_id: SESSION, identity },
+      persist: true,
+    }),
+    inferenceBundle: () => ({ ok: true, value: {} }),
+    bindingAdmits: () => ({ ok: true, revision: 0 }),
+    turnContext: () => ({
+      channel_id: null,
+      message_id: null,
+      thread_id: null,
+    }),
+    upstreamFor: () => PI_UPSTREAM,
+  };
+  return { seam };
+}
+const SESSION = "11111111-1111-4111-8111-111111111111";
+const identity = {
+  community_id: "c1",
+  human_pubkey: alice,
+  agent_pubkey: self,
+};
+const eligible: GatewayRoute = {
+  kind: "eligible",
+  revision: 1,
+  gatewayOrigin: "https://gateway.test",
+  identity,
+  profile: VECTOR_PROFILE,
+  harnesses: ["pi"],
+};
+
+it("sends a watch's or timer's frozen context with its standalone turn, and an Attention wake's with its delivery", async () => {
+  const r = routes(eligible);
+  // The production reader of the context the runner froze on the delivery.
+  const f = setup(
+    { wait: () => ({ status: "done", answer: 5, text: "Nothing to report." }) },
+    [],
+    undefined,
+    undefined,
+    { ...r.seam, turnContext },
+  );
+  const watched = Object.freeze({
+    channel_id: "33333333-3333-4333-8333-333333333333",
+    message_id: "c".repeat(64),
+    thread_id: null,
+  });
+  const timer = Object.freeze({
+    channel_id: null,
+    message_id: null,
+    thread_id: null,
+  });
+  const once = (key: string, turn: object) =>
+    f.runtime.runOnce({
+      delivery: {
+        agent: f.agent,
+        config: DEFAULT_CONFIG,
+        gateway: { route: eligible, turn, upstream: PI_UPSTREAM },
+      },
+      key,
+      signal: new AbortController().signal,
+      prompt: async () => "Check",
+    } as unknown as StandaloneTurn);
+  await expect(once("watch/w1", watched)).resolves.toEqual({ ok: true });
+  await expect(once("timer/t1", timer)).resolves.toEqual({ ok: true });
+  expect(
+    f.host
+      .requests("once")
+      .map(({ params }) => [
+        String(params.request).split("/")[0],
+        params.gatewayTurn,
+      ]),
+  ).toEqual([
+    ["watch", watched],
+    ["timer", timer],
+  ]);
+  // A timer that wakes a conversation is delivered as its Attention wake.
+  const woke = Object.freeze({
+    channel_id: "33333333-3333-4333-8333-333333333333",
+    message_id: null,
+    thread_id: null,
+  });
+  const receipt = f.deliver(
+    {
+      type: "attention",
+      channel,
+      topLevel: true,
+      id: "f".repeat(64),
+      at: 200_000,
+      text: "Timer: check in",
+    },
+    {
+      gateway: { route: eligible, turn: woke, upstream: PI_UPSTREAM },
+    } as never,
+  );
+  await receipt.run;
+  expect(receipt.ignored).not.toHaveBeenCalled();
+  expect(
+    f.host.requests("deliver").map(({ params }) => params.gatewayTurn),
+  ).toEqual([woke]);
+});
+
+it("gives an owner's Compact its conversation's place and no message", async () => {
+  const r = routes(eligible);
+  const f = setup({}, [], undefined, undefined, r.seam);
+  const agent = (scope: string) =>
+    ({
+      key: self,
+      pubkey: self,
+      config: { ...DEFAULT_CONFIG, scope },
+    }) as unknown as Agent;
+  const thread = { channelId: channel, root: root.id };
+  await f.runtime.session(agent("thread"), thread, "compact");
+  await f.runtime.session(agent("thread"), { channelId: channel }, "compact");
+  await f.runtime.session(agent("channel"), thread, "compact");
+  expect(
+    f.host.requests("session").map((item) => item.params.gatewayTurn),
+  ).toEqual([
+    { channel_id: channel, message_id: null, thread_id: root.id },
+    { channel_id: channel, message_id: null, thread_id: null },
+    { channel_id: channel, message_id: null, thread_id: null },
+  ]);
+  // New carries no context: it sends nothing to a model.
+  await f.runtime.session(agent("thread"), thread, "new");
+  expect(f.host.requests("session").at(-1)?.params.gatewayTurn).toBeUndefined();
+});
+
+it("notes a wake's fallback on its own turn, and leaves a mention's to its request row", async () => {
+  const NOTICE =
+    "Ran without the agent gateway: Buzz couldn't reach the gateway.";
+  const fallback = {
+    gatewayFallback: { reason: "network" as const, notice: NOTICE },
+  };
+  const f = setup({ wait: () => ({ status: "done", answer: 5, text: "" }) });
+  const wake = (id: string) => ({
+    type: "attention" as const,
+    channel,
+    root: root.id,
+    id,
+    at: 200_000,
+    text: "tick",
+  });
+  try {
+    const turns = [
+      f.deliver(wake("f".repeat(64)), fallback),
+      f.deliver(wake("e".repeat(64))),
+      f.deliver({ type: "mention", event: reply("2", "@Pi look") }, fallback),
+    ];
+    for (const turn of turns) {
+      await turn.run;
+      await expect(f.settled(turn)).resolves.toEqual({ ok: true });
+    }
+    expect(
+      f.host.requests("deliver").map((request) => request.params.notice),
+    ).toEqual([NOTICE, undefined, undefined]);
+  } finally {
+    f.runtime.dispose();
+  }
+});

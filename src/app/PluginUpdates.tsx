@@ -13,6 +13,7 @@ import type { PluginManager } from "../plugins/manager";
 import { pendingManaged } from "../plugins/managed";
 import { canRetryPlugin } from "../plugins/manager";
 import type { PluginInstallRequests } from "../plugins/installer";
+import type { ManagedChange } from "../plugins/types";
 import {
   createPluginUpdates,
   type PluginUpdate,
@@ -277,6 +278,17 @@ export function PluginUpdates({
       (update.candidate.publisher ?? null) !== (previous.publisher ?? null)
     );
   };
+  const managed =
+    configuration.status === "ready" ? configuration.managed : undefined;
+  const [seenAutomatic, setSeenAutomatic] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const automatic =
+    managed?.status === "ready"
+      ? (managed.automatic ?? []).filter(
+          (change) => !seenAutomatic.has(automaticKey(change)),
+        )
+      : [];
   const [recovering, setRecovering] = useState<readonly string[]>([]);
   const [checking, setChecking] = useState<readonly string[]>([]);
   const checkAgain = async (id: string) => {
@@ -296,12 +308,40 @@ export function PluginUpdates({
         checking,
         checkAgain,
         busy: state.busy || !!action,
-        recommended: pendingManaged(
-          configuration.status === "ready" ? configuration.managed : undefined,
-        ).map((entry) => entry.id),
+        recommended: pendingManaged(managed).map((entry) => entry.id),
       }}
     >
       {children}
+      {managed?.status === "ready" && automatic.length > 0 && (
+        <ToastNotice
+          key={automatic.map(automaticKey).join(" ")}
+          title={automaticTitle(managed.source, automatic)}
+          description={
+            automatic.length > 1
+              ? automatic.map((change) => change.name).join(", ")
+              : automatic[0]?.action === "installed"
+                ? "It’s on now. You can turn it off or remove it in Manage plugins."
+                : `It now runs the version ${managed.source} recommends.`
+          }
+          tone="info"
+          timeout={8000}
+          onDismiss={() =>
+            setSeenAutomatic(
+              (seen) => new Set([...seen, ...automatic.map(automaticKey)]),
+            )
+          }
+          closeLabel="Dismiss automatic plugin changes"
+          navigation={{
+            label: "Manage plugins",
+            open: () =>
+              void navigation.open({
+                version: 1,
+                kind: "settings",
+                section: "plugins",
+              }),
+          }}
+        />
+      )}
       {updates
         .filter(
           (update) =>
@@ -414,6 +454,18 @@ export function PluginUpdates({
         })}
     </Context>
   );
+}
+
+const automaticKey = (change: ManagedChange) =>
+  `${change.id}:${change.revision}`;
+
+function automaticTitle(source: string, changes: readonly ManagedChange[]) {
+  const [change] = changes;
+  if (changes.length === 1 && change)
+    return `${source} ${change.action} ${change.name}`;
+  const actions = new Set(changes.map((item) => item.action));
+  const verb = actions.size > 1 ? "installed or updated" : change?.action;
+  return `${source} ${verb} ${changes.length} plugins`;
 }
 
 export function PluginUpdatesMenu({

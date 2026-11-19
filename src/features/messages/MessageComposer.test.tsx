@@ -7879,6 +7879,31 @@ it("renders a leading custom emoji inline without changing trailing text", () =>
   );
 });
 
+it("keeps time fragments literal beside numeric and overlapping emoji", () => {
+  const h = mount();
+  h.setEmoji(
+    ["25", "30", "party"].map((shortcode) => ({
+      shortcode,
+      url: `https://example.org/emoji/${shortcode}.png`,
+    })),
+  );
+  const text = "12:25:30: :25: 10:30:party:";
+  h.fill(text);
+  expect(h.input()).toHaveValue(text);
+  expect(
+    within(h.input())
+      .getAllByRole("img")
+      .map((image) => image.getAttribute("alt")),
+  ).toEqual([":25:", ":party:"]);
+  h.submit();
+  expect(h.messages.send).toHaveBeenCalledExactlyOnceWith(
+    "channel",
+    text,
+    [],
+    [],
+  );
+});
+
 /** The real Emoji provider; the fixture provider above never publishes an exact match. */
 function mountEmojiTypeahead() {
   // jsdom has no canvas; previews fall back to the uncentred glyph.
@@ -8184,19 +8209,34 @@ it.each([
   // A replaced selection reuses the space after it.
   ["ax b", 1, 2, "😀", "a😀 b", 4],
   ["ab", 1, 1, ":party:", "a:party: b", 9],
+  ["5x", 1, 1, ":25:", "5 :25: x", 7],
+  ["5x", 1, 1, ":25::30:", "5 :25::30: x", 11],
+  ["5 x", 1, 1, ":25:", "5 :25: x", 7],
+  ["5xx z", 1, 3, ":25:", "5 :25: z", 7],
+  ["5x", 0, 1, ":25:", ":25: x", 5],
+  ["ab", 1, 1, ":25:", "a:25: b", 6],
   // Other tool text is inserted exactly as given.
   ["ab", 1, 1, "x", "axb", 2],
 ])(
   "spaces emoji a composer tool inserts: %j",
   async (text, start, end, inserted, expected, after) => {
     const h = mount();
-    h.setEmoji([{ shortcode: "party", url: "https://emoji.test/party.png" }]);
+    h.setEmoji(
+      ["party", "25", "30"].map((shortcode) => ({
+        shortcode,
+        url: `https://example.org/emoji/${shortcode}.png`,
+      })),
+    );
     h.fill(text);
     act(() => h.input().setSelectionRange(start, end));
     act(() => {
       expect(h.commands().insertText(inserted)).toBe(true);
     });
     expect(h.input()).toHaveValue(expected);
+    if (inserted.startsWith(":25:"))
+      expect(
+        within(h.input()).getByRole("img", { name: ":25:" }),
+      ).toBeVisible();
     expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([
       after,
       after,
@@ -9101,6 +9141,27 @@ it("seeds from history over a follow-up an earlier release saved as the draft, u
   );
   typed.setRows([own("1", []), own("2", [second.pubkey])]);
   expect(typed.input()).toHaveValue("@Honey ");
+});
+
+it("places the caret after a seed that lands while the composer is unfocused", () => {
+  const viewer = "e".repeat(64);
+  const h = mount({}, undefined, viewer);
+  h.setProfiles(new Map([[first.pubkey, { name: "Honey", isAgent: true }]]));
+  // The composer was focused once, so a later focus request keeps its caret.
+  act(() => h.input().focus());
+  act(() => h.input().blur());
+  h.setRows([
+    editableMessage({
+      id: "1".repeat(64),
+      authorId: viewer,
+      mentions: [first.pubkey],
+    }),
+  ]);
+  expect(h.input()).toHaveValue("@Honey ");
+  expect(h.input()).not.toHaveFocus();
+  h.retarget({ focusRequest: 1 });
+  expect(h.input()).toHaveFocus();
+  expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([7, 7]);
 });
 
 it("does not seed a channel composer until its window is ready", () => {

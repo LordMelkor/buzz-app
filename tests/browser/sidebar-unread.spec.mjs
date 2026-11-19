@@ -428,48 +428,30 @@ test("resizing, collapsed groups and new unread evidence update only the display
   await open(page, app);
   await expect(row(page, "dm-090").getByRole("img")).toHaveCount(1);
   await expect(cue(page, "below")).toBeVisible();
-  // Messages are hidden behind a visible section summary: not below the scroll fold.
-  await list(page)
-    .locator("summary")
-    .filter({ hasText: /^Channels$/ })
-    .click();
-  // Channels are collapsed, but unread DMs remain eligible and keep the cue.
+  // Messages behind the Team heading sit above the DMs in this scrollport.
+  const team = list(page).locator('[data-sidebar-section="channels"]');
+  const channelsSummary = team.locator("summary");
+  await channelsSummary.click();
   await expect(cue(page, "below")).toBeVisible();
-  await list(page)
-    .locator("summary")
-    .filter({ hasText: /^Channels$/ })
-    .click();
+  await channelsSummary.click();
   await cue(page, "below").click();
   await expect.poll(() => inView(page, "dm-030")).toBe(true);
   // Collapse the preceding group without scrolling it into view first.
-  await list(page)
-    .locator("summary")
-    .filter({ hasText: /^Channels$/ })
-    .evaluate((el) => el.click());
+  await channelsSummary.evaluate((element) => element.click());
   await expect(cue(page, "above")).toBeVisible();
   await cue(page, "above").click();
   await expect.poll(() => inView(page, "Beta")).toBe(true);
-  await expect(list(page).locator("details").first()).toHaveAttribute(
-    "open",
-    "",
-  );
-  const controlledContent = await list(page)
-    .locator("details")
-    .first()
-    .locator("summary")
-    .getAttribute("aria-controls");
+  await expect(team.locator("details")).toHaveAttribute("open", "");
+  const controlledContent = await channelsSummary.getAttribute("aria-controls");
   await expect(page.locator(`[id="${controlledContent}"]`)).not.toHaveAttribute(
     "inert",
   );
   await expect(row(page, "Beta")).toBeFocused();
   await expect(row(page, "Beta")).toBeEnabled();
-  const channelsSummary = list(page)
-    .locator("summary")
-    .filter({ hasText: /^Channels$/ });
   await channelsSummary.focus();
   await page.keyboard.press("Tab");
   await expect(
-    list(page).getByRole("button", { name: "More actions for Channels" }),
+    list(page).getByRole("button", { name: "More actions for Team" }),
   ).toBeFocused();
   await page.keyboard.press("Tab");
   // Disabled header actions are skipped; traversal still reaches rows only
@@ -516,7 +498,7 @@ test("resizing, collapsed groups and new unread evidence update only the display
   await page.getByText("Diagnostics", { exact: true }).click();
   await page
     .getByRole("button", {
-      name: "Mark read through loaded messages",
+      name: "Mark as read through loaded messages",
       exact: true,
     })
     .click();
@@ -558,7 +540,10 @@ test("session changes discard the previous sidebar targets and manual unread sti
     await openChannelDetails(page);
     await page.getByText("Diagnostics", { exact: true }).press("Enter");
     await page
-      .getByRole("button", { name: "Mark unread on this device", exact: true })
+      .getByRole("button", {
+        name: "Mark as unread on this device",
+        exact: true,
+      })
       .click();
     await page
       .getByRole("button", { name: "Close Channel settings tab", exact: true })
