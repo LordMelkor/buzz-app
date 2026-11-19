@@ -163,6 +163,18 @@ export default defineConfig(async ({ command, mode }) => {
   const firstRunAccount =
     command === "serve" ? (env.BUZZ_DEV_FIRST_RUN_ACCOUNT ?? "") : "";
   parseFirstRunAccountSeed(firstRunAccount);
+  const desktopFrameRule: string | undefined =
+    command === "serve" && process.env.TAURI_ENV_PLATFORM
+      ? JSON.parse(
+          readFileSync(
+            new URL("src-tauri/tauri.conf.json", import.meta.url),
+            "utf8",
+          ),
+        )
+          .app.security.csp.split(";")
+          .map((rule: string) => rule.trim())
+          .find((rule: string) => rule.startsWith("frame-src "))
+      : undefined;
   const plugins: PluginOption[] = [react()];
   if (command === "serve")
     plugins.push(
@@ -251,6 +263,9 @@ export default defineConfig(async ({ command, mode }) => {
       port: worktreePort(fileURLToPath(new URL(".", import.meta.url))),
       strictPort: false,
       watch: { ignored: ["**/src-tauri/**", "**/target/**", "**/.scratch/**"] },
+      ...(desktopFrameRule
+        ? { headers: { "Content-Security-Policy": desktopFrameRule } }
+        : {}),
     },
   };
 });

@@ -372,8 +372,6 @@ export class HostService extends Service implements Host {
 
   get frameUrl() {
     if (!isTauri()) return undefined;
-    // Windows serves custom schemes as `http://<scheme>.localhost`, where
-    // native code does not register the frame.
     const url = convertFileSrc("", "buzz-frame");
     return url.startsWith("buzz-frame:") ? url : undefined;
   }
