@@ -1947,10 +1947,10 @@ below the words it shows "From" and the name in the plugin's manifest. The
 buttons keep the order of `actions`. Each is a default button, and
 `prominent` makes one the prominent button, so mark one at most. The title and
 description have no length limit, and the host neither cuts nor rejects long
-text: it wraps, breaking long words anywhere, and the notice stack scrolls
-once it is taller than its bound (at most 40% of the window's height), so the
-buttons stay reachable. The plugin owns everything it says and what each
-action means. Name the agent and the action in the title.
+text: it wraps, breaking long words anywhere, and the expanded notice stack
+scrolls within the window's height, so the buttons stay reachable. The plugin
+owns everything it says and what each action means. Name the agent and the
+action in the title.
 
 A tool can ask the owner before it runs. Pass the call's `client.signal`, so
 the notice goes away when the call is cancelled, which includes the end of its
