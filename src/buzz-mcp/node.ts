@@ -46,7 +46,8 @@ const SHOWN_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
  * `self` (the operator-contact `pubkey` is not one): what relay-signed records,
  * such as channel rosters, are checked against.
  * `undefined` when the document advertises none; rejects when the document
- * cannot be read, so a caller can tell an outage from a relay without a key. */
+ * cannot be read or its key is unusable, so a caller can tell an outage from a
+ * relay without a key. */
 export async function relayAuthority(relay: string) {
   const response = await fetch(httpBase(relay), {
     headers: { Accept: "application/nostr+json" },
@@ -57,9 +58,10 @@ export async function relayAuthority(relay: string) {
     throw new Error(`The relay answered ${response.status} for its key.`);
   const nip11 = (await response.json()) as { self?: unknown } | null;
   const author = nip11?.self;
-  return typeof author === "string" && /^[0-9a-f]{64}$/.test(author)
-    ? author
-    : undefined;
+  if (author === undefined || author === null) return undefined;
+  if (typeof author === "string" && /^[0-9a-f]{64}$/.test(author))
+    return author;
+  throw new Error("The relay advertises an unusable key.");
 }
 
 /** `relayAuthority` that asks again until the relay answers with a key, then
@@ -69,7 +71,6 @@ export function relayAuthorityLookup(relay: string) {
   return async () => {
     if (known) return known;
     const found = await relayAuthority(relay).catch((error: unknown) => {
-      // An overlapping lookup may have learned the key while this one failed.
       if (known) return known;
       throw error;
     });

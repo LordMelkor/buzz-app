@@ -2362,10 +2362,7 @@ class Tools {
           event.kind === 0
             ? [event.pubkey]
             : (authority &&
-                verifiedProfileSubject(
-                  event as unknown as RelayEvent,
-                  authority,
-                )) ||
+                verifiedProfileSubject(event as RelayEvent, authority)) ||
               [],
         ),
       ),

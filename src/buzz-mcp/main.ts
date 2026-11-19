@@ -24,7 +24,7 @@ const env = (name: string) => {
 const auth = process.env.BUZZ_AUTH_TAG?.trim();
 const channel = process.env.BUZZ_CHANNEL?.trim();
 const relay = env("BUZZ_RELAY_URL");
-const relayAuthor = relayAuthorityLookup(relay);
+const relayAuthorLookup = relayAuthorityLookup(relay);
 const client = nodeClient({
   relay,
   key: env("BUZZ_PRIVATE_KEY"),
@@ -58,13 +58,15 @@ serveStdio(() => {
                 ? callSoloWorkerTool(
                     {
                       ...client,
-                      relayAuthor: await relayAuthor().catch(() => undefined),
+                      relayAuthor: await relayAuthorLookup().catch(
+                        () => undefined,
+                      ),
                     },
                     tool.name,
                     args,
                   )
                 : callTool(
-                    { ...client, relayAuthorLookup: relayAuthor },
+                    { ...client, relayAuthorLookup },
                     context,
                     tool.name,
                     args,

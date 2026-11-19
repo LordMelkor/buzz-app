@@ -269,7 +269,6 @@ describe("relayAuthority", () => {
       "only the operator-contact pubkey",
       async () => Response.json({ pubkey: key }),
     ],
-    ["a malformed key", async () => Response.json({ self: "A".repeat(64) })],
     ["a non-object", async () => Response.json(null)],
   ])("learns there is no key from %s", async (_, answer) => {
     relay(answer);
@@ -279,6 +278,7 @@ describe("relayAuthority", () => {
   it.each([
     ["a failed answer", async () => new Response("no", { status: 503 })],
     ["unreadable JSON", async () => new Response("<html>")],
+    ["a malformed key", async () => Response.json({ self: "A".repeat(64) })],
     [
       "a refused redirect",
       async () => {
