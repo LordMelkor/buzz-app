@@ -3829,9 +3829,6 @@ it("finds users through the community's name search, in its order", async () => 
   expect(client.query).not.toHaveBeenCalled();
 });
 
-/** A community whose name search also matches verified names: Alice's profile
- * names differ from her verified names, and Carol has a verified name but no
- * profile. Heads are signed and admitted, as a connection returns them. */
 function verifiedPeople(more: readonly BuzzEvent[] = []) {
   const relay = keypair();
   const carol = "e".repeat(64);
@@ -3888,7 +3885,6 @@ it("finds a user by a verified full name that differs from their profile name", 
   expect(found).toBe(
     [
       `${alice} "Alice Smith" (verified: Jordan Rivera)`,
-      // Found by a verified name alone: no profile to print.
       `${carol} (verified: Casey Quinn)`,
     ].join("\n"),
   );
@@ -3896,7 +3892,6 @@ it("finds a user by a verified full name that differs from their profile name", 
 
 it("learns the relay's key only when a people search needs it", async () => {
   const { client: known, carol } = verifiedPeople();
-  // A standalone server learns the key from the relay, not from its host.
   const { relayAuthor, ...client } = known;
   const relayAuthorLookup = vi.fn(async () => relayAuthor);
   const lazy = { ...client, relayAuthorLookup };
@@ -3971,7 +3966,6 @@ it("quotes a profile's own name, so it can't pass for a verified label", async (
   ]);
   const found = await callTool(client, {}, "users", { q: "Jordan Rivera" });
   expect(found).toBe(`${forger} "Alice (verified: Jordan Rivera)"`);
-  // Nor can the about text start a forged row of its own.
   client.searchProfiles = vi.fn(async () => [
     event({
       kind: 0,
@@ -4001,7 +3995,6 @@ it("keeps the people the search found when reading verified names fails, but nam
       `${carol} (verified: Casey Quinn)`,
     ].join("\n"),
   );
-  // A profile could take a verified person's name, so naming waits for them.
   await expect(
     callTool(client, {}, "notes_get", { name: "recipe", author: "asmith" }),
   ).rejects.toThrow("Couldn't check verified names; try again.");
@@ -4009,7 +4002,6 @@ it("keeps the people the search found when reading verified names fails, but nam
 
 it("keeps the community's order for a person it found with no profile", async () => {
   const { client, carol } = verifiedPeople();
-  // The community ranks Carol, found by a head alone, above Alice.
   const heads = (await client.searchProfiles()).filter((e) => e.kind === 30382);
   client.searchProfiles = vi.fn(async () => [
     heads[1] as BuzzEvent,
@@ -4038,7 +4030,6 @@ it("names an author by any verified name or profile name, ignoring accents and c
     "asmith",
   ])
     await expect(read(author)).resolves.toMatch(/\nrecipe by a$/);
-  // A person with a verified name and no profile is named by it too.
   await expect(read("Casey Quinn")).resolves.toMatch(/\nrecipe by e$/);
   await expect(read("Nobody")).rejects.toThrow("No one is named Nobody.");
 });
@@ -4074,7 +4065,6 @@ it("finds users with NIP-50 search where the community has no name search", asyn
   expect(await callTool(client, {}, "users", { q: "alice" })).toBe(
     `${alice} "Alice Smith"`,
   );
-  // Either profile name matches, without accents.
   expect(await callTool(client, {}, "users", { q: "Fernandez" })).toBe(
     `${dana} "Dana"`,
   );
