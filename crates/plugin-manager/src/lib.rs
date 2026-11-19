@@ -510,10 +510,6 @@ fn bundled_manifests_for(gateway: Option<&gateway::Native>) -> Vec<Manifest> {
         serde_json::from_str(include_str!("../../../src/bundled/charts/manifest.json"))
             .expect("bundled charts manifest"),
         serde_json::from_str(include_str!(
-            "../../../src/bundled/file-viewer/manifest.json"
-        ))
-        .expect("bundled file viewer manifest"),
-        serde_json::from_str(include_str!(
             "../../../src/bundled/identity-naming/manifest.json"
         ))
         .expect("identity naming manifest"),

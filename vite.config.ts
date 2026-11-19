@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
-import { entityDecoderAlias } from "./scripts/entity-decoder-alias.mjs";
 import { diffHighlighterAliases } from "./scripts/diff-highlighter-aliases.mjs";
 import { worktreePort } from "./scripts/worktree-port.mjs";
 import {
@@ -206,7 +205,7 @@ export default defineConfig(async ({ command, mode }) => {
     });
   return {
     plugins,
-    resolve: { alias: [entityDecoderAlias, ...diffHighlighterAliases] },
+    resolve: { alias: diffHighlighterAliases },
     define: {
       "import.meta.env.VITE_BUZZ_LIVE": JSON.stringify(live ? "1" : "0"),
       "import.meta.env.VITE_BUZZ_AGENT_GATEWAY": JSON.stringify(

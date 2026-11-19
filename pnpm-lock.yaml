@@ -98,15 +98,6 @@ importers:
       gitdiff-parser:
         specifier: 0.3.1
         version: 0.3.1
-      github-slugger:
-        specifier: 2.0.0
-        version: 2.0.0
-      highlight.js:
-        specifier: 11.11.2
-        version: 11.11.2
-      lowlight:
-        specifier: 3.3.0
-        version: 3.3.0
       mdast-util-from-markdown:
         specifier: 2.0.3
         version: 2.0.3
@@ -125,18 +116,12 @@ importers:
       micromark-extension-gfm-table:
         specifier: 2.1.1
         version: 2.1.1
-      micromark-util-decode-string:
-        specifier: 2.0.1
-        version: 2.0.1
       motion:
         specifier: 12.40.0
         version: 12.40.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       nostr-tools:
         specifier: 2.25.2
         version: 2.25.2(typescript@7.0.2)
-      pdfjs-dist:
-        specifier: 6.4.299
-        version: 6.4.299
       pele:
         specifier: 1.6.0
         version: 1.6.0
@@ -176,15 +161,9 @@ importers:
       remark-gfm:
         specifier: 4.0.1
         version: 4.0.1
-      remark-parse:
-        specifier: 11.0.0
-        version: 11.0.0
       sonner:
         specifier: 2.0.8
         version: 2.0.8(patch_hash=5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      unified:
-        specifier: 11.0.5
-        version: 11.0.5
       virtua:
         specifier: 0.53.5
         version: 0.53.5(patch_hash=2ec4aead43edeae07a52fd481d2db8a46ac16e2a98f13d0c2f1a5e543e208ce8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -222,9 +201,6 @@ importers:
       '@types/d3-scale':
         specifier: 4.0.9
         version: 4.0.9
-      '@types/hast':
-        specifier: 3.0.5
-        version: 3.0.5
       '@types/mdast':
         specifier: 4.0.4
         version: 4.0.4
@@ -246,9 +222,6 @@ importers:
       postcss:
         specifier: 8.5.28
         version: 8.5.28
-      remark-rehype:
-        specifier: 11.1.2
-        version: 11.1.2
       rolldown:
         specifier: 1.2.7
         version: 1.2.7
@@ -524,81 +497,6 @@ packages:
   '@modelcontextprotocol/server@2.3.1':
     resolution: {integrity: sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==}
     engines: {node: '>=20'}
-
-  '@napi-rs/canvas-android-arm64@1.1.0':
-    resolution: {integrity: sha512-mKrSmRyhWK4q699Q1xthbZIZi7JBvLtsRNnOZAeFaLPOFT1yo8y82aRC2nNZbXTGJXU7fVDONgGQPr0vo3kerw==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [android]
-
-  '@napi-rs/canvas-darwin-arm64@1.1.0':
-    resolution: {integrity: sha512-iqwST4g0oH+x8VCpBIYh+MYokv/mVvkM+v9oJGB0d9A3P2qBh42ogJlVyWq9SpPCrAjS7tplMb1D3OIfxl+utw==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@napi-rs/canvas-darwin-x64@1.1.0':
-    resolution: {integrity: sha512-jkeA8eVTxDum03LTvc32YJ28F6KB1U0gYwnWMfOAUQZvWWEh/kvONby4iWGJx3+Tw45UqMGMXjtw2GKNVZDhVg==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [darwin]
-
-  '@napi-rs/canvas-linux-arm-gnueabihf@1.1.0':
-    resolution: {integrity: sha512-Y4YkKG1ijoqkgUdTEEBNG4k+2BK5bR5jGL6S56YxCXYPwGfUd5nED8/74xyc7z+bpixPasCjSYoP3xYPOIGNxw==}
-    engines: {node: '>= 10'}
-    cpu: [arm]
-    os: [linux]
-
-  '@napi-rs/canvas-linux-arm64-gnu@1.1.0':
-    resolution: {integrity: sha512-dE/XthqYkiWcBVtKFlZbUXwAYfDuQGqDWixznipJNmevLGpprNnTVQZyftm1RZJudkIOn2EkzYZDMMETM08Row==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-arm64-musl@1.1.0':
-    resolution: {integrity: sha512-DqZ/CMcHlhU56pPjv9AP0h3U7MFQ5LzC1HzMyRMotL+PFsJmZJA/ziApPYVyyz78DaVLhI8t3So3ztqtijbYpg==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@napi-rs/canvas-linux-riscv64-gnu@1.1.0':
-    resolution: {integrity: sha512-kJ7m5n2VffxWXM5QGa5lfq8ZN4LdOJEoz3aAJAmIqYvKiZw1gRdXqpucnRXsF6D9nLYiiIlevaAtAclR7c5ilg==}
-    engines: {node: '>= 10'}
-    cpu: [riscv64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-x64-gnu@1.1.0':
-    resolution: {integrity: sha512-uQ9JuJlRhQdHyttcMWOiwLkfIqkqaB0YFUVe835LUe12THt2b51HXkTItq0fxWT1jdhUPX2ylWZ1walkJyD6GQ==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-x64-musl@1.1.0':
-    resolution: {integrity: sha512-has4CPPAkkCac/LZ13VAw5p+MJLdaKVoyrhumN/A7uJd6960xYkJNDZgUebyxiha82AFzXx6RV+QJg5qGG079g==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  '@napi-rs/canvas-win32-arm64-msvc@1.1.0':
-    resolution: {integrity: sha512-MJnktLKNijmXqdjTughHDZ9TDLZ9uUm2hvFXqaOqn0+w7lphXFnft6bpSgQAc9U1exc20UGIBlzGu9+kiCj9Ag==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [win32]
-
-  '@napi-rs/canvas-win32-x64-msvc@1.1.0':
-    resolution: {integrity: sha512-08575bFk7iiadxap4h+JxgGut9xDCHAGum6wh0eInN53zEMImkmEHi5MushX2FOmNO7qRNX7BPiDC5ZYBwHeEg==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [win32]
-
-  '@napi-rs/canvas@1.1.0':
-    resolution: {integrity: sha512-k+ph/D8H9GS8ZZ48okvHrKeJynkqAA1kMUZRuzRWNlQUDHXngq7oRaWMZBdmSfd9ZhVy9bwNKei/7wMboI/uMg==}
-    engines: {node: '>= 10'}
 
   '@noble/ciphers@2.1.1':
     resolution: {integrity: sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw==}
@@ -1526,9 +1424,6 @@ packages:
   gitdiff-parser@0.3.1:
     resolution: {integrity: sha512-YQJnY8aew65id8okGxKCksH3efDCJ9HzV7M9rsvd65habf39Pkh4cgYJ27AaoDMqo1X98pgNJhNMrm/kpV7UVQ==}
 
-  github-slugger@2.0.0:
-    resolution: {integrity: sha512-IaOQ9puYtjrkq7Y0Ygl9KDZnrf/aiUJYUpVf89y8kyaxbRG7Y1SrX/jaumrv81vc61+kiMempujsM3Yw7w5qcw==}
-
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
@@ -1543,10 +1438,6 @@ packages:
 
   hast-util-whitespace@3.0.0:
     resolution: {integrity: sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==}
-
-  highlight.js@11.11.2:
-    resolution: {integrity: sha512-oaXMACAU0kzOMXBjWpNcX+vlwSBCIAiZ9BHa7gA15NOTtT2L/l8OSZDuqS2XppOhZBPJ7hm4o8ep2kyuip2uEQ==}
-    engines: {node: '>=12.0.0'}
 
   html-encoding-sniffer@6.0.0:
     resolution: {integrity: sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg==}
@@ -1789,9 +1680,6 @@ packages:
   longest-streak@3.1.0:
     resolution: {integrity: sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g==}
 
-  lowlight@3.3.0:
-    resolution: {integrity: sha512-0JNhgFoPvP6U6lE/UdVsSq99tn6DhjjpAj5MxG49ewd2mOBVtwWYIT8ClyABhq198aXXODMU6Ox8DrGy/CpTZQ==}
-
   lru-cache@11.5.2:
     resolution: {integrity: sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==}
     engines: {node: 20 || >=22}
@@ -2024,10 +1912,6 @@ packages:
   path-key@4.0.0:
     resolution: {integrity: sha512-haREypq7xkM7ErfgIyA0z+Bj4AGKlMSdlQE2jvJo6huWD1EdkKYV+G/T4nq0YEF2vgTT8kqMFKo1uHn950r4SQ==}
     engines: {node: '>=12'}
-
-  pdfjs-dist@6.4.299:
-    resolution: {integrity: sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==}
-    engines: {node: '>=22.13.0 || >=24'}
 
   pele@1.6.0:
     resolution: {integrity: sha512-VfAiVItsOGlGhvnBfphdT28VCG7mXMZxQNOwAGsCtxI2ztbUsT39MraEOYjsapLxVETkdUZscm0DdotYDQMLdw==}
@@ -2767,54 +2651,6 @@ snapshots:
       '@modelcontextprotocol/core': 2.3.1
       zod: 4.6.5
 
-  '@napi-rs/canvas-android-arm64@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-darwin-arm64@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-darwin-x64@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm-gnueabihf@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm64-gnu@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm64-musl@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-riscv64-gnu@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-x64-gnu@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-linux-x64-musl@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-win32-arm64-msvc@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas-win32-x64-msvc@1.1.0':
-    optional: true
-
-  '@napi-rs/canvas@1.1.0':
-    optionalDependencies:
-      '@napi-rs/canvas-android-arm64': 1.1.0
-      '@napi-rs/canvas-darwin-arm64': 1.1.0
-      '@napi-rs/canvas-darwin-x64': 1.1.0
-      '@napi-rs/canvas-linux-arm-gnueabihf': 1.1.0
-      '@napi-rs/canvas-linux-arm64-gnu': 1.1.0
-      '@napi-rs/canvas-linux-arm64-musl': 1.1.0
-      '@napi-rs/canvas-linux-riscv64-gnu': 1.1.0
-      '@napi-rs/canvas-linux-x64-gnu': 1.1.0
-      '@napi-rs/canvas-linux-x64-musl': 1.1.0
-      '@napi-rs/canvas-win32-arm64-msvc': 1.1.0
-      '@napi-rs/canvas-win32-x64-msvc': 1.1.0
-    optional: true
-
   '@noble/ciphers@2.1.1': {}
 
   '@noble/curves@2.0.1':
@@ -3507,8 +3343,6 @@ snapshots:
 
   gitdiff-parser@0.3.1: {}
 
-  github-slugger@2.0.0: {}
-
   graceful-fs@4.2.11: {}
 
   hast-util-to-html@9.0.5:
@@ -3562,8 +3396,6 @@ snapshots:
   hast-util-whitespace@3.0.0:
     dependencies:
       '@types/hast': 3.0.5
-
-  highlight.js@11.11.2: {}
 
   html-encoding-sniffer@6.0.0(@noble/hashes@2.0.1):
     dependencies:
@@ -3753,12 +3585,6 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.33.0
 
   longest-streak@3.1.0: {}
-
-  lowlight@3.3.0:
-    dependencies:
-      '@types/hast': 3.0.5
-      devlop: 1.1.0
-      highlight.js: 11.11.2
 
   lru-cache@11.5.2: {}
 
@@ -4197,10 +4023,6 @@ snapshots:
   path-key@3.1.1: {}
 
   path-key@4.0.0: {}
-
-  pdfjs-dist@6.4.299:
-    optionalDependencies:
-      '@napi-rs/canvas': 1.1.0
 
   pele@1.6.0: {}
 
