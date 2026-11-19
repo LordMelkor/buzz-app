@@ -26,6 +26,7 @@ import {
   prove,
   REACTION,
   T,
+  type World,
 } from "../../../tests/fixtures/conversation-arranger/relay";
 import { ComposerAccessories } from "../conversation/ComposerAccessories";
 import type {
@@ -364,7 +365,7 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
   await ready(h);
 
   const reads = h.scanReads(before);
-  expect(reads).toHaveLength(7);
+  expect(reads).toHaveLength(8);
   expect(reads.every(({ priority }) => priority === "background")).toBe(true);
   const windows = reads
     .flatMap(({ filters }) => filters)
@@ -491,7 +492,10 @@ it("reads a heavy root's replies' reactions by id once the relay refuses its pag
   const pages = h.answers.filter((answer) =>
     answer.some((e) => e.kind === 39007),
   );
-  const aux = filters.filter((filter) => !filter.thread_window && filter["#e"]);
+  const aux = filters.filter(
+    (filter) =>
+      !filter.thread_window && filter["#e"] && !filter.kinds?.includes(9),
+  );
   expect(new Set(aux.flatMap((filter) => filter["#e"] ?? []))).toEqual(
     new Set(
       pages
@@ -791,7 +795,7 @@ it("reads a thread through older pages alone when the relay has no newer windows
   h.click("Top");
   await ready(h);
   const reads = h.scanReads(before);
-  expect(reads).toHaveLength(11);
+  expect(reads).toHaveLength(12);
   const filters = reads.flatMap(({ filters }) => filters);
   expect(filters.some((f) => f.direction === "newer")).toBe(false);
   expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
@@ -843,6 +847,18 @@ it("leaves its place, and the reader's own rows, when withdrawn", async () => {
   h.click("Buzz order");
   await waitFor(() => expect(h.arrangement.snapshot()).toBeUndefined());
   expect(h.status()).toBe("");
+  expect(h.arrangement.status(h.lane() as never)).toBe("none");
+});
+
+it("stops and lets its rows go when the reader takes them back", async () => {
+  const { root } = thread;
+  const h = await mount({ fixture: thread, rootId: root.id });
+  h.click("Top");
+  await ready(h);
+  expect(h.arrangement.status(h.lane() as never)).toBe("shown");
+  act(() => h.arrangement.withdraw());
+  await waitFor(() => expect(h.status()).toBe(""));
+  expect(h.arrangement.snapshot()).toBeUndefined();
   expect(h.arrangement.status(h.lane() as never)).toBe("none");
 });
 
@@ -985,6 +1001,70 @@ it("keeps an Oldest list in order when replies arrive before the read reaches th
   expect(h.shown().slice(-30)).toEqual(idsOf(late));
 });
 
+it("counts a reply that commits while the read runs with a time the read had passed", async () => {
+  const { events, root, authors } = thread;
+  const [late] = (await prove([
+    mint(authors[0] as never, {
+      kind: 9,
+      content: "committed while the read ran",
+      created_at: Math.floor(Date.now() / 1000) - 100,
+      tags: [
+        ["h", CHANNEL],
+        ["e", root.id, "", "reply"],
+      ],
+    }),
+  ])) as [RelayEvent];
+  let world: World | undefined;
+  let windows = 0;
+  const h = await mount({
+    fixture: thread,
+    rootId: root.id,
+    hold: (filters) => {
+      if (world && filters.some((f) => f.thread_window) && ++windows === 2)
+        world.add([late]);
+      return undefined;
+    },
+  });
+  world = h.world;
+  h.click("Top");
+  await ready(h);
+  expect(windows).toBeGreaterThan(2);
+  await statusIs(
+    h,
+    replies(1, 200, oracle([...events, late], root.id).rows.length),
+  );
+});
+
+it("keeps what it holds when the session refuses a live reply, and takes the next one", async () => {
+  const { events, root, authors } = thread;
+  const h = await mount({ fixture: thread, rootId: root.id });
+  h.click("Top");
+  await ready(h);
+  const reply = (content: string, at: number) =>
+    mint(authors[0] as never, {
+      kind: 9,
+      content,
+      created_at: at,
+      tags: [
+        ["h", CHANNEL],
+        ["e", root.id, "", "reply"],
+      ],
+    });
+  const [huge, small] = (await prove([
+    reply("x".repeat(8 * 1024 * 1024), T + 40_000),
+    reply("small", T + 40_001),
+  ])) as [RelayEvent, RelayEvent];
+  h.heard(huge);
+  await statusIs(h, /Cannot hold this conversation/);
+  h.heard(small);
+  h.click("Top");
+  await statusIs(
+    h,
+    replies(1, 200, oracle([...events, small], root.id).rows.length),
+  );
+  expect(h.shown()).not.toContain(huge.id);
+});
+
 async function hostChannel(h: Harness) {
   void h.session.channels.refresh?.(CHANNEL);
   await waitFor(() =>
@@ -1038,7 +1118,7 @@ it("ranks a 5,000-row channel by top reacted from verified windows, without touc
 
   const reads = h.scanReads(before);
   expect(reads.every(({ priority }) => priority === "background")).toBe(true);
-  expect(reads).toHaveLength(25);
+  expect(reads).toHaveLength(26);
   const pages = h.answers.filter((page) => page.some((e) => e.kind === 39006));
   expect(pages).toHaveLength(25);
   expect(h.answers.flat().every(hasEventProof)).toBe(true);

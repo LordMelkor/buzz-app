@@ -121,6 +121,7 @@ export function createWorld(events: readonly RelayEvent[] = []) {
       sorted.clear();
     },
     byId,
+    messages: () => [...top, ...[...replies.values()].flat()].sort(ascending),
     rows(root?: string) {
       const key = root ?? "";
       let list = sorted.get(key);
@@ -178,7 +179,7 @@ async function bound(
     mint(relay, {
       kind,
       content: JSON.stringify(body),
-      created_at: T,
+      created_at: Math.floor(Date.now() / 1000),
       tags,
     }),
   ]);
@@ -273,6 +274,18 @@ export function createRelay(options: {
           },
         ),
       ];
+    }
+    if (
+      filter.kinds?.length === 1 &&
+      filter.kinds[0] === 9 &&
+      filter["#h"]?.includes(CHANNEL)
+    ) {
+      const rows = roots ? world.rows(roots) : world.messages();
+      const since = filter.since ?? 0;
+      return after(
+        rows.filter((e) => e.created_at >= since && !world.deleted(e)),
+        filter,
+      ).slice(0, page);
     }
     if (filter["#e"]) {
       const kinds = new Set(filter.kinds ?? []);

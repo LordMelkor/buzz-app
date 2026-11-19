@@ -24,6 +24,7 @@ const JITTER_MS = 10_000;
 const BOUNDS = { thread: 39007, channel: 39006 } as const;
 const AUX = new Set([5, 7, 9005, 40003]);
 const AUX_PAGE = 500;
+const LATE_SECS = 960;
 
 /** The scan's whole life, as one value. A new sort, a withdraw or unmount aborts `scanning`. */
 type Phase =
@@ -78,6 +79,7 @@ function createArranger(initial: ComposerAccessoryProps) {
   let closureRefused: string | undefined;
   let scanned = false;
   let forward: Cursor | null | undefined;
+  let walkStart: number | undefined;
   let shown = 0;
   let taken = 0;
   let total = 0;
@@ -111,19 +113,60 @@ function createArranger(initial: ComposerAccessoryProps) {
 
   function keep(more: readonly RelayEvent[]) {
     const kind = kindOfBounds();
+    const fresh = new Map<string, RelayEvent>();
     for (const event of more)
       if (event.kind !== kind && !events.has(event.id))
-        events.set(event.id, event);
-    holdAll();
+        fresh.set(event.id, event);
+    holdAll([...fresh.values()]);
   }
-  function holdAll() {
+  function holdAll(more: readonly RelayEvent[] = []) {
     try {
       hold ??= props.session.retain();
-      hold.set([...events.values()]);
+      hold.set([...events.values(), ...more]);
     } catch (error) {
       throw new Error(
         `Cannot hold this conversation: ${(error as Error).message}`,
       );
+    }
+    for (const event of more) events.set(event.id, event);
+  }
+  function forget() {
+    events.clear();
+    scanned = false;
+    forward = undefined;
+    walkStart = undefined;
+    lost = false;
+    hold?.dispose();
+    hold = undefined;
+  }
+
+  async function drain(
+    filter: ReadFilter,
+    signal: AbortSignal,
+    take: (page: readonly RelayEvent[]) => void,
+  ) {
+    let cursor: Cursor | undefined;
+    for (;;) {
+      const page = await read(
+        [
+          {
+            ...filter,
+            ...(cursor
+              ? { until: cursor.created_at, before_id: cursor.id }
+              : {}),
+          },
+        ],
+        signal,
+      );
+      const last = page.reduce<RelayEvent | undefined>(
+        (end, event) => (!end || inOrder(event, end) < 0 ? event : end),
+        undefined,
+      );
+      if (!last) return;
+      if (cursor && inOrder(last, cursor) >= 0)
+        throw new Error("The relay did not page this read");
+      take(page);
+      cursor = { created_at: last.created_at, id: last.id };
     }
   }
 
@@ -132,33 +175,36 @@ function createArranger(initial: ComposerAccessoryProps) {
     for (const scope of [
       { kinds: [5, 7, 9005, 40003], "#h": [props.channelId] },
       { kinds: [5, 9005] },
-    ]) {
-      let cursor: Cursor | undefined;
-      for (;;) {
-        const page = await read(
-          [
-            {
-              ...scope,
-              "#e": [...ids],
-              limit: AUX_PAGE,
-              ...(cursor
-                ? { until: cursor.created_at, before_id: cursor.id }
-                : {}),
-            },
-          ],
-          signal,
-        );
-        const last = page.reduce<RelayEvent | undefined>(
-          (end, event) => (!end || inOrder(event, end) < 0 ? event : end),
-          undefined,
-        );
-        if (!last) break;
-        if (cursor && inOrder(last, cursor) >= 0)
-          throw new Error("The relay did not page reactions");
-        keep(page);
-        cursor = { created_at: last.created_at, id: last.id };
-      }
-    }
+    ])
+      await drain({ ...scope, "#e": [...ids], limit: AUX_PAGE }, signal, keep);
+  }
+  async function overlap(signal: AbortSignal) {
+    const root = rootId();
+    const fresh: string[] = [];
+    await drain(
+      {
+        kinds: [9],
+        "#h": [props.channelId],
+        ...(root ? { "#e": [root] } : {}),
+        since: (walkStart ?? 0) - LATE_SECS,
+        limit: PAGE,
+      },
+      signal,
+      (page) => {
+        const rows = root
+          ? page
+          : page.filter(
+              (event) =>
+                !event.tags.some(
+                  ([name, , , marker]) => name === "e" && marker === "reply",
+                ),
+            );
+        for (const event of rows)
+          if (event.id !== root && !events.has(event.id)) fresh.push(event.id);
+        keep(rows);
+      },
+    );
+    await replyAux(fresh, signal);
   }
 
   async function pages(
@@ -187,6 +233,7 @@ function createArranger(initial: ComposerAccessoryProps) {
         };
       });
     let answer: readonly RelayEvent[];
+    const requested = Math.floor(Date.now() / 1000);
     try {
       answer = await read(windows(), signal);
     } catch (error) {
@@ -195,16 +242,20 @@ function createArranger(initial: ComposerAccessoryProps) {
       closure = false;
       answer = await read(windows(), signal);
     }
-    const bodies = answer
-      .filter((event) => event.kind === kindOfBounds())
-      .map(
-        (event) =>
-          JSON.parse(event.content) as {
-            direction?: Lane;
-            has_more: boolean;
-            next_cursor: Cursor | null;
-          },
-      );
+    const stamped = answer.filter((event) => event.kind === kindOfBounds());
+    walkStart = Math.min(
+      walkStart ?? requested,
+      requested,
+      ...stamped.map((event) => event.created_at),
+    );
+    const bodies = stamped.map(
+      (event) =>
+        JSON.parse(event.content) as {
+          direction?: Lane;
+          has_more: boolean;
+          next_cursor: Cursor | null;
+        },
+    );
     keep(answer);
     if (!closure) {
       await replyAux(
@@ -255,6 +306,7 @@ function createArranger(initial: ComposerAccessoryProps) {
         emit();
       }
     }
+    await overlap(signal);
     scanned = true;
   }
 
@@ -274,7 +326,9 @@ function createArranger(initial: ComposerAccessoryProps) {
       [forward] = await pages([["newer", forward ?? undefined]], signal);
       emit();
     }
-    scanned = forward === null;
+    if (forward !== null) return;
+    await overlap(signal);
+    scanned = true;
   }
   const reachesAll = () =>
     sort === "top" || filter !== "" || props.session.windowNewer !== true;
@@ -419,13 +473,7 @@ function createArranger(initial: ComposerAccessoryProps) {
 
   function rescan() {
     repair = undefined;
-    lost = false;
-    events.clear();
-    scanned = false;
-    forward = undefined;
-    try {
-      hold?.set([]);
-    } catch {}
+    forget();
     if (sort) refresh();
     else emit();
   }
@@ -449,33 +497,30 @@ function createArranger(initial: ComposerAccessoryProps) {
   function onLive({ events: heard }: { events: readonly RelayEvent[] }) {
     if (!sort && !events.size) return;
     const root = rootId();
-    let added = 0;
+    const fresh = new Map<string, RelayEvent>();
+    const known = (id: string) => events.has(id) || fresh.has(id);
     for (const event of heard)
       if (
         event.kind === 9 &&
-        !events.has(event.id) &&
+        !known(event.id) &&
         event.tags.some(([name, id]) =>
           root
             ? name === "e" && id === root
             : name === "h" && id === props.channelId,
         )
-      ) {
-        events.set(event.id, event);
-        added++;
-      }
+      )
+        fresh.set(event.id, event);
     for (let hop = 0; hop < 2; hop++)
       for (const event of heard)
         if (
           AUX.has(event.kind) &&
-          !events.has(event.id) &&
-          auxTargets(event).some((id) => events.has(id))
-        ) {
-          events.set(event.id, event);
-          added++;
-        }
-    if (!added) return;
+          !known(event.id) &&
+          auxTargets(event).some(known)
+        )
+          fresh.set(event.id, event);
+    if (!fresh.size) return;
     try {
-      holdAll();
+      holdAll([...fresh.values()]);
     } catch (error) {
       if (sort) fail(error, sort);
       return;
@@ -490,6 +535,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     filter = "";
     starts = [0];
     shown = 0;
+    forget();
     emit();
   }
 
@@ -556,6 +602,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     free() {
       if (phase.state === "ready" && sort) arrange();
     },
+    stop,
     update(next: ComposerAccessoryProps) {
       props = next;
     },
@@ -633,9 +680,14 @@ export function apply(ctx: Context) {
       arranger.snapshot,
       arranger.snapshot,
     );
+    const was = React.useRef(props.presentation);
     React.useEffect(() => {
+      const before = was.current;
+      was.current = props.presentation;
       if (props.presentation === "ended") arranger.ended();
-      if (props.presentation === "none") arranger.free();
+      if (props.presentation !== "none") return;
+      if (before === "shown") arranger.stop();
+      else arranger.free();
     }, [arranger, props.presentation]);
     const noun = props.threadRootId !== undefined ? "replies" : "messages";
     const [draft, setDraft] = React.useState("");
