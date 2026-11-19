@@ -825,6 +825,18 @@ it("a list that turns partial mid-dwell drops its complete leases before they ca
     expect(call).toEqual(["room", "thread", {}, true]);
   expect(h.dwelled()?.observe).toHaveBeenCalledWith(["bottom"]);
 });
+it("a list that turns partial keeps its visit and replaces only its leases", async () => {
+  const h = setup({ latestMessageId: "visible", rootId: "thread" });
+  const visit = h.reading.mock.calls[0]?.[2];
+  expect(visit).toBeDefined();
+  h.setPartial(true);
+  h.setPartial(false);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(h.session.unread.leave).not.toHaveBeenCalled();
+  expect(h.reading.mock.calls.map((call) => call[3])).toContain(true);
+  for (const call of h.reading.mock.calls) expect(call[2]).toBe(visit);
+  expect(h.dwelled()?.observe).toHaveBeenCalledWith(["visible"]);
+});
 it("using the list's reader bar earns dwell", () => {
   const h = setup({ focus: "bar" });
   vi.advanceTimersByTime(300);

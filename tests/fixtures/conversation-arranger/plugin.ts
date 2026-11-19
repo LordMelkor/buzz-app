@@ -489,6 +489,7 @@ function createArranger(initial: ComposerAccessoryProps) {
     if (!now && events.size && !lost) {
       lost = true;
       emit();
+      schedule();
     }
     scheduleRescan();
   }

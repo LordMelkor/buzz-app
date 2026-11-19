@@ -557,6 +557,19 @@ it("presents a thread that fits whole as complete", async () => {
   expect(screen.queryByRole("button", { name: "More" })).toBeNull();
 });
 
+it("stops calling a whole thread complete once its connection drops", async () => {
+  const small = await threadFixture(100);
+  const h = await mount({ fixture: small, rootId: small.root.id });
+  act(() => h.connection("connected"));
+  h.click("Top");
+  await ready(h);
+  expect(h.arrangement.snapshot()?.complete).toBe(true);
+  const shown = h.shown();
+  act(() => h.connection("retrying"));
+  await waitFor(() => expect(h.arrangement.snapshot()?.complete).toBe(false));
+  expect(h.shown()).toEqual(shown);
+});
+
 it("grows a Top window from 200 to 460 rows, the most a thread reader shows, and refuses 461", async () => {
   const { events, root } = thread;
   const want = oracle(events, root.id);
