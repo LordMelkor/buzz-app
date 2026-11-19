@@ -101,7 +101,12 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  HTMLElement.prototype.scrollIntoView = vi.fn();
+  HTMLElement.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) {
+    const at = [
+      ...document.querySelectorAll("[data-thread-rows] ol [data-message-id]"),
+    ].indexOf(this);
+    if (at >= 0) scrolled = Math.max(0, Math.min(100 * (at + 1), 3400));
+  });
   HTMLElement.prototype.scrollTo = vi.fn();
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(4000);
@@ -490,7 +495,7 @@ it("hides the jump button and keeps the arrivals count off while it presents", (
 const rowOf = (h: ReturnType<typeof mount>, event: EventData) =>
   h.rowsOf([root, event]).find((row) => row.id === event.id);
 
-it("takes its rows back to reveal a link's target they leave out, then keeps rows that leave it out", async () => {
+it("takes its rows back to reveal a link's target they leave out", async () => {
   const navigation = navigationTo(d.id);
   const h = mount({
     replies: [d],
@@ -510,9 +515,26 @@ it("takes its rows back to reveal a link's target they leave out, then keeps row
     }),
   );
   expect(lastReading().settled.current).toBe(true);
+});
+
+it("keeps rows that leave out a link's target the reader already revealed", async () => {
+  const navigation = navigationTo(d.id);
+  const h = mount({
+    replies: [d],
+    navigation,
+    props: { messageId: d.id },
+    snapshot: { targetStatus: "loading" },
+  });
+  h.publish({ targetStatus: "ready", target: rowOf(h, d) });
+  await waitFor(() =>
+    expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
+      status: "opened",
+    }),
+  );
   h.present({ ids: [a.id, b.id] });
   expect(h.latest.current?.presentation).toBe("shown");
   expect(drawn()).toEqual(["root", "a", "b"]);
+  expect(navigation.complete).toHaveBeenCalledOnce();
 });
 
 it("keeps a second presentation that leaves out a link's target, and opens the visit", () => {
