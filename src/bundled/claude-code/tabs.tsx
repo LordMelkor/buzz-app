@@ -8,6 +8,7 @@ import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
 // Claude's provider controls, New agent choices, and agent settings.
 import {
+  Fragment,
   type ReactNode,
   useEffect,
   useRef,
@@ -703,11 +704,13 @@ export function createTabs({
    * setup beside Harness, and so does the agent. */
   function CreateConfiguration({
     harnessControl,
+    rowsOnly,
     onReadyChange,
     agent,
     ...props
   }: AgentCreateProps<Config> & {
     harnessControl: ReactNode;
+    rowsOnly?: boolean;
     onReadyChange?: (ready: boolean) => void;
   }) {
     const { state, resolving, signedOut } = useCredentials(agent);
@@ -715,8 +718,9 @@ export function createTabs({
     // installed waits for the download, as it did with the Model row alone.
     const ready = !!state.status && !signedOut && !resolving;
     useEffect(() => onReadyChange?.(ready), [onReadyChange, ready]);
+    const Group = rowsOnly ? Fragment : SettingsGroup;
     return (
-      <SettingsGroup>
+      <Group>
         {harnessControl}
         <PreferenceRow
           title="Model"
@@ -739,7 +743,7 @@ export function createTabs({
           title="Thinking"
           trailing={<CreateThinking {...(agent && { agent })} {...props} />}
         />
-      </SettingsGroup>
+      </Group>
     );
   }
 

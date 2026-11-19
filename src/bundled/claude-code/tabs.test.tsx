@@ -1936,6 +1936,27 @@ it("holds a new Claude agent without a key, Model and Thinking disabled", async 
   expect(onReadyChange).toHaveBeenLastCalledWith(false);
 });
 
+it("gives a host's group its rows alone, still holding the agent without a key", async () => {
+  const { type } = installed({ keySaved: false });
+  const Configuration = type.CreateConfiguration;
+  if (!Configuration) throw new Error("Missing creation configuration");
+  const onReadyChange = vi.fn();
+  const { container } = render(
+    <Configuration
+      rowsOnly
+      config={DEFAULT_CONFIG}
+      disabled={false}
+      harnessControl={<div>Harness row</div>}
+      onReadyChange={onReadyChange}
+      onChange={vi.fn()}
+    />,
+  );
+  expect(screen.getByText("Harness row")).toBeVisible();
+  expect(await screen.findByRole("combobox", { name: "Model" })).toBeDisabled();
+  expect(container.querySelector(".buzz-settings-group")).toBeNull();
+  expect(onReadyChange).toHaveBeenLastCalledWith(false);
+});
+
 it("offers an interactive sign-in in Set up Claude when the build has one", async () => {
   interactive.signIn = true;
   try {

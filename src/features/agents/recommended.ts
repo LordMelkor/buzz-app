@@ -260,7 +260,7 @@ export const CHECK_MS = 8_000;
  * set up or signed in since then is asked again. */
 export const RETRY_MS = 60_000;
 /** A check's answer, as no once it rejects or takes longer than `CHECK_MS`. */
-const bounded = (check: Promise<boolean> | undefined) =>
+export const bounded = (check: Promise<boolean> | undefined) =>
   new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), CHECK_MS);
     const done = (answer: boolean) => {

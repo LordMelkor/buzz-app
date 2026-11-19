@@ -1028,10 +1028,13 @@ export type AgentType<Config = unknown> = {
    * row alongside its own controls and keeps discovery/recovery with them.
    * Takes precedence over CreateModel in the creation dialog. Report readiness
    * of the displayed choices through onReadyChange, independently of edits;
-   * the dialog waits for true before allowing creation. */
+   * the dialog waits for true before allowing creation. With `rowsOnly`, the
+   * host already supplies the group (under AI setup's Custom): return the
+   * same rows without one. */
   CreateConfiguration?: ComponentType<
     AgentCreateProps<Config> & {
       harnessControl: ReactNode;
+      rowsOnly?: boolean;
       onReadyChange?: (ready: boolean) => void;
     }
   >;
