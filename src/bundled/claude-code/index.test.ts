@@ -156,6 +156,28 @@ it("observes saved sessions with the live status of running ones", () => {
   ]);
 });
 
+it("declares its harness to the gateway for attribution only, so the route never holds or fails a turn", () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  let type: AgentType | undefined;
+  apply({
+    settingsCards: { register: vi.fn() },
+    agentProtection: { registerModels: vi.fn() },
+    pluginOwner: { id: "buzz.claude-code", revision: "r1" },
+    host: { request: vi.fn() },
+    agents: {
+      register: (registered: AgentType) => {
+        type = registered;
+      },
+      relay: () => undefined,
+    },
+    effect: vi.fn(),
+  } as never);
+  expect(type?.gateway).toEqual({
+    harness: "claude-code",
+    mode: "attribution",
+  });
+});
+
 it("shares a Claude agent's model as the claude runtime and imports it back", () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   let type: AgentType | undefined;

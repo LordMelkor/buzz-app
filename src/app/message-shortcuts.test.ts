@@ -30,7 +30,13 @@ function setup(own: boolean, reply = vi.fn()) {
     createShortcutBindings(window),
   );
   cleanups.push(
-    registerAppShortcuts(shortcuts, createAppearance(window), vi.fn(), true),
+    registerAppShortcuts(
+      shortcuts,
+      createAppearance(window),
+      vi.fn(),
+      true,
+      vi.fn(),
+    ),
   );
   const list = document.createElement("section");
   list.innerHTML =

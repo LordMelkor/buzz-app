@@ -43,6 +43,7 @@ import {
   rowIdentity,
   rowProfileIds,
 } from "./InboxRow";
+import { withMentionedIds } from "../../features/messages/PreviewText";
 import { inboxTarget } from "./route";
 import type { InboxItem } from "../../features/relay/inbox";
 import listRowStyles from "../../features/messages/MessageListRow.module.css";
@@ -199,19 +200,20 @@ function InboxPreviewCard({
         a.item.id.localeCompare(b.item.id),
     )
     .slice(0, maxRows);
-  const profileKey = [
-    ...new Set(
-      rows.flatMap((row) => [
-        ...(row.kind === "reaction"
-          ? row.item.events.map((event) => event.pubkey)
-          : [row.item.authorId]),
-        ...rowProfileIds(
-          row.kind === "reaction" ? {} : row.item,
-          channelOf(row.item.channelId),
-        ),
-      ]),
+  const profileKey = withMentionedIds(
+    rows.flatMap((row) => [
+      ...(row.kind === "reaction"
+        ? row.item.events.map((event) => event.pubkey)
+        : [row.item.authorId]),
+      ...rowProfileIds(
+        row.kind === "reaction" ? {} : row.item,
+        channelOf(row.item.channelId),
+      ),
+    ]),
+    rows.map((row) =>
+      row.kind === "reaction" ? row.item.message : row.item.previewMentions,
     ),
-  ]
+  )
     .sort()
     .join(":");
   const profileIds = useMemo(
@@ -420,7 +422,7 @@ function InboxPreviewCard({
                       <InboxRowButton
                         item={row.item}
                         identity={identity}
-                        media={session.media}
+                        session={session}
                         feed={feed}
                         time={shortAge(item.createdAt)}
                         onClick={() => open(row)}

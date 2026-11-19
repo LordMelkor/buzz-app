@@ -21,10 +21,9 @@ import {
   channelForLink,
   channelLinkLabel,
   emptyReferenceDirectory,
-  MentionLabel,
+  ProfileMention,
 } from "./ReferenceText";
 import { profileKey } from "../profiles/target";
-import referenceStyles from "../../shared/InlineReference.module.css";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -75,14 +74,14 @@ type InlinePart = {
   target?: string | undefined;
   literal?: boolean;
 };
-type ProtectedContent = {
+export type ProtectedContent = {
   content: string;
   prefix: string;
   parts: InlinePart[];
 };
 /** Bind exact names on the FULL signed body, before Markdown decodes escapes or
  * divides emphasis. Reference labels must also survive unchanged for resolution. */
-function protectInlineContent(
+export function protectInlineContent(
   row: Pick<
     ChannelMessage,
     | "content"
@@ -228,7 +227,7 @@ function protectInlineContent(
   return { content, prefix, parts };
 }
 
-const placeholderPattern = (protectedContent: ProtectedContent) =>
+export const placeholderPattern = (protectedContent: ProtectedContent) =>
   new RegExp(
     `[\uE000\uFFFC]${protectedContent.prefix.slice(1)}(\\d+)[\uE002\uFFFC]`,
     "g",
@@ -669,42 +668,20 @@ function PreparedMessageMarkdown({
   // Explicit profile links are identity locators, not signed notification intent.
   // Reuse the same control and availability gate as bound prose mentions.
   const renderProfile = (text: unknown, target: unknown) => {
-    const key = typeof target === "string" ? profileKey(target) : undefined;
-    const agent =
-      !!key &&
-      (directory.agents.some((agent) => agent.pubkey === key) ||
-        (participantProfiles ?? directory.profiles).get(key)?.isAgent);
-    const clickable =
-      interactive && typeof target === "string" && !!canOpenLink?.(target);
-    if (typeof text === "string" && typeof target === "string") {
-      // A namesake-qualified span shows its name; its target is the key.
-      const shown = text.slice(1).replace(/ \([a-f0-9]{64}\)$/i, "");
-      const label = key ? resolveName(key, shown) : shown;
-      const Mention = clickable ? "button" : "span";
-      // Selection copy reads the identity and the whole label (selection-copy.ts).
-      return (
-        <Mention
-          type={clickable ? "button" : undefined}
-          className={referenceStyles.link}
-          data-mention-kind={agent ? "agent" : "person"}
-          data-mention-self={key && key === session?.viewer ? "" : undefined}
-          data-profile-target={target}
-          data-mention-name={label}
-          aria-label={clickable ? `View ${label} profile` : undefined}
-          onClick={
-            clickable
-              ? (event) => {
-                  event.currentTarget.focus();
-                  onOpenLink(target);
-                }
-              : undefined
-          }
-        >
-          <MentionLabel agent={!!agent} label={label} />
-        </Mention>
-      );
-    }
-    return undefined;
+    if (typeof text !== "string" || typeof target !== "string")
+      return undefined;
+    const clickable = interactive && !!canOpenLink?.(target);
+    return (
+      <ProfileMention
+        text={text}
+        target={target}
+        profiles={profiles}
+        agents={directory.agents}
+        viewer={session?.viewer}
+        resolveName={resolveName}
+        onOpen={clickable ? onOpenLink : undefined}
+      />
+    );
   };
   const components: MessageComponents = {
     p: ({ node: _node, ...props }) => (

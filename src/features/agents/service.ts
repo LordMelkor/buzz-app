@@ -112,7 +112,7 @@ import {
   type AgentHookContext,
   type AgentHookDispatchOptions,
 } from "./hooks";
-import { ownerReads } from "./reads";
+import { ownerReads, readyOwnerReads } from "./reads";
 import { createToolOperation, type AgentToolProvider } from "./tool-operation";
 import {
   assignConversationFolder as assignFolder,
@@ -271,9 +271,10 @@ import type { AgentPlugins } from "../../plugins/requests";
 import type { DeviceSettings } from "../../shared/device-settings";
 import type { TurnContext } from "./gateway/contract";
 import {
+  type BlockedReason,
   type EligibleRoute,
-  type FallbackReason,
   gatewayRoutes,
+  TURN_READINESS_WAIT_MS,
 } from "./gateway/route";
 
 /** Where an agent runs: `here`, with its key on this device; `hosted`, by its
@@ -584,6 +585,11 @@ export type AgentHandle = Readonly<{
   relay: string;
   name: string;
   owner: string;
+  /** Waits while its community reloads in place, until ready again; at once
+   * otherwise. Resolves when the reload fails too, so the call fails as on
+   * any reconnect. With `gateway`, for a gateway turn, it then waits for
+   * the gateway access check a reload started. Says whether it waited. */
+  settle?(signal: AbortSignal, gateway?: boolean): Promise<boolean>;
   /** Installed local types and owner-reviewed creation requests. */
   agentTypes?(): readonly Readonly<{ key: string; title: string }>[];
   createAgent?(
@@ -887,14 +893,16 @@ export type Delivery<Config = unknown> = Readonly<{
     upstream: Readonly<{ base: string }>;
   }>;
   /** A blocked route sent this turn to the type's own configuration, decided
-   * before dispatch, after waiting up to `TURN_READINESS_WAIT_MS` for an
-   * access check in flight; never with `gateway`. Every blocked reason
-   * falls back this way except a 401 or 403 (`auth`) and a route still
-   * pending after the wait, which fail the turn before dispatch instead. The
-   * host owns the decision and `notice`; a type shows `notice` in this turn's
-   * visible activity where the host can't (any turn but a mention, whose
-   * request it already notes). */
-  gatewayFallback?: Readonly<{ reason: FallbackReason; notice: string }>;
+   * before dispatch; never with `gateway`. For a `forwarding` type, after
+   * waiting up to `TURN_READINESS_WAIT_MS` for an access check in flight,
+   * every blocked reason falls back this way except a 401 or 403 (`auth`)
+   * and a route still pending after the wait, which fail the turn before
+   * dispatch instead. For an `attribution` type, nothing waits and every
+   * blocked reason, those two included, leaves the turn unattributed this
+   * way. The host owns the decision and `notice`; a type shows `notice` in
+   * this turn's visible activity where the host can't (any turn but a
+   * mention, whose request it already notes). */
+  gatewayFallback?: Readonly<{ reason: BlockedReason; notice: string }>;
   /** Whether the trigger should still run, asked again now. False once the
    * agent is removed or its type replaced; for a watch or timer, also once
    * attention was turned off or its object disabled or removed; and for a
@@ -1192,8 +1200,16 @@ export type AgentType<Config = unknown> = {
    * `Delivery.gateway`, under this stable harness name (e.g. "pi"). It does
    * only when this build configures an upstream for the harness and the
    * membership's gateway enables it; otherwise, and for types without it,
-   * turns keep their existing behavior. */
-  gateway?: Readonly<{ harness: string }>;
+   * turns keep their existing behavior. `mode` is `forwarding` by default:
+   * the turn's inference depends on the route, so a gateway refusal or an
+   * access check still pending after a short wait fails the turn before
+   * dispatch. An `attribution` type only adds the gateway's headers where
+   * its own checks allow, so its turns never wait on or fail for the route;
+   * they run unattributed instead (see `gatewayFallback`). */
+  gateway?: Readonly<{
+    harness: string;
+    mode?: "forwarding" | "attribution";
+  }>;
   /** Makes the type hosted: its provider runs each agent, so it has no `run`,
    * `models` or `timeoutMs`, and its agents have no attention. */
   remote?: RemoteAgentType;
@@ -1957,6 +1973,9 @@ const CLEANUP_TIMEOUT_MS = 60_000;
 const TIMER_TICK_MS = 5_000;
 /** How often a failed connection to an unselected community is tried again. */
 const RETRY_MS = 30_000;
+/** How long a tool call waits for a reloading community; past the 8-second
+ * connection deadline, so a failed reload reports its own error. */
+const RELOAD_WAIT_MS = 10_000;
 /** How often agents are said to be online; the relay keeps it 180 seconds. */
 const PRESENCE_MS = 60_000;
 /** The most agents one presence event names. */
@@ -2137,6 +2156,10 @@ type Bound = {
   binding?: Binding | undefined;
   /** When its failed connection was last tried again. */
   retried?: number;
+  /** Whether its relay is reloading in place. */
+  reloading?: true;
+  /** Who its last session listened as, and since when. */
+  listened?: { viewer: string; scope: string; start: number };
 };
 /** A saved identity, which is the agent's membership in one community, with
  * that membership's key. */
@@ -2368,6 +2391,9 @@ export class AgentsService extends Service implements Agents {
   private state: AgentsSnapshot;
   /** By origin, so each agent listens in its own community, selected or not. */
   private bound = new Map<string, Bound>();
+  /** Agents whose community a reload made ready, with that session, until
+   * their first wait sees its gateway access check answer or time out. */
+  private reloaded = new Map<AgentKey, RelaySession>();
   /** The local memberships gateway routing was last told about. */
   private gatewayKeys = new Set<AgentKey>();
   private readonly runners: AgentRunners;
@@ -2614,6 +2640,32 @@ export class AgentsService extends Service implements Agents {
       },
       watchReadFailuresChanged: () => queueMicrotask(() => this.notify()),
       ready: (key) => this.ready(key),
+      reloading: (key) => this.reloading(key),
+      settle: async (agent, signal, gateway) => {
+        const reloading = this.reloading(agent.key);
+        if (reloading)
+          await readyOwnerReads(
+            this.relay(agent.key),
+            agent,
+            AbortSignal.any([signal, AbortSignal.timeout(RELOAD_WAIT_MS)]),
+          ).catch(() => {});
+        signal.throwIfAborted();
+        // Then the gateway access check the reloaded session started.
+        const session = gateway && this.reloaded.get(agent.key);
+        if (!session || this.bindingOf(agent)?.session !== session)
+          return reloading;
+        await gatewayRoutes.routeForTurn(
+          agent.key,
+          AbortSignal.any([
+            signal,
+            AbortSignal.timeout(TURN_READINESS_WAIT_MS),
+          ]),
+        );
+        signal.throwIfAborted();
+        if (this.reloaded.get(agent.key) === session)
+          this.reloaded.delete(agent.key);
+        return true;
+      },
       agent: (key) => this.agent(key),
       savedAttention: (key) => this.records[key]?.attention ?? EMPTY,
       member: (agent, event) => this.member(agent, event),
@@ -2988,34 +3040,54 @@ export class AgentsService extends Service implements Agents {
         }));
       },
       soloWorkspaces: (agent) => {
-        const binding = this.bindingOf(agent);
-        if (!binding) return undefined;
-        const check = (signal: AbortSignal) => {
-          signal.throwIfAborted();
-          binding.controller.signal.throwIfAborted();
-          if (this.bindingOf(agent) !== binding || !this.liveMember(agent.key))
+        if (!this.bindingOf(agent)) return undefined;
+        // Each operation acts in the session live when it starts, which a
+        // reload replaces; its later reads and writes stay fenced to it.
+        const operation = () => {
+          const binding = this.bindingOf(agent);
+          if (!binding)
             throw new Error(
               "The requesting agent's community is no longer connected",
             );
+          return { binding, ...fenced(binding) };
         };
-        const list = async (signal: AbortSignal) => {
-          check(signal);
-          if (!binding.session.snapshotRead || !binding.session.relayAuthor)
-            throw new Error("Solo workspace authority is unavailable");
-          const preferences = binding.session.sidebarPreferences;
-          await preferences.refresh();
-          check(signal);
-          const state = preferences.snapshot();
-          if (state.status !== "ready" || state.cached || !preferences.writable)
-            throw new Error(state.error ?? "Solo workspaces are unavailable");
-          return (state.data?.sections ?? []).map(({ id, name }) => ({
-            id,
-            name,
-          }));
+        const fenced = (binding: Binding) => {
+          const check = (signal: AbortSignal) => {
+            signal.throwIfAborted();
+            binding.controller.signal.throwIfAborted();
+            if (
+              this.bindingOf(agent) !== binding ||
+              !this.liveMember(agent.key)
+            )
+              throw new Error(
+                "The requesting agent's community is no longer connected",
+              );
+          };
+          const list = async (signal: AbortSignal) => {
+            check(signal);
+            if (!binding.session.snapshotRead || !binding.session.relayAuthor)
+              throw new Error("Solo workspace authority is unavailable");
+            const preferences = binding.session.sidebarPreferences;
+            await preferences.refresh();
+            check(signal);
+            const state = preferences.snapshot();
+            if (
+              state.status !== "ready" ||
+              state.cached ||
+              !preferences.writable
+            )
+              throw new Error(state.error ?? "Solo workspaces are unavailable");
+            return (state.data?.sections ?? []).map(({ id, name }) => ({
+              id,
+              name,
+            }));
+          };
+          return { check, list };
         };
         return {
-          list,
+          list: async (signal: AbortSignal) => operation().list(signal),
           prepare: async (workspace, members, signal) => {
+            const { binding, check, list } = operation();
             if (!members.includes(binding.viewer))
               throw new Error(
                 "Include your owner in members to file a Solo chat",
@@ -7954,6 +8026,24 @@ export class AgentsService extends Service implements Agents {
   private agent(key: AgentKey) {
     return this.state.running.find((agent) => agent.key === key);
   }
+  /** Drops the reload markers that hold `session`, once it is replaced. */
+  private forgetReload(session: RelaySession | undefined) {
+    for (const [key, held] of this.reloaded)
+      if (held === session) this.reloaded.delete(key);
+  }
+  /** Whether the running agent's community is reloading in place: still
+   * connecting or retrying, not settled in a refusal or a final error. */
+  private reloading(key: AgentKey) {
+    const agent = this.agent(key);
+    const origin = agent && originOf(agent.relay);
+    const snapshot = origin && this.bound.get(origin)?.relay.snapshot();
+    return (
+      !!snapshot &&
+      agent.owner === this.communities.snapshot().viewer &&
+      !!snapshot.reloading &&
+      (snapshot.status !== "error" || !!snapshot.retrying)
+    );
+  }
   /** The agent, while its community's session is live to run it in. */
   private ready(key: AgentKey) {
     const agent = this.agent(key);
@@ -8175,6 +8265,7 @@ export class AgentsService extends Service implements Agents {
   }
   private unbind(origin: string) {
     const entry = this.bound.get(origin);
+    this.forgetReload(entry?.binding?.session);
     this.bound.delete(origin);
     this.listings.delete(origin);
     this.edits.delete(origin);
@@ -8208,6 +8299,7 @@ export class AgentsService extends Service implements Agents {
       entry.binding?.session !== live?.session ||
       entry.binding?.scope !== live?.scope;
     if (changed) {
+      this.forgetReload(entry.binding?.session);
       entry.binding?.stopLive();
       entry.binding?.attending?.stop();
       entry.binding?.controller.abort();
@@ -8215,10 +8307,19 @@ export class AgentsService extends Service implements Agents {
       this.edits.delete(origin);
       this.communityConfigs.get(origin)?.dispose();
       this.communityConfigs.delete(origin);
-      const connection: Connection = {
-        epoch: 0,
-        start: Math.floor(Date.now() / 1000),
-      };
+      // A reload for the same viewer listens from where its last session
+      // did, so replay and catch-up keep what was posted in between.
+      const { listened } = entry;
+      const start =
+        entry.reloading &&
+        listened &&
+        listened.viewer === live?.viewer &&
+        listened.scope === live?.scope
+          ? listened.start
+          : Math.floor(Date.now() / 1000);
+      if (live)
+        entry.listened = { viewer: live.viewer, scope: live.scope, start };
+      const connection: Connection = { epoch: 0, start };
       entry.binding = live && {
         ...live,
         connection,
@@ -8422,9 +8523,23 @@ export class AgentsService extends Service implements Agents {
       this.notify();
       notified = true;
     }
+    // A reload's agents wait for its session's gateway check once it is ready.
+    for (const [origin, bound] of this.bound) {
+      const { reloading, status, session } = bound.relay.snapshot();
+      if (reloading) bound.reloading = true;
+      else if (bound.reloading) {
+        delete bound.reloading;
+        for (const agent of running)
+          if (originOf(agent.relay) === origin && status === "ready" && session)
+            this.reloaded.set(agent.key, session);
+      }
+    }
+    // A community reloading in place keeps its agents held meanwhile.
     this.runners.resume(
       new Set(
-        running.filter((agent) => this.bindingOf(agent)).map((a) => a.key),
+        running
+          .filter((agent) => this.bindingOf(agent) || this.reloading(agent.key))
+          .map((a) => a.key),
       ),
     );
     this.announce();

@@ -1322,3 +1322,34 @@ it("hydrates native public identity without contacting the development broker", 
   expect(fetch).not.toHaveBeenCalled();
   expect(client.relay.snapshot().status).not.toBe("ready");
 });
+it("reloads every open community in place, as new sessions", async () => {
+  const client = setup({
+    profile: { name: "Local", picture: "" },
+    memberships: [
+      { id: "primary", name: "Primary" },
+      { id: "secondary", name: "Secondary" },
+    ],
+    selected: "secondary",
+  });
+  await flush();
+  await flush();
+  const primary = client.open("primary");
+  const secondary = client.open("secondary");
+  await flush();
+  const before = [primary?.snapshot(), secondary?.snapshot()];
+  expect(before.map((each) => each?.status)).toEqual(["ready", "ready"]);
+  requests.length = 0;
+  client.reload();
+  await flush();
+  await flush();
+  for (const [index, relay] of [primary, secondary].entries()) {
+    expect(relay?.snapshot().status).toBe("ready");
+    expect(relay?.snapshot().session).not.toBe(before[index]?.session);
+  }
+  // The same owners, reconnected: nothing was opened again.
+  expect(client.open("primary")).toBe(primary);
+  expect(requests.filter((url) => url.endsWith("/session")).sort()).toEqual([
+    "/api/relay/primary/session",
+    "/api/relay/secondary/session",
+  ]);
+});

@@ -26,6 +26,7 @@ import {
   readLatestTurns,
   readTranscript,
   TURN_LIMIT,
+  withNotices,
 } from "./transcript";
 
 const root = "c".repeat(64);
@@ -908,6 +909,51 @@ it("passes this platform's base64 a session path it reads as a file", async () =
   }
 });
 
+it("shows a notice only after the prompt saved under its message's id", () => {
+  clock = 0;
+  // As Claude 2.1.319 saves them: an interrupted turn keeps its own id and is
+  // followed by its own marker; the next message is a turn of its own.
+  const turns = claudeTurns(
+    [
+      line("user", prompt("first")),
+      line("assistant", [{ type: "text", text: "one" }]),
+      line("user", prompt("interrupted")),
+      line("user", [{ type: "text", text: "[Request interrupted by user]" }]),
+      line("user", prompt("later")),
+      line("assistant", [{ type: "text", text: "three" }]),
+    ].join("\n"),
+    conversation,
+    false,
+  );
+  const ids = turns.map((turn) => turn.turnId);
+  expect(ids).toEqual(["u1", "u3", "u4", "u5"]);
+  const notice = "Ran without the agent gateway: it couldn't be reached.";
+  const shown = withNotices(
+    turns,
+    new Map([
+      ["u3", notice],
+      // A message Claude never took has no prompt to show beside.
+      ["never-taken", "Ran without the agent gateway: elsewhere."],
+    ]),
+  );
+  const statuses = shown.map((turn) =>
+    turn.items.filter((item) => item.type === "status"),
+  );
+  expect(statuses).toEqual([
+    [],
+    [{ id: "u3:notice", at: 3000, type: "status", text: notice }],
+    [],
+    [],
+  ]);
+  expect(shown[1]?.items.map((item) => item.type)).toEqual([
+    "prompt",
+    "status",
+  ]);
+  // Turns without a notice are the ones read.
+  expect(shown[0]).toBe(turns[0]);
+  expect(shown[3]).toBe(turns[3]);
+});
+
 it("reads a session's latest whole turns from its end", async () => {
   clock = 0;
   const { spawn } = host({
@@ -1031,6 +1077,7 @@ it("shows a session's prompt once over the latest turns it swaps in", async () =
         spawn,
         reads: () => undefined,
         prompts: () => prompts,
+        notices: new Map(),
         place: (_agent: string, _key: string, workspace: string) => workspace,
       } as never,
       conversation,

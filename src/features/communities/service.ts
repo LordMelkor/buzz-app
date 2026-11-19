@@ -507,6 +507,11 @@ export function createCommunities(
     reauthorize() {
       for (const session of sessions.values()) session.reauthorize();
     },
+    /** Cmd+R: every open community reads everything from its relay again,
+     * keeping the page, its plugins and running agents. */
+    reload() {
+      for (const session of sessions.values()) session.reload();
+    },
     snapshot: () => state,
     subscribe(fn: () => void) {
       listeners.add(fn);

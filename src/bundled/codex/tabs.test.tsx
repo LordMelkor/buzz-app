@@ -2241,7 +2241,7 @@ it("separates identity fields from runtime settings without changing the stored 
     screen.queryByRole("button", { name: "Huddle voice" }),
   ).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Workspace")).not.toBeInTheDocument();
-  expect(screen.queryByLabelText("Sessions")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Session scope")).not.toBeInTheDocument();
   expect(screen.queryByText("Runtime diagnostics")).not.toBeInTheDocument();
   view.rerender(<Settings {...props} settingsSection="runtime" />);
   expect(
@@ -2250,7 +2250,7 @@ it("separates identity fields from runtime settings without changing the stored 
     "Determines which voice your agent speaks with in Huddles (Codex only). Codex default",
   );
   expect(screen.getByLabelText("Workspace")).toBeInTheDocument();
-  expect(screen.getByLabelText("Sessions")).toBeInTheDocument();
+  expect(screen.getByLabelText("Session scope")).toBeInTheDocument();
   expect(screen.queryByText("Runtime diagnostics")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Instructions")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();

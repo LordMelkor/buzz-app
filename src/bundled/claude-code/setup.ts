@@ -53,6 +53,7 @@ const STEPS: Readonly<Record<string, string>> = {
   install: "install",
   use: "use",
   review: "review",
+  "inherited-headers": "inherited-headers",
 };
 /** Starts `claude` and its other steps as steps of `claude.sh`, which the
  * manifest grants as `bash -c`; other processes start as declared. */

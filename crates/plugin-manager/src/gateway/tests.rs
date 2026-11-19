@@ -503,3 +503,57 @@ fn matches_the_canonical_vectors() {
         );
     }
 }
+
+/// The frontend's selection vectors: an explicit descriptor wins, else the
+/// org-gateways.json entry listing the default community, else none; every
+/// listed entry is checked first, failing with exactly the case's message.
+#[test]
+fn selects_as_the_canonical_vectors() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../../src/features/agents/gateway/descriptor-vectors.json"
+    ))
+    .unwrap();
+    for case in vectors["select"].as_array().unwrap() {
+        let explicit = match (case.get("explicit_raw"), case.get("explicit")) {
+            (Some(raw), _) => raw.as_str().unwrap().to_owned(),
+            (None, Some(descriptor)) => descriptor.to_string(),
+            (None, None) => String::new(),
+        };
+        let listed = match case.get("listed_raw") {
+            Some(raw) => raw.as_str().unwrap().to_owned(),
+            None => case["listed"].to_string(),
+        };
+        let chosen = select(&explicit, &listed, case["community_url"].as_str().unwrap());
+        if let Some(code) = case.get("explicit_error") {
+            assert_eq!(
+                chosen.map(|_| ()),
+                Err(format!(
+                    "BUZZ_AGENT_GATEWAY is invalid ({})",
+                    code.as_str().unwrap()
+                )),
+                "{}",
+                case["name"]
+            );
+            continue;
+        }
+        match case.get("error") {
+            Some(error) => assert_eq!(
+                chosen.map(|_| ()),
+                Err(error.as_str().unwrap().to_owned()),
+                "{}",
+                case["name"]
+            ),
+            None => {
+                let chosen = chosen
+                    .unwrap()
+                    .map(|(_, canonical)| serde_json::from_str::<Value>(&canonical).unwrap());
+                assert_eq!(
+                    chosen.unwrap_or(Value::Null),
+                    case["expect"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+}

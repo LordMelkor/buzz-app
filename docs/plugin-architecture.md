@@ -14,8 +14,9 @@ across versions yet, and the author types are `0.0.0-preview.1`.
 - **Steady:** the plugin envelope (manifest, `inject`/`apply`, `ctx.effect`
   cleanup) and capability services: host grants, `addTool` (the tool's shape, not
   the whole client passed to `call`), shortcuts, notifications, settings cards, and
-  navigation `open` for plugin pages, Home and Settings. Owning a whole page or
-  panel is steady, but placement is not.
+  navigation `open` for plugin pages, Home and Settings, and the `ui`
+  [host controls](#host-controls). Owning a whole page or panel is steady, but
+  placement is not.
 - **Borderline:** decisions, and link and code-block renderers.
 - **Likely to break:** the relay session read model; conversation contributions;
   sidebar sections and rows, the Solo region and backdrops; agent hooks, execution
@@ -397,6 +398,33 @@ See [foundation status and open gates](status.md) for maintained decisions,
 remaining acceptance work and historical evidence.
 
 ## Starting contracts
+
+### Host controls
+
+External plugins cannot import app source, so the host provides its own
+controls. Read the optional `ui` service with `ctx.reflect.get("ui")`; it is
+`undefined` on older hosts. It offers `Button`, `Input`, `Field`, `Switch` and
+`Dialog`, rendered by the host with its React instance, theme, focus handling
+and overlay layer. The props are `PluginButtonProps`, `PluginInputProps`,
+`PluginFieldProps`, `PluginSwitchProps` and `PluginDialogProps` in
+`@buzz/author` (`src/features/plugin-ui/contract.ts`).
+
+Each control forwards only its documented props: other props are ignored and
+an unsupported value uses the default, so internal and migrating variants never
+become plugin behavior. Change handlers receive plain values (`onValueChange(value)`,
+`onCheckedChange(checked)`, `onOpenChange(open)`); `onClick` receives nothing.
+The host owns appearance. Like the other services, the set is a preview; the
+narrow props keep later changes small. Shared primitives belong in `ui`;
+feature components stay with the service that owns them, such as
+`conversation.ui`. A component reads the same on every
+access, so it is safe to use as a React element type. Plugin page state stays
+in the plugin's components; unmounting a page with an open `Dialog` removes its
+portal and scroll lock.
+
+For styling beyond these controls, rely on the `core` roles in the token
+registry and the classes the authoring guide names (`ui-card`,
+`shell-sidebar-default`). Control class names and `data-*` attributes are
+internal.
 
 ### Subject lift
 
@@ -1547,6 +1575,10 @@ bundled plugin it shows in Settings → Plugins, where the person can turn it
 off, and it needs no README. Its declared network origins are granted without
 an access review, as for every bundled plugin: the packager chose them.
 Choose ids no other plugin uses, such as one under the organization's domain.
+
+The same packager can ship the build's agent gateway descriptors in
+`src/bundled/org-gateways.json`, also `[]` in open-source builds; see
+[Packaged gateway descriptors](configuration.md#packaged-gateway-descriptors).
 
 ### Optional channel menu panels
 

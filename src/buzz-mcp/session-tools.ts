@@ -168,16 +168,28 @@ export function turnNote(
   return notes.length ? notes.join("\n\n") : undefined;
 }
 
+/** A client, or what builds one when the call runs. */
+export type ClientSource =
+  | BuzzClient
+  | undefined
+  | (() => BuzzClient | undefined);
+
 /** Answers one tool call. Throws when the tool cannot run now; the message
  * is for the agent. Without a client, no tool can be called yet. `added`
- * are the tools plugins add now. */
+ * are the tools plugins add now. A builder is built again once its
+ * community's reload settles, so the call reads the new session. */
 export async function callSessionTool(
-  client: BuzzClient | undefined,
+  source: ClientSource,
   context: Context,
   name: string,
   args: Record<string, unknown>,
   added: readonly AddedTool[] = [],
 ): Promise<Reply> {
+  let client = typeof source === "function" ? source() : source;
+  if (client?.settle) {
+    await client.settle();
+    if (typeof source === "function") client = source();
+  }
   if (!client) throw new Error("Buzz is not ready yet. Try again.");
   const operation = added.find((tool) => tool.name === name && tool.operation);
   if (operation) {

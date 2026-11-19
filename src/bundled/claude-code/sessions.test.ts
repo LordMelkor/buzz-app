@@ -6,7 +6,11 @@ import {
   flush,
   sessionState,
 } from "./claude-testing";
-import type { Spawn, ToolServer } from "./claude";
+import type { ClaudeProcess, Spawn, ToolServer } from "./claude";
+import {
+  VECTOR_BINDING,
+  VECTOR_PROFILE,
+} from "../../features/agents/gateway/vectors";
 import {
   AgentSessions,
   IDLE_MS,
@@ -46,13 +50,15 @@ function sessions(
     spare: Spare;
     tools: ToolServer;
     started: (sessionId: string, systemPrompt: string) => void;
+    /** Each process's own settings env. */
+    env: Record<string, string>;
     agent: Readonly<{ pubkey: string; relay: string }>;
     /** The host refuses every process, as at its process limit. */
     full: boolean;
     room: () => Promise<boolean>;
   }> = {},
 ) {
-  const fake = fakeSpawn(options.known);
+  const fake = fakeSpawn(options.known, options.env);
   const store = options.store ?? memoryStore();
   let model = "opus";
   let ids = 0;
@@ -1447,6 +1453,60 @@ it("releases a conversation handover when its refresh fails", async () => {
   } finally {
     f.pool.dispose();
   }
+});
+
+it("attributes a new conversation on the adopted spare and saves its binding beside the session", async () => {
+  const { pool, spare, store, claudes } = withSpare({
+    env: {
+      ANTHROPIC_BASE_URL: "https://gateway.example/ai-gateway/anthropic",
+      ANTHROPIC_CUSTOM_HEADERS: "x-keep: configured",
+    },
+  });
+  spare.warm({ cwd: "/work", model: "opus" });
+  await flush();
+  const seen: unknown[] = [];
+  const attribute = vi.fn(async (process: ClaudeProcess, saved: unknown) => {
+    seen.push(saved);
+    await process.attribute({
+      origin: "https://gateway.example",
+      profile: VECTOR_PROFILE,
+      headers: { [VECTOR_PROFILE.headers.launcher_client]: "client-a" },
+    });
+    return VECTOR_BINDING;
+  });
+  await pool.deliver("c/root", "hello", 10, { attribute });
+  const [used] = claudes();
+  // The spare was warmed before any agent; its own headers are read at the
+  // first attribution, so nothing of another conversation carries over.
+  expect(used?.headers).toEqual([
+    "x-keep: configured\nx-gw-launcher-client: client-a",
+  ]);
+  expect(store.get("c/root")).toMatchObject({
+    id: "spare-1",
+    gateway: VECTOR_BINDING,
+  });
+  // The next turn is given the binding saved beside its session.
+  await pool.deliver("c/root", "again", 11, { attribute });
+  expect(seen).toEqual([undefined, VECTOR_BINDING]);
+});
+
+it("gives a resumed session only the binding saved beside it", async () => {
+  const store = memoryStore();
+  store.set("c/root", {
+    id: "old",
+    seen: 1,
+    gateway: VECTOR_BINDING,
+    at: 1,
+  });
+  const { pool } = sessions({ known: new Set(["old"]), store });
+  const attribute = vi.fn(async () => undefined);
+  await pool.deliver("c/root", "hello", 10, { attribute });
+  expect(attribute).toHaveBeenCalledWith(expect.anything(), VECTOR_BINDING);
+  // New session forgets it with the harness session.
+  await pool.forget("c/root");
+  await pool.deliver("c/root", "fresh", 11, { attribute });
+  expect(attribute).toHaveBeenLastCalledWith(expect.anything(), undefined);
+  expect(store.get("c/root")?.gateway).toBeUndefined();
 });
 
 it("retains a missing remote session until the owner starts a new session", async () => {

@@ -4,6 +4,19 @@ import {
   writeJSON,
 } from "../../features/agent-protection/json-stream";
 import { CLAUDE_HOOK_EVENTS, type ClaudeHook } from "./hooks";
+import {
+  type Attribution,
+  customHeaders,
+  ineligible,
+  FOREIGN,
+  HEADERS,
+  MASKED,
+  readSettings,
+  SHARED,
+  STALE,
+  UNAPPLIED,
+  UNREADABLE,
+} from "./attribution";
 // One `claude` process driven over its stream-json protocol: the protocol the
 // Claude Agent SDK speaks to the same binary, so no Node runtime is needed. The
 // process stays alive between turns; messages sent while it works are folded
@@ -33,6 +46,9 @@ export type ActivityReceipt = Readonly<{
   acknowledged?: (input?: Readonly<{ steering?: true }>) => void;
   accepted?: () => void;
   superseded?: () => void;
+  /** Told the message's id once Claude has taken it: the id its transcript
+   * gives the prompt. A message Claude never took has none. */
+  submitted?: (uuid: string) => void;
 }>;
 
 export type Spawn = (
@@ -143,6 +159,34 @@ export const ENV: Readonly<Record<string, string | null>> = {
   CLAUDE_PID: null,
 };
 
+/** How long `claude.sh`'s inherited-headers check may take. */
+const INHERITED_CHECK_MS = 15_000;
+/** How long a turn or compaction waits on one attribution control call
+ * before going on unattributed. */
+const ATTRIBUTION_CALL_MS = 5_000;
+
+/** Whether the env `spawn` starts Claude with sets its custom headers, from
+ * `claude.sh`'s presence-only check; undefined when the check fails. */
+async function setsInheritedHeaders(spawn: Spawn) {
+  let answer = "";
+  try {
+    const check = await spawn("inherited-headers", {
+      env: ENV,
+      onStdout: (data) => {
+        answer += data;
+      },
+    });
+    const timer = setTimeout(() => void check.kill(), INHERITED_CHECK_MS);
+    const code = await check.exited;
+    clearTimeout(timer);
+    if (code !== 0) return undefined;
+  } catch {
+    return undefined;
+  }
+  const presence = answer.trim();
+  return presence === "set" ? true : presence === "unset" ? false : undefined;
+}
+
 export class ClaudeProcess {
   private protection: ClaudeProtection | undefined;
   private protectionLifetime = new AbortController();
@@ -226,6 +270,17 @@ export class ClaudeProcess {
   /** The session's own effort, read before the first change to restore it. */
   private ownEffort: string | undefined;
   private readingEffort: Promise<void> | undefined;
+  /** Whether its inherited env sets custom headers; undefined if unknown. */
+  private inherited: () => Promise<boolean | undefined> = async () => undefined;
+  /** The provider `initialize` reported, such as "firstParty". */
+  private provider: Promise<string | undefined> = Promise.resolve(undefined);
+  /** The custom headers Buzz last applied; undefined while none of its
+   * are in effect, null when a change may or may not have taken. */
+  private attributed: string | null | undefined;
+  /** Buzz has written its headers to this process at least once. */
+  private wrote = false;
+  /** Its flag env held something before Buzz's first write. */
+  private foreign = false;
   readonly exited: Promise<number | null>;
 
   private constructor(
@@ -427,6 +482,9 @@ export class ClaudeProcess {
       launch.hook,
     );
     claude.protection = launch.protection;
+    // Checked once, only when Buzz first attributes this process.
+    let inherited: Promise<boolean | undefined> | undefined;
+    claude.inherited = () => (inherited ??= setsInheritedHeaders(spawn));
     claude.resuming = !!launch.resume;
     claude.protectedInstructions = launch.systemPrompt ?? "";
     for (const data of earlyErrors) claude.readError(data);
@@ -533,6 +591,18 @@ export class ClaudeProcess {
             )
           : [];
       });
+      // Claude's resolved provider, which its process env can pick too.
+      this.provider = answer.then(
+        (response) => {
+          const account = (response.response as Message | undefined)?.account as
+            | Message
+            | undefined;
+          return typeof account?.apiProvider === "string"
+            ? account.apiProvider
+            : undefined;
+        },
+        () => undefined,
+      );
     } catch (error) {
       await this.kill();
       await this.exited;
@@ -600,6 +670,106 @@ export class ClaudeProcess {
     return this.reported;
   }
 
+  /** Sets the custom headers the turns sent after it carry: `attribution`'s
+   * over the person's current own when Claude's current endpoint is the
+   * gateway's, else removes Buzz's. A steer into a running turn keeps the turn's. Resolves with
+   * why the turn isn't attributed, as a notice; never throws, so a failure
+   * never stops the turn. */
+  async attribute(
+    attribution: Attribution | undefined,
+  ): Promise<string | undefined> {
+    if (!attribution && this.attributed === undefined) return;
+    // Read fresh each time: Claude reloads its settings files while it runs.
+    const [read, inherited] = await Promise.all([
+      this.attributionCall({ subtype: "get_settings" }).then(readSettings),
+      this.inherited(),
+    ]);
+    if (!read) return this.attributed === undefined ? UNREADABLE : STALE;
+    // Before Buzz's first write the flag env isn't Buzz's; after it, any
+    // other key there would be erased by Buzz's next write.
+    if (!this.wrote && read.flag.any) this.foreign = true;
+    if (this.wrote && read.flag.others)
+      return this.attributed === undefined ? FOREIGN : SHARED;
+    const reason =
+      attribution &&
+      (this.foreign
+        ? FOREIGN
+        : ineligible(
+            { ...read, inherited },
+            attribution.origin,
+            await this.provider,
+          ));
+    const headers =
+      attribution && !reason
+        ? customHeaders(attribution.profile, read.headers, attribution.headers)
+        : undefined;
+    // Settings can't show what Claude still sends, so Buzz's own record
+    // decides; unknown (null) is always written again.
+    if (headers === this.attributed) return reason;
+    if (headers !== undefined) {
+      this.wrote = true;
+      const ok = await this.applyEnv({ [HEADERS]: headers });
+      this.attributed = ok ? headers : null;
+      return ok ? reason : UNAPPLIED;
+    }
+    // Removal first sets the person's current headers, or none: with no
+    // settings value to fall back on, Claude would keep sending Buzz's.
+    // Then it clears the flag env, so later settings changes take effect.
+    if (!(await this.applyEnv({ [HEADERS]: read.headers ?? "" }))) {
+      this.attributed = null;
+      return UNAPPLIED;
+    }
+    if (!(await this.applyEnv({}))) {
+      this.attributed = null;
+      return MASKED;
+    }
+    this.attributed = undefined;
+    return reason;
+  }
+
+  /** Replaces the flag layer's env (Claude replaces `env` whole, though it
+   * merges top-level flag keys such as effort one by one); whether Claude
+   * confirmed it. A late answer leaves Buzz's record unknown, since it may
+   * undo a newer write. */
+  private async applyEnv(env: Record<string, string>) {
+    const answer = await this.attributionCall(
+      { subtype: "apply_flag_settings", settings: { env } },
+      () => {
+        this.attributed = null;
+      },
+    );
+    return answer.subtype === "success";
+  }
+
+  /** A control call attribution makes, answered as an error when it fails or
+   * Claude takes longer than `ATTRIBUTION_CALL_MS`, so it never holds up the
+   * turn or compaction waiting on it. A late answer is dropped, after
+   * `late` runs. */
+  private attributionCall(
+    request: Message,
+    late?: () => void,
+  ): Promise<Message> {
+    const { id, written, answer } = this.request(request);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<Message>((resolve) => {
+      timer = setTimeout(() => {
+        if (late) this.calls.set(id, late);
+        else this.calls.delete(id);
+        resolve({ subtype: "error", error: "timed out" });
+      }, ATTRIBUTION_CALL_MS);
+    });
+    return Promise.race([
+      written.then(
+        () => answer,
+        (): Message => {
+          this.calls.delete(id);
+          return { subtype: "error" };
+        },
+      ),
+      expired,
+    ]).finally(() => clearTimeout(timer));
+  }
+
   /** Sends one user message. Resolves when it, and anything sent after it, has
    * been answered and the session is idle again. A new turn runs with the
    * picked model and effort, or the session's own without them; a message
@@ -632,11 +802,13 @@ export class ClaudeProcess {
       message: { role: "user", content: text },
       parent_tool_use_id: null,
       session_id: "",
-    }).catch((error) =>
-      this.settle({
-        ok: false,
-        error: `Claude did not take the message: ${error}`,
-      }),
+    }).then(
+      () => activity.submitted?.(uuid),
+      (error) =>
+        this.settle({
+          ok: false,
+          error: `Claude did not take the message: ${error}`,
+        }),
     );
     return settled;
   }
@@ -703,7 +875,7 @@ export class ClaudeProcess {
       request_id: id,
       request,
     });
-    return { written, answer };
+    return { id, written, answer };
   }
   /** Sends a control request and resolves with Claude's response. */
   private call(request: Message): Promise<Message> {

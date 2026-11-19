@@ -347,8 +347,8 @@ it("allocates only after commit and disposes distinct owned views under StrictMo
   expect(h.thread).not.toHaveBeenCalled();
   h.render(true);
   expect(h.thread.mock.calls).toEqual([
-    ["channel", row.id],
-    ["channel", row.id],
+    ["channel", row.id, { exact: false, reading: true }],
+    ["channel", row.id, { exact: false, reading: true }],
   ]);
   expect(h.views[0]).not.toBe(h.views[1]);
   expect(h.views[0]?.dispose).toHaveBeenCalledOnce();
@@ -906,6 +906,67 @@ it("opens at the first unread reply behind a line that reading keeps, paging pas
   expect(screen.getAllByRole("separator", { name: "New messages" })).toEqual([
     line,
   ]);
+});
+it("shows the loaded page while the read for the first unread reply waits on recovery, and places the line once it recovers", () => {
+  const h = messagesHarness(ordinaryNavigation());
+  const { reply, unread, read: thread } = unreadReplies(h);
+  const [read, first] = [reply("read", 2), reply("first unread", 3)];
+  unread.add(first.id);
+  thread.through = 2;
+  h.snapshot.direction = "older";
+  h.snapshot.canLoadMore = true;
+  h.snapshot.replies = [first];
+  h.render();
+  expect(h.element).toHaveAttribute("data-positioning");
+
+  h.snapshot.status = "loading";
+  h.snapshot.readKind = "older";
+  h.snapshot.recovering = true;
+  h.render();
+  expect(h.element).not.toHaveAttribute("data-positioning");
+  expect(screen.queryByRole("separator", { name: "New messages" })).toBeNull();
+
+  h.snapshot.status = "ready";
+  h.snapshot.readKind = undefined;
+  h.snapshot.recovering = undefined;
+  h.snapshot.replies = [read, first];
+  h.render();
+  expect(screen.getByRole("separator", { name: "New messages" })).toBeVisible();
+  expect(h.view.loadMore).toHaveBeenCalledOnce();
+});
+it("keeps the first unread reply and its line showing when a page brings the reply's parent", () => {
+  const h = messagesHarness(ordinaryNavigation());
+  const { reply, unread, read: thread } = unreadReplies(h);
+  const parent = reply("parent", 1);
+  const [read, first, later] = [
+    reply("read", 2),
+    { ...reply("first unread", 3), replyParentId: parent.id },
+    reply("later unread", 4),
+  ];
+  unread.add(first.id).add(later.id);
+  thread.through = 2;
+  h.snapshot.direction = "older";
+  h.snapshot.canLoadMore = true;
+  h.snapshot.seeking = true;
+  h.snapshot.replies = [read, first, later];
+  h.render();
+  const row = (id: string) =>
+    h.element.querySelector(`[data-message-id="${id}"]`);
+  const line = () => screen.getByRole("separator", { name: "New messages" });
+  expect(
+    line().compareDocumentPosition(row(first.id) as Node) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+
+  // The page read for the parent lands with no gesture.
+  h.snapshot.seeking = undefined;
+  h.snapshot.replies = [parent, read, first, later];
+  h.render();
+  // The reply shows in its parent's branch, under the line.
+  const branch = row(parent.id)?.closest("li");
+  expect(branch).toContainElement(row(first.id) as HTMLElement);
+  expect(branch).toContainElement(line());
+  expect(h.view.loadMore).not.toHaveBeenCalled();
 });
 it("pages past an own or individually read reply until history or a thread-wide read reaches it", () => {
   const h = messagesHarness(ordinaryNavigation());
@@ -2096,7 +2157,10 @@ it("inline Inbox reveal opts into exact reader and composes origin action withou
       headerActions={headerAction}
     />,
   );
-  expect(h.thread).toHaveBeenCalledWith("channel", row.id, { exact: true });
+  expect(h.thread).toHaveBeenCalledWith("channel", row.id, {
+    exact: true,
+    reading: true,
+  });
   const thread = screen.getByRole("complementary", { name: "Thread" });
   expect(
     within(thread).getByRole("button", { name: "Open in channel" }),
@@ -2532,7 +2596,10 @@ it("a retained reader reveals its exact selected message, again for each new req
     revealRequest: 1,
   });
   h.render();
-  expect(h.thread).toHaveBeenCalledWith("channel", reply.id, { exact: true });
+  expect(h.thread).toHaveBeenCalledWith("channel", reply.id, {
+    exact: true,
+    reading: true,
+  });
   const revealedReply = () =>
     vi
       .mocked(HTMLElement.prototype.scrollIntoView)

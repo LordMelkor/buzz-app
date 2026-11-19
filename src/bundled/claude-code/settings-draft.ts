@@ -14,7 +14,7 @@ export const settingLabels: Record<SettingGroup, string> = {
   model: "Model and thinking",
   instructions: "Instructions",
   workspace: "Workspace",
-  scope: "Sessions",
+  scope: "Session scope",
   compactAt: "Auto-compact at",
 };
 const names = Object.keys(groups) as SettingGroup[];

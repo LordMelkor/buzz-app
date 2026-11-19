@@ -129,6 +129,10 @@ import {
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
 import {
+  PreviewText,
+  withMentionedIds,
+} from "../../features/messages/PreviewText";
+import {
   useVerifiedNames,
   withVerifiedNames,
 } from "../../features/profiles/useVerifiedNames";
@@ -1041,8 +1045,8 @@ export function SearchResults({
   const slowChannels = useDelayedSearch(publicChannels.loading);
   const slowPeople = useDelayedSearch(peopleActive && personDirectory.loading);
 
-  const profileKey = [
-    ...new Set([
+  const profileKey = withMentionedIds(
+    [
       ...channels.flatMap((channel) =>
         channel.channelType === "dm" ? (channel.participants ?? []) : [],
       ),
@@ -1053,8 +1057,9 @@ export function SearchResults({
       ...personDirectory.people.flatMap((person) =>
         person.ownerPubkey ? [person.ownerPubkey] : [],
       ),
-    ]),
-  ]
+    ],
+    search.messages.map((message) => message.mentioned),
+  )
     .sort()
     .slice(0, 1024)
     .join(":");
@@ -1822,18 +1827,31 @@ export function SearchResults({
       list.channels.find((channel) => channel.id === message.channelId)
         ?.members ?? noMembers,
     );
-    const shown = snippet(message.text || message.preview, terms);
+    const text = message.text || message.preview;
+    const shown = snippet(text, terms);
     return {
       key: message.id,
       label: shown.text || "Attachment",
       ...(shown.matches.length ? { matches: shown.matches } : {}),
+      labelContent: shown.text ? (
+        <PreviewText
+          text={shown.text}
+          full={text}
+          start={shown.start}
+          mentions={message.mentioned}
+          matches={shown.matches}
+          session={session}
+          channelId={message.channelId}
+        />
+      ) : undefined,
       peek: {
         kind: "message" as const,
         channelId: message.channelId,
         messageId: message.id,
         createdAt: message.createdAt,
         authorId: message.workflowOwnerId ?? message.authorId,
-        text: message.text || message.preview,
+        text,
+        mentioned: message.mentioned,
       },
       detail: `${names.get(message.channelId) ?? channel?.name ?? "Conversation"} · ${message.workflowOwnerId ? workflowLabel(name) : name} · ${formatItemTimestamp(message.createdAt)}`,
       detailIcon: channel && channelIcon(channel),

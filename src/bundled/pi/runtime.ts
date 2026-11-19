@@ -302,7 +302,17 @@ export class PiRuntime {
           );
         },
         event: (event) => this.event(event),
-        gateway: async (call) => answerGateway(this.seam, call),
+        gateway: async (call, signal) => {
+          // A turn's bind and each model request wait out a reload in place
+          // and the new session's access check, then answer against them.
+          if (call.op !== "deny") {
+            const handle =
+              this.agents.get(call.agent)?.handle ?? this.handle(call.agent);
+            // Outside a reload, a pending route refuses at once.
+            await handle?.settle?.(signal, true);
+          }
+          return answerGateway(this.seam, call);
+        },
         prompt: ({ agent, request }) =>
           this.agents.get(agent)?.receipts.get(request)?.prompt?.() ??
           Promise.resolve(undefined),
@@ -1128,7 +1138,7 @@ export class PiRuntime {
     const receipts = [
       ...(entry?.active.get(call.conversation)?.values() ?? []),
     ];
-    const client =
+    const client = () =>
       entry?.handle &&
       appClient(entry.handle, {
         protectionContext: () =>
@@ -1165,7 +1175,7 @@ export class PiRuntime {
       const where =
         final &&
         new Set(receipts.map(({ scope }) => scope)).size > 1 &&
-        (await destination(client, call.context, call.arguments));
+        (await destination(client(), call.context, call.arguments));
       const answering = where
         ? receipts.filter(({ scope }) => scope === where)
         : final

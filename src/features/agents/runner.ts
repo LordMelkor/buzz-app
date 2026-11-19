@@ -117,6 +117,7 @@ import {
   fallbackNotice,
   gatewayRoutes,
   TURN_READINESS_WAIT_MS,
+  unattributedNotice,
 } from "./gateway/route";
 import { turnContextFor } from "./gateway/turn";
 
@@ -317,6 +318,9 @@ type Runner = {
   /** The registration whose `run` it calls; a new one aborts the in-flight run. */
   type: RegisteredAgentType | undefined;
   protectionRevision: number;
+  /** Its type or protection changed since its community was last ready, so
+   * a reload in place no longer holds its custody. */
+  changed?: true;
   controller: AbortController;
   /** Events waiting to run in each lane, mentions first; due timers are found
    * when a run starts instead. */
@@ -480,6 +484,15 @@ export type RunnerHost = {
   watchReadFailuresChanged(): void;
   /** The agent, while its community is live to run it in. */
   ready(key: AgentKey): Agent | undefined;
+  /** Whether the agent's community is reloading in place: it starts nothing
+   * new until ready, but keeps custody and its turn meanwhile. */
+  reloading?(key: AgentKey): boolean;
+  /** Waits while the agent's community reloads in place (`AgentHandle.settle`). */
+  settle?(
+    agent: Agent,
+    signal: AbortSignal,
+    gateway?: boolean,
+  ): Promise<boolean>;
   /** A running agent, in any community. */
   agent(key: AgentKey): Agent | undefined;
   /** The membership's saved Attention, even while it is disconnected. */
@@ -713,6 +726,8 @@ export class AgentRunners {
   private readonly custody = new Map<string, Promise<void>>();
   /** Agents whose community was live at the last resume. */
   private connected = new Set<string>();
+  /** Runners whose custody a reload in place holds, as of `resume`. */
+  private reloads = new Set<string>();
   /** Catch-up progress of each watch stream, as saved. */
   private checkpoints: Readonly<Record<string, Checkpoint>>;
   /** By agent, its catch-up running or last run. */
@@ -841,6 +856,7 @@ export class AgentRunners {
         runner.protectionRevision !== (identity.protectionRevision ?? 0)
       ) {
         runner.protectionRevision = identity.protectionRevision ?? 0;
+        if (!this.host.ready(identity.key)) runner.changed = true;
         runner.controller.abort();
         runner.controller = new AbortController();
         runner.type = type;
@@ -853,14 +869,37 @@ export class AgentRunners {
    * another host takes over without waiting for an event or tick. `ready` is
    * the agents whose community is live now. */
   resume(ready: ReadonlySet<string>) {
-    for (const runner of this.runners.values())
+    const connected = new Set<string>();
+    const reloads = new Set<string>();
+    for (const runner of this.runners.values()) {
+      const retained =
+        ready.has(runner.key) &&
+        !this.host.ready(runner.key) &&
+        this.retained(runner);
+      const live =
+        ready.has(runner.key) && (!!this.host.ready(runner.key) || retained);
+      if (live) connected.add(runner.key);
+      if (retained) reloads.add(runner.key);
+      else if (!live && this.reloads.has(runner.key)) {
+        // A reload that settles without its community ends the turns it kept
+        // before custody goes, so no other copy takes over one still running.
+        runner.controller.abort();
+        runner.controller = new AbortController();
+      }
       if (
         runner.queues.mention.length ||
         runner.queues.watch.length ||
-        ready.has(runner.key) !== this.connected.has(runner.key)
+        live !== this.connected.has(runner.key)
       )
         void this.drain(runner);
-    this.connected = new Set(ready);
+    }
+    this.connected = connected;
+    this.reloads = reloads;
+  }
+  /** Whether a reload in place holds the runner's custody: only while its
+   * type and protection are those it had when its community was last ready. */
+  private retained(runner: Runner) {
+    return !runner.changed && !!this.host.reloading?.(runner.key);
   }
   /** Wakes each runner, which starts any timer that is due. */
   tick() {
@@ -1060,7 +1099,10 @@ export class AgentRunners {
   handle(key: AgentKey, pluginId?: string, run = false) {
     const held = () => {
       const runner = this.runners.get(key);
-      const agent = this.host.ready(key);
+      // A reload in place keeps the handle; its calls wait for the session.
+      const agent =
+        this.host.ready(key) ??
+        (runner && this.retained(runner) ? this.host.agent(key) : undefined);
       return runner?.type &&
         (pluginId === undefined || runner.type.pluginId === pluginId) &&
         !runner.transitioning &&
@@ -2906,8 +2948,11 @@ export class AgentRunners {
     runner.running = true;
     while (this.runners.get(runner.key) === runner) {
       const agent = this.host.ready(runner.key);
+      if (agent) delete runner.changed;
       const type = runner.type;
       const run = type?.run;
+      // A reload pauses new starts; custody and queued work wait for it.
+      if (!agent && type && run && this.retained(runner)) break;
       // An agent this copy cannot run is left to another copy of the app.
       if (!agent || !type || !run) {
         if (agent) {
@@ -2995,7 +3040,9 @@ export class AgentRunners {
    * Buzz context, as `gatewayFallback`, and notes that on a mention's
    * request. The choice is made here, before dispatch, so nothing is ever
    * replayed. A turn whose access is revoked after dispatch is the harness's
-   * to fail visibly. */
+   * to fail visibly. An `attribution` type's turn never waits or fails here:
+   * it takes the route as it stands, and any blocked route, `auth` and
+   * `readiness_pending` included, runs it unattributed with a notice. */
   private async gatewayRouting(
     agent: Agent,
     type: RegisteredAgentType,
@@ -3006,13 +3053,28 @@ export class AgentRunners {
     const harness = type.gateway?.harness;
     const upstream = harness && gatewayRoutes.upstream(harness);
     if (!upstream) return {};
+    const attribution = type.gateway?.mode === "attribution";
+    // Attribution never holds a turn for an access check: it takes the
+    // route as it stands, while any check carries on for later turns.
     const route = await gatewayRoutes.routeForTurn(
       agent.key,
-      AbortSignal.any([signal, AbortSignal.timeout(TURN_READINESS_WAIT_MS)]),
+      attribution
+        ? undefined
+        : AbortSignal.any([
+            signal,
+            AbortSignal.timeout(TURN_READINESS_WAIT_MS),
+          ]),
     );
     signal.throwIfAborted();
     if (route.kind === "external") return {};
     if (route.kind === "blocked") {
+      if (attribution) {
+        const notice = unattributedNotice(route.reason);
+        job.work?.notice(notice);
+        return {
+          gatewayFallback: Object.freeze({ reason: route.reason, notice }),
+        };
+      }
       if (route.reason === "auth" || route.reason === "readiness_pending")
         throw new Error(route.message);
       const notice = fallbackNotice(route.reason);
@@ -3452,6 +3514,12 @@ export class AgentRunners {
           this.host.remembered(agent.key, slug, body);
           return event;
         },
+        settle: async (signal: AbortSignal, gateway?: boolean) =>
+          (await this.host.settle?.(
+            agent,
+            AbortSignal.any([lifetime, signal]),
+            gateway,
+          )) ?? false,
         agentTypes: () => this.host.agentTypes(),
         // Drafts outlive the run's handover deadline, as a turn still working may
         // submit one, but not the agent or its type.

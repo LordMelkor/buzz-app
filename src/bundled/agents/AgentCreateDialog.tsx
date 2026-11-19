@@ -129,7 +129,7 @@ function ProposedSettings({
   const labels = {
     model: "Model",
     effort: "Thinking",
-    scope: "Sessions",
+    scope: "Session scope",
     workspace: "Workspace",
     voice: "Huddle voice",
     apps: "Codex apps and plugins",

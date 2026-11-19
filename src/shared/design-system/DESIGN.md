@@ -448,12 +448,14 @@ Sign in, Cancel, and Sign out at narrow widths with enlarged text.
 
 Source plugins can import the shared components directly. External plugins must
 use the actual supported author contract and exposed CSS roles; source paths are
-not a published component SDK. These are composition requirements for Buzz UI,
-not a claim that arbitrary external code is automatically constrained. Do not
-introduce a private reset, theme provider, palette, body-level stylesheet, global
-control override, or parallel dialog/toast system to make one contribution fit.
-Keep plugin styles scoped to owned layout/content. Renderer exceptions do not
-exempt surrounding controls from shared appearance.
+not a published component SDK. The author contract's preview `ui` service offers a
+few of these controls to plugins with narrower props (`src/features/plugin-ui`).
+These are composition requirements for Buzz UI, not a claim that arbitrary
+external code is automatically constrained. Do not introduce a private reset,
+theme provider, palette, body-level stylesheet, global control override, or
+parallel dialog/toast system to make one contribution fit. Keep plugin styles
+scoped to owned layout/content. Renderer exceptions do not exempt surrounding
+controls from shared appearance.
 
 For a genuinely new surface, describe its task and the nearest recipe first.
 State the missing capability and smallest extension in its existing owner. Keep

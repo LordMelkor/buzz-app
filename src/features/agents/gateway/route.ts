@@ -121,6 +121,18 @@ const FALLBACK: Record<FallbackReason, string> = {
  * configuration before dispatch, instead of failing it. */
 export const fallbackNotice = (reason: FallbackReason) =>
   `Ran without the agent gateway: ${FALLBACK[reason]}.`;
+/** Why an attribution-only turn ran unattributed: every blocked reason,
+ * since attribution never stops a turn. */
+const UNATTRIBUTED: Record<BlockedReason, string> = {
+  ...FALLBACK,
+  auth: "the agent gateway didn't accept your sign-in or denied this agent",
+  readiness_pending: "Buzz was still checking this agent's gateway access",
+};
+/** The notice on an attribution-only turn that a blocked route left
+ * unattributed. Its harness runs on its own configuration, which may still
+ * point at the gateway, so this says nothing about where inference went. */
+export const unattributedNotice = (reason: BlockedReason) =>
+  `Ran without gateway attribution: ${UNATTRIBUTED[reason]}.`;
 
 /** How long a turn waits for an access check in flight, such as the first
  * one at cold start, before it fails as still pending. Below the probe's own

@@ -17,6 +17,7 @@ import {
   type TurnPick,
 } from "./claude";
 import type { AgentStore } from "../../features/agents/store";
+import type { GatewayBinding } from "../../features/agents/gateway/contract";
 
 /** A conversation's process stops after this long without a message or its
  * own activity, such as background work. */
@@ -59,6 +60,9 @@ export type SavedSession = Readonly<{
   seen: number;
   /** Thread-local history in a shared channel session. Older saves have none. */
   threads?: Readonly<Record<string, number>>;
+  /** Its gateway binding (the Buzz session beside this harness session),
+   * once an attributed turn ran in it. Kept while the session resumes. */
+  gateway?: unknown;
   at: number;
 }>;
 export type SessionStore = {
@@ -104,8 +108,17 @@ type DeliveryOptions = Readonly<{
    * wait just before the prompt is sent. Not asked of a busy process, which
    * steers on the settings it already runs. */
   admit?: () => Promise<void>;
+  /** Sets a new turn's gateway attribution on its process, given the
+   * session's saved binding, and resolves with the binding to keep beside
+   * it. Asked when `admit` is; a steer keeps the running turn's. */
+  attribute?: Attribute;
 }> &
   ActivityReceipt;
+
+export type Attribute = (
+  process: ClaudeProcess,
+  saved: unknown,
+) => Promise<GatewayBinding | undefined>;
 
 /** A process `shutdown` can stop and wait for. */
 type Stoppable = Readonly<{ kill(): unknown; exited: Promise<unknown> }>;
@@ -116,6 +129,8 @@ type Live = {
   fingerprint: string;
   used: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** The binding its latest attributed turn ran with. */
+  binding?: GatewayBinding;
 };
 
 export class AgentSessions {
@@ -340,11 +355,13 @@ export class AgentSessions {
       pick = {},
       contextRoot,
       admit,
+      attribute,
       step,
       delivered: onDelivered,
       acknowledged,
       accepted,
       superseded,
+      submitted,
       activityScope,
     }: DeliveryOptions,
     handed: () => void,
@@ -391,6 +408,8 @@ export class AgentSessions {
         } catch (error) {
           return { ok: false, error: message(error), undelivered: true };
         }
+      if (attribute && !live.process.busy)
+        await this.attribute(key, live, attribute);
       if (current && !current()) return { ok: true, undelivered: true };
       if (this.disposed)
         return { ok: false, error: "Claude was stopped", undelivered: true };
@@ -425,6 +444,7 @@ export class AgentSessions {
         ...(acknowledged ? { acknowledged } : {}),
         ...(accepted ? { accepted } : {}),
         ...(superseded ? { superseded } : {}),
+        ...(submitted ? { submitted } : {}),
       };
       const answering = this.answer(
         key,
@@ -464,6 +484,7 @@ export class AgentSessions {
           pick,
           ...(current ? { current } : {}),
           ...(admit ? { admit } : {}),
+          ...(attribute ? { attribute } : {}),
           ...(refresh ? { refresh: () => refresh(true) } : {}),
           ...(contextRoot ? { contextRoot } : {}),
           ...activity,
@@ -499,18 +520,30 @@ export class AgentSessions {
     }
   }
   /** Compacts the conversation's session, resuming it when its process has
-   * stopped. Without a session there is nothing to compact. */
-  async compact(key: string): Promise<Settled> {
+   * stopped. Without a session there is nothing to compact. `attribute`
+   * sets the compaction's own attribution, as a new turn's. Once `signal`
+   * aborts before `/compact` is sent, it sends nothing and settles
+   * undelivered; an idle process has no turn for Interrupt to stop. */
+  async compact(
+    key: string,
+    attribute?: Attribute,
+    signal?: AbortSignal,
+  ): Promise<Settled> {
     // Its process is not stopped to make room before `/compact` is sent.
     const arrived = this.incoming(key);
     try {
-      return await this.compacted(key);
+      return await this.compacted(key, attribute, signal);
     } finally {
       arrived();
     }
   }
-  private async compacted(key: string): Promise<Settled> {
+  private async compacted(
+    key: string,
+    attribute?: Attribute,
+    signal?: AbortSignal,
+  ): Promise<Settled> {
     if (this.disposed) return { ok: false, error: "Claude was stopped" };
+    if (signal?.aborted) return { ok: true, undelivered: true };
     let live = this.live.get(key);
     const saved = this.options.store.get(key);
     if (!live && !saved) return { ok: true };
@@ -519,11 +552,16 @@ export class AgentSessions {
       if (!("process" in opened)) return opened;
       live = opened;
     }
+    if (attribute && !live.process.busy)
+      await this.attribute(key, live, attribute);
+    // Interrupt may have come while attribution read or wrote settings.
+    if (signal?.aborted) return { ok: true, undelivered: true };
     if (this.options.strictResume) {
       live.submitted = true;
       await this.touch(key, live);
       if (this.disposed || this.live.get(key) !== live || !live.process.running)
         return { ok: false, error: "Claude was stopped", undelivered: true };
+      if (signal?.aborted) return { ok: true, undelivered: true };
     }
     // Claude takes the command in stream-json input as it does in a terminal.
     const settled = await this.answer(key, live, "/compact", {});
@@ -548,11 +586,13 @@ export class AgentSessions {
    * the turn, once `signal` aborts. `prompt` is asked for the turn's text once
    * a process is ready, so a turn that should no longer run by then returns
    * undefined and sends nothing. It settles only when its process has exited,
-   * so it shows as working while it may still be working. */
+   * so it shows as working while it may still be working. `attribute` sets
+   * its attribution, with nothing saved to bind. */
   async runOnce(
     label: string,
     prompt: () => string | undefined | Promise<string | undefined>,
     signal?: AbortSignal,
+    attribute?: Attribute,
   ): Promise<Settled> {
     if (this.disposed) return { ok: false, error: "Claude was stopped" };
     if (signal?.aborted) return { ok: false, error: message(signal.reason) };
@@ -584,6 +624,8 @@ export class AgentSessions {
       this.once.set(key, live);
       const text = await abortable(Promise.resolve(prompt()), signal);
       if (text === undefined || this.disposed) return { ok: true };
+      if (attribute)
+        await abortable(attribute(live.process, undefined), signal);
       return await abortable(live.process.send(text), signal);
     } catch (error) {
       if (signal?.aborted) return { ok: false, error: message(signal.reason) };
@@ -761,6 +803,17 @@ export class AgentSessions {
       if (this.live.get(key) === live) this.drop(key, live);
     });
   }
+  /** Applies a new turn's attribution and keeps the binding it ran with,
+   * which `touch` saves beside the session. */
+  private async attribute(key: string, live: Live, attribute: Attribute) {
+    const stored = this.options.store.get(key);
+    // Only the binding saved beside this very session.
+    const saved =
+      live.binding ??
+      (stored?.id === live.process.sessionId ? stored?.gateway : undefined);
+    const binding = await attribute(live.process, saved);
+    if (binding) live.binding = binding;
+  }
   private async answer(
     key: string,
     live: Live,
@@ -805,6 +858,7 @@ export class AgentSessions {
         }).slice(-SAVED_LIMIT),
       );
     }
+    const gateway = live.binding ?? prior?.gateway;
     return this.options.store.set(key, {
       id,
       ...(this.options.strictResume &&
@@ -815,6 +869,7 @@ export class AgentSessions {
         : {}),
       seen: Math.max(seen ?? 0, prior?.seen ?? 0),
       ...(threads ? { threads } : {}),
+      ...(gateway ? { gateway } : {}),
       at: live.used,
     });
   }

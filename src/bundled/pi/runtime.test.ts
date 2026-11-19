@@ -4459,3 +4459,120 @@ it("notes a wake's fallback on its own turn, and leaves a mention's to its reque
     f.runtime.dispose();
   }
 });
+
+it("holds a model request until its reload settles, then admits it against the route", async () => {
+  const r = routes(eligible);
+  let route = {
+    kind: "blocked",
+    reason: "readiness_pending",
+    message: "Checking the model gateway",
+  } as unknown as GatewayRoute;
+  const settled = deferred<boolean>();
+  const settle = vi.fn(() => settled.promise);
+  const answered = deferred<unknown>();
+  const f = setup({ wait: () => answered.promise }, [], undefined, undefined, {
+    ...r.seam,
+    routeFor: () => route,
+    bindingAdmits: (current) =>
+      current.kind === "eligible"
+        ? { ok: true, revision: 2 }
+        : {
+            ok: false,
+            reason: "binding_changed",
+            message: "Checking the model gateway",
+            revision: 1,
+          },
+  });
+  Object.assign(f.agent, { settle });
+  const turn = f.deliver({ type: "mention", event: reply("2", "@Pi look") });
+  await turn.run;
+  const [process] = f.host.processes;
+  let admitted: unknown;
+  const admit = process
+    ?.tool({ op: "admit", agent: self, binding: { v: 1 } }, "gateway")
+    .then((answer) => (admitted = answer));
+  await vi.waitFor(() => expect(settle).toHaveBeenCalled());
+  // Admission asks for the gateway check a reload starts, not only the reconnect.
+  expect(settle).toHaveBeenCalledWith(expect.anything(), true);
+  expect(admitted).toBeUndefined();
+  route = { ...eligible, revision: 2 };
+  settled.resolve(true);
+  await admit;
+  expect(admitted).toMatchObject({ result: { ok: true, revision: 2 } });
+  answered.resolve({ status: "done", answer: 1, text: "" });
+  await f.settled(turn);
+});
+
+it("refuses a model request on a pending route at once outside a reload", async () => {
+  const r = routes(eligible);
+  const pending = {
+    kind: "blocked",
+    reason: "readiness_pending",
+    message: "Checking the model gateway",
+  } as unknown as GatewayRoute;
+  const answered = deferred<unknown>();
+  const f = setup({ wait: () => answered.promise }, [], undefined, undefined, {
+    ...r.seam,
+    routeFor: () => pending,
+    bindingAdmits: () => ({
+      ok: false,
+      reason: "binding_changed",
+      message: "Checking the model gateway",
+      revision: 1,
+    }),
+  });
+  Object.assign(f.agent, { settle: vi.fn(async () => false) });
+  const turn = f.deliver({ type: "mention", event: reply("2", "@Pi look") });
+  await turn.run;
+  const [process] = f.host.processes;
+  await expect(
+    process?.tool({ op: "admit", agent: self, binding: { v: 1 } }, "gateway"),
+  ).resolves.toMatchObject({
+    result: { ok: false, message: "Checking the model gateway" },
+  });
+  answered.resolve({ status: "done", answer: 1, text: "" });
+  await f.settled(turn);
+});
+
+it("holds a turn's bind until its reload settles, then binds against the route", async () => {
+  const r = routes(eligible);
+  let route = {
+    kind: "blocked",
+    reason: "readiness_pending",
+    message: "Checking the model gateway",
+  } as unknown as GatewayRoute;
+  const settled = deferred<boolean>();
+  const settle = vi.fn(() => settled.promise);
+  const answered = deferred<unknown>();
+  const f = setup({ wait: () => answered.promise }, [], undefined, undefined, {
+    ...r.seam,
+    routeFor: () => route,
+  });
+  Object.assign(f.agent, { settle });
+  const turn = f.deliver({ type: "mention", event: reply("2", "@Pi look") });
+  await turn.run;
+  const [process] = f.host.processes;
+  let bound: unknown;
+  const bind = process
+    ?.tool(
+      {
+        op: "bind",
+        agent: self,
+        event: "new_generation",
+        saved: null,
+        turn: {},
+      },
+      "gateway",
+    )
+    .then((answer) => (bound = answer));
+  await vi.waitFor(() => expect(settle).toHaveBeenCalled());
+  // So does a bind.
+  expect(settle).toHaveBeenCalledWith(expect.anything(), true);
+  expect(bound).toBeUndefined();
+  route = eligible;
+  settled.resolve(true);
+  await bind;
+  expect(bound).toMatchObject({ result: { ok: true, binding: { v: 1 } } });
+  answered.resolve({ status: "done", answer: 1, text: "" });
+  await f.settled(turn);
+});

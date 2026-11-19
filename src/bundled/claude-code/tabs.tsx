@@ -1509,7 +1509,8 @@ export function createTabs({
             <div className="grid gap-2">
               {conflict("scope")}
               <Select
-                label="Sessions"
+                label="Session scope"
+                description="Choose how your agent uses sessions to keep context."
                 variant="preference"
                 value={draft.scope}
                 groups={SCOPES}

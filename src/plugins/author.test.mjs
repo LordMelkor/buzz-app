@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops } from "@buzz/author";
+import type { Context, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -64,6 +64,15 @@ export function apply(ctx: Context) {
   void pickerHasNoHostProps;
   // @ts-expect-error Host navigation visits are not plugin props.
   createElement(ctx.conversation.ui.MembersDialog, { ...picker, visit: true });
+  const ui: PluginUi | undefined = ctx.reflect.get("ui");
+  if (ui) {
+    void createElement(ui.Dialog, { open: true, onOpenChange: (open: boolean) => void open, title: "Edit",
+      actions: createElement(ui.Button, { variant: "prominent", onClick: () => {} }, "Save") },
+      createElement(ui.Field, { label: "Name" }, createElement(ui.Input, { onValueChange: (value: string) => void value })));
+    void createElement(ui.Switch, { label: "Alerts", onCheckedChange: (checked: boolean) => void checked });
+    // @ts-expect-error Internal and legacy variants are not part of the plugin contract.
+    void createElement(ui.Button, { variant: "glass", children: "Glass" });
+  }
   const unread: UnreadCapability = ctx.relay.snapshot().session.unread;
   const conversations: ReturnType<UnreadCapability["inbox"]> = unread.inbox();
   if (unread.markCapturedMessagesRead) {

@@ -376,6 +376,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
           void services.navigation.open({ version: 1, kind: "settings" });
         },
         true,
+        () => services.communities.reload(),
       ),
     [services],
   );

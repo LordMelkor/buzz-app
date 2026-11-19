@@ -3138,50 +3138,52 @@ export class CodexRuntime {
     const request = target ?? active?.reply;
     const owner = request ?? (once as Once);
     const { agent } = owner;
-    const client = appClient(agent, {
-      // Its tool registry reviews every call, Buzz's dynamic tools included.
-      ...(!this.target ? { nativeCall: check } : {}),
-      nativeToolGate: true,
-      // Execution-target reads come from somewhere other than this desktop;
-      // suppress managed-attachment hints at publish so a remote source cannot
-      // trigger local managed cleanup. No remote deletion is added.
-      localAttachments: !this.target,
-      protectionContext: async () => {
-        const rpc =
-          active?.rpc ??
-          this.protectedServers.get(agent.key)?.rpc ??
-          this.server?.rpc;
-        if (!rpc) throw new Error("The protected Codex session is unavailable");
-        return rpc.request("thread/read", {
-          threadId: call.threadId,
-          includeTurns: true,
-        });
-      },
-      relayAuthor: this.reads(agent.key)?.relayAuthor?.(),
-      signingAuthority: this.reads(agent.key)?.workflowAuthority(),
-      read: (path) =>
-        this.target
-          ? this.target.readFile(path, { cwd: turn.workspace })
-          : readFile(
-              this.spawn,
-              turn.workspace,
-              path,
-              signal,
-              agent.protection?.processProtection,
-            ),
-      check,
-      signal,
-      callSignal: signal,
-      memories: async (slug) => {
-        const listing = await this.memories(owner, signal, slug);
-        check();
-        return listing;
-      },
-      remembered: () => {
-        const reads = this.reads(agent.key);
-        if (reads) this.memoryReads.forget(reads.connection, agent.pubkey);
-      },
-    });
+    const client = () =>
+      appClient(agent, {
+        // Its tool registry reviews every call, Buzz's dynamic tools included.
+        ...(!this.target ? { nativeCall: check } : {}),
+        nativeToolGate: true,
+        // Execution-target reads come from somewhere other than this desktop;
+        // suppress managed-attachment hints at publish so a remote source cannot
+        // trigger local managed cleanup. No remote deletion is added.
+        localAttachments: !this.target,
+        protectionContext: async () => {
+          const rpc =
+            active?.rpc ??
+            this.protectedServers.get(agent.key)?.rpc ??
+            this.server?.rpc;
+          if (!rpc)
+            throw new Error("The protected Codex session is unavailable");
+          return rpc.request("thread/read", {
+            threadId: call.threadId,
+            includeTurns: true,
+          });
+        },
+        relayAuthor: this.reads(agent.key)?.relayAuthor?.(),
+        signingAuthority: this.reads(agent.key)?.workflowAuthority(),
+        read: (path) =>
+          this.target
+            ? this.target.readFile(path, { cwd: turn.workspace })
+            : readFile(
+                this.spawn,
+                turn.workspace,
+                path,
+                signal,
+                agent.protection?.processProtection,
+              ),
+        check,
+        signal,
+        callSignal: signal,
+        memories: async (slug) => {
+          const listing = await this.memories(owner, signal, slug);
+          check();
+          return listing;
+        },
+        remembered: () => {
+          const reads = this.reads(agent.key);
+          if (reads) this.memoryReads.forget(reads.connection, agent.pubkey);
+        },
+      });
     // A watch or timer turn has no default destination.
     const context: Context =
       request && !request.unaddressed
@@ -3209,17 +3211,18 @@ export class CodexRuntime {
             )
         : answering;
     const reply = await callSessionTool(
-      this.target
-        ? {
-            ...client,
-            media: async () => {
-              this.target?.signal.throwIfAborted();
-              throw new Error(
-                "Media download is unavailable for remote Codex agents.",
-              );
-            },
-          }
-        : client,
+      () =>
+        this.target
+          ? {
+              ...client(),
+              media: async () => {
+                this.target?.signal.throwIfAborted();
+                throw new Error(
+                  "Media download is unavailable for remote Codex agents.",
+                );
+              },
+            }
+          : client(),
       context,
       call.tool,
       args,

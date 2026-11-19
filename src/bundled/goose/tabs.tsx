@@ -1518,7 +1518,8 @@ export function createTabs({
               />
             </Field>
             <Select
-              label="Sessions"
+              label="Session scope"
+              description="Choose how your agent uses sessions to keep context."
               variant="preference"
               value={draft.scope}
               groups={SCOPES}

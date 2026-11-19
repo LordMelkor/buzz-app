@@ -303,6 +303,7 @@ const EVIDENCE_LOW_EVENTS = 3072;
 const EVIDENCE_LOW_BYTES = 6 * 1024 * 1024;
 const eventBytes = (event: RelayEvent) =>
   new TextEncoder().encode(JSON.stringify(event)).byteLength;
+const noMentions = Object.freeze({ content: "", mentions: Object.freeze([]) });
 /** A row's preview text: its body, or a plain description of its attachments
  * when attachment presentation left no text, so the row is never blank. */
 const previewText = (message: ChannelMessage) => {
@@ -1618,6 +1619,25 @@ export function createUnread({
         if (!groups.size) continue;
         const rows = folded(channel.id);
         const content = new Map(rows.map((row) => [row.id, previewText(row)]));
+        // Only what a preview binds, so other changes to the message keep
+        // the snapshot equal.
+        const previewRows = new Map(
+          rows.map((row) => [
+            row.id,
+            {
+              content: row.content,
+              // A patch shows as raw text, so it binds no one.
+              mentions: row.diff ? [] : row.mentions,
+              ...(row.mentionReferences && !row.diff
+                ? { mentionReferences: row.mentionReferences }
+                : {}),
+              ...(row.edited ? { edited: true as const } : {}),
+              ...(row.attachmentSeams
+                ? { attachmentSeams: row.attachmentSeams }
+                : {}),
+            },
+          ]),
+        );
         // A session's top-level row shows its newest message from someone
         // else, unless that message is the root of its own thread row. This
         // mostly matches its newest evidence, but follows a relay-signed row's
@@ -1720,6 +1740,7 @@ export function createUnread({
               workflowOwnerId: workflowOwner(shown, workflowAuthority),
               preview: content.get(shown.id) ?? shown.content,
               previewMessageId: shown.id,
+              previewMentions: previewRows.get(shown.id) ?? noMentions,
               createdAt: shown.created_at,
               mentioned: entries.some((entry) => entry.mentioned),
               messages: Object.freeze(

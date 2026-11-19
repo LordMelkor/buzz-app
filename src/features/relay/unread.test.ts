@@ -1031,6 +1031,36 @@ it.each([
   },
 );
 
+it("Inbox rows carry their preview message's signed mentions and edit state", () => {
+  const h = setup();
+  h.grant("room");
+  const mention = message(h.alice, "room", "@viewer look", 12, [
+    ["p", h.viewer.pubkey],
+    ["p", "not-a-pubkey"],
+    ["mention", h.alice.pubkey],
+  ]);
+  h.emit([mention]);
+  const preview = () =>
+    h.session.unread
+      .inbox()
+      .items.find((item) => item.previewMessageId === mention.id)
+      ?.previewMentions;
+  expect(preview()).toMatchObject({
+    mentions: [h.viewer.pubkey],
+    mentionReferences: [h.alice.pubkey],
+  });
+  expect(preview()?.edited).toBeUndefined();
+  // An edited body no longer binds its original recipients, as in a message.
+  h.emit([
+    signed(h.alice, {
+      kind: 40003,
+      content: "@viewer edited",
+      tags: [["e", mention.id]],
+    }),
+  ]);
+  expect(preview()?.edited).toBe(true);
+});
+
 it("activity attachment labels follow edits and notify preview subscribers", () => {
   const h = setup();
   h.grant("room");

@@ -180,9 +180,9 @@ function setup(messageId = "root") {
         for (const fn of listeners) fn();
       });
     },
-    update(replies: ChannelMessage[]) {
+    update(replies: ChannelMessage[], patch: Partial<ThreadSnapshot> = {}) {
       act(() => {
-        snapshot = { ...snapshot, replies };
+        snapshot = { ...snapshot, ...patch, replies };
         for (const fn of listeners) fn();
       });
     },
@@ -520,6 +520,21 @@ it("keeps a reply target chosen while a background send is still publishing", ()
   expect(composer).toHaveAttribute("data-parent", "child");
   act(() => heldSend?.("new"));
   expect(composer).toHaveAttribute("data-parent", "child");
+});
+it("says an earlier reply is unavailable only once no history that could hold it is left to read", () => {
+  const h = setup();
+  const orphan = [row("orphan", "missing")];
+  const note = () =>
+    screen.queryByText("Earlier reply unavailable in loaded history.");
+  h.update(orphan, { seeking: true });
+  expect(screen.getByText("orphan")).toBeVisible();
+  expect(note()).not.toBeInTheDocument();
+  h.update(orphan, { seeking: undefined });
+  expect(note()).toBeVisible();
+  // Every reply answers a root that is still loading.
+  h.update([row("orphan", "root")], { root: undefined });
+  expect(screen.getByText("orphan")).toBeVisible();
+  expect(note()).not.toBeInTheDocument();
 });
 it("reveals all available ancestors for a selected descendant, including late history", () => {
   const h = setup("grandchild");

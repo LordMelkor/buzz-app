@@ -54,7 +54,7 @@ test("a scope proposal shows the current and proposed settings before Save", asy
   const summary = review.getByRole("region", { name: "Proposed settings" });
   await expect(summary.getByRole("heading")).toBeFocused();
   await expect(summary).toBeInViewport({ ratio: 1 });
-  await expect(summary).toContainText("Sessions");
+  await expect(summary).toContainText("Session scope");
   await expect(summary).toContainText("One session per thread");
   await expect(summary).toContainText("One session per community");
   await expect(summary).not.toContainText("Workspace");
@@ -104,7 +104,7 @@ test("a Codex agent's settings proposal persists only on the owner Save", async 
   for (const [label, value] of [
     ["Model", "codex-fixture-model"],
     ["Thinking", "high"],
-    ["Sessions", "One session per community"],
+    ["Session scope", "One session per community"],
     ["Workspace", "~/example"],
     ["Huddle voice", "maple"],
     ["Codex apps and plugins", "On"],
@@ -116,7 +116,7 @@ test("a Codex agent's settings proposal persists only on the owner Save", async 
     "~/example",
   );
   await expect(
-    review.getByRole("combobox", { name: "Sessions" }),
+    review.getByRole("combobox", { name: "Session scope" }),
   ).toContainText("One session per community");
   await expect(
     review.getByRole("button", { name: "Huddle voice" }),
@@ -166,9 +166,9 @@ test("a Codex agent's settings proposal persists only on the owner Save", async 
   await page.getByRole("gridcell", { name: "Ada", exact: true }).click();
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
   const pane = page.getByRole("tabpanel", { name: "Settings", exact: true });
-  await expect(pane.getByRole("combobox", { name: "Sessions" })).toContainText(
-    "One session per community",
-  );
+  await expect(
+    pane.getByRole("combobox", { name: "Session scope" }),
+  ).toContainText("One session per community");
   await expect(
     pane.getByRole("button", { name: "Huddle voice" }),
   ).toContainText("Maple");

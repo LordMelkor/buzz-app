@@ -642,7 +642,7 @@ it("splits Settings as the profile does: choices under Identity, the rest apart"
   expect(screen.getByRole("combobox", { name: "Thinking" })).toBeVisible();
   expect(screen.getByLabelText("Instructions")).toBeVisible();
   expect(screen.queryByLabelText("Workspace")).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "Sessions" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Session scope" })).toBeNull();
   expect(screen.queryByLabelText("API key")).toBeNull();
   expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
   // Save shows only once there is something to save.
@@ -652,7 +652,7 @@ it("splits Settings as the profile does: choices under Identity, the rest apart"
   expect(await screen.findByLabelText("API key")).toBeVisible();
   expect(screen.getByRole("button", { name: "Test connection" })).toBeVisible();
   expect(screen.getByLabelText("Workspace")).toBeVisible();
-  expect(screen.getByRole("combobox", { name: "Sessions" })).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Session scope" })).toBeVisible();
   expect(screen.queryByRole("combobox", { name: "Provider" })).toBeNull();
   expect(screen.queryByLabelText("Instructions")).toBeNull();
 });

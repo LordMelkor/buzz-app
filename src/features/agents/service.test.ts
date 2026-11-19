@@ -430,6 +430,7 @@ async function setup({
     fail: fake.fail,
     relay: fake.relay,
     reconnecting: fake.reconnecting,
+    reload: fake.reload,
     recover: fake.recover,
     unrouted: fake.unrouted,
     learned: fake.learned,
@@ -22709,7 +22710,7 @@ describe("agent gateway gate", () => {
 
   /** An agent of `gateway`-capable (or not) type, mentioned once. */
   async function mentioned(
-    capable: boolean,
+    capable: boolean | "attribution",
     asked = mention,
     channelId = channel,
     prepare?: (f: Awaited<ReturnType<typeof setup>>) => void,
@@ -22727,7 +22728,11 @@ describe("agent gateway gate", () => {
       defaults: () => ({ config: {} }),
       run,
       models,
-      ...(capable ? { gateway: { harness: "relay" } } : {}),
+      ...(capable === "attribution"
+        ? { gateway: { harness: "relay", mode: "attribution" as const } }
+        : capable
+          ? { gateway: { harness: "relay" } }
+          : {}),
     });
     await f.service.create({ type: "example/relay", name: "Relay" });
     f.emit({ events: [asked], channelId });
@@ -22928,6 +22933,100 @@ describe("agent gateway gate", () => {
       expect(f.models).not.toHaveBeenCalled();
       gatewayRoutes.removeMembership(bot as never);
     }
+  });
+
+  it("runs an attribution-only type's turn unattributed on a 401 or 403, with a notice, instead of failing it", async () => {
+    for (const status of [401, 403]) {
+      const { answer } = liveRoutes();
+      answer(status);
+      const f = await mentioned(
+        "attribution",
+        event(`attr-auth-${status}`, {
+          pubkey: viewer,
+          tags: [
+            ["h", channel],
+            ["p", bot],
+          ],
+        }),
+      );
+      await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
+      const delivery = f.run.mock.calls[0]?.[0];
+      expect(delivery).not.toHaveProperty("gateway");
+      const notice =
+        "Ran without gateway attribution: the agent gateway didn't accept your sign-in or denied this agent.";
+      expect(delivery?.gatewayFallback).toEqual({ reason: "auth", notice });
+      expect(f.activity.reader.work()[0]).toMatchObject({ notice });
+      expect(f.activity.reader.work()[0]).not.toHaveProperty("error");
+      gatewayRoutes.removeMembership(bot as never);
+    }
+  });
+
+  it("runs an attribution-only type's turn at once while its access check is pending, unattributed, and routes the next once it settles", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const { routes, request, answer } = liveRoutes();
+      expect(request).toHaveBeenCalledTimes(1);
+      const f = await mentioned("attribution");
+      await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
+      expect(ready).toHaveBeenCalledWith(bot, undefined);
+      expect(timeout).not.toHaveBeenCalledWith(TURN_READINESS_WAIT_MS);
+      const first = f.run.mock.calls[0]?.[0];
+      expect(first).not.toHaveProperty("gateway");
+      expect(first?.gatewayFallback).toEqual({
+        reason: "readiness_pending",
+        notice:
+          "Ran without gateway attribution: Buzz was still checking this agent's gateway access.",
+      });
+      answer(200, '{"harnesses":["relay"]}');
+      await vi.waitFor(() =>
+        expect(routes.routeFor(bot as never)).toMatchObject({
+          kind: "eligible",
+        }),
+      );
+      f.emit({
+        events: [
+          event("b2", {
+            pubkey: viewer,
+            tags: [
+              ["h", channel],
+              ["p", bot],
+            ],
+          }),
+        ],
+        channelId: channel,
+      });
+      await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(2));
+      const next = f.run.mock.calls[1]?.[0];
+      expect(next?.gateway?.route).toMatchObject({
+        kind: "eligible",
+        harnesses: ["relay"],
+      });
+      expect(next).not.toHaveProperty("gatewayFallback");
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("falls back an attribution-only type's turn on any other blocked route with attribution wording", async () => {
+    ready.mockResolvedValue(blockedRoute);
+    const f = await mentioned("attribution");
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
+    expect(ready).toHaveBeenCalledWith(bot, undefined);
+    expect(f.run.mock.calls[0]?.[0]?.gatewayFallback).toEqual({
+      reason: "network",
+      notice:
+        "Ran without gateway attribution: Buzz couldn't reach the gateway.",
+    });
+  });
+
+  it("hands an eligible route to an attribution-only type, as to a forwarding one", async () => {
+    ready.mockResolvedValue(eligible);
+    const f = await mentioned("attribution");
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
+    const delivery = f.run.mock.calls[0]?.[0];
+    expect(delivery?.gateway?.route).toBe(eligible);
+    expect(delivery?.gateway?.upstream).toBe(RELAY_UPSTREAM);
+    expect(delivery).not.toHaveProperty("gatewayFallback");
   });
 
   it("fails the next turn when a 403 from inference re-probes as 403, instead of falling back while pending", async () => {
@@ -23831,4 +23930,263 @@ it("retries a proposal after saving a synced settings revision and failing to re
   } finally {
     await ctx.fiber.dispose();
   }
+});
+
+describe("reload in place", () => {
+  it("keeps custody and the working turn through a reload that times out, retries and is ready", async () => {
+    const { service, run, emit, native, reload, connect } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    let finish: () => void = () => {};
+    run.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    emit({
+      events: [
+        event("1", { tags: [["p", bot]] }),
+        event("2", { tags: [["p", bot]] }),
+      ],
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    reload();
+    await settle();
+    // Its attempt timed out, and its automatic retry is still the reload.
+    reload({ retrying: true });
+    await settle();
+    reload();
+    await settle();
+    expect(native.release).not.toHaveBeenCalled();
+    connect(true);
+    await settle();
+    expect(native.release).not.toHaveBeenCalled();
+    finish();
+    // The queued mention starts once the community is ready again.
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    expect(native.release).not.toHaveBeenCalled();
+  });
+
+  it("cancels the working turn, then releases custody, when a reload settles in a refusal", async () => {
+    const { service, run, emit, native, reload } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await vi.waitFor(() => expect(native.claim).toHaveBeenCalledWith(bot, 0));
+    let signal: AbortSignal | undefined;
+    let handle: Delivery["agent"] | undefined;
+    run.mockImplementationOnce((delivery) => {
+      signal = delivery.signal;
+      handle = delivery.agent;
+      return new Promise<void>(() => {});
+    });
+    emit({ events: [event("1", { tags: [["p", bot]] })] });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    let abortedAtRelease: boolean | undefined;
+    native.release.mockImplementation(async () => {
+      abortedAtRelease = signal?.aborted;
+    });
+    reload();
+    await settle();
+    expect(signal?.aborted).toBe(false);
+    reload({ denied: true });
+    await vi.waitFor(() => expect(native.release).toHaveBeenCalledWith(bot));
+    expect(abortedAtRelease).toBe(true);
+    if (!handle) throw new Error("Expected the turn's handle");
+    await expect(
+      handle.publish({ kind: 9, content: "late", tags: [["h", channel]] }),
+    ).rejects.toThrow();
+    await settle();
+    expect(native.release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["its protection", { protectionRevision: 1 }],
+    ["its type", { type: "other/relay" }],
+  ])(
+    "releases custody held by a retrying reload when %s changes",
+    async (_label, change) => {
+      const identities: AgentIdentity[] = [];
+      const { ctx, service, native, reload } = await setup({ identities });
+      ctx
+        .extend({
+          pluginOwner: Object.freeze({ id: "other", revision: "one" }),
+        })
+        .agents.register({
+          id: "relay",
+          title: "Relay",
+          defaults: () => ({ config: {} }),
+          run: vi.fn(),
+        });
+      await service.create({ type: "example/echo", name: "Echo" });
+      await vi.waitFor(() => expect(native.claim).toHaveBeenCalledWith(bot, 0));
+      reload();
+      reload({ retrying: true });
+      await settle();
+      expect(native.release).not.toHaveBeenCalled();
+      const identity = identities[0];
+      if (!identity) throw new Error("Missing native identity");
+      identities[0] = { ...identity, ...change };
+      await service.refresh();
+      await vi.waitFor(() => expect(native.release).toHaveBeenCalledWith(bot));
+    },
+  );
+
+  it("answers a mention posted while a reload reconnects, once", async () => {
+    const { service, run, emit, reload, connect } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await settle();
+    const before = Math.floor(Date.now() / 1000);
+    reload();
+    await settle();
+    const gap = event("gap", { created_at: before + 5, tags: [["p", bot]] });
+    // The reload is ready well after the mention was posted.
+    const now = vi.spyOn(Date, "now").mockReturnValue((before + 60) * 1000);
+    try {
+      connect(true);
+      await settle();
+      // Replay sends it again, as each resubscription does; it runs once.
+      emit({ events: [gap], replay: true });
+      emit({ events: [gap], replay: true });
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("releases custody when a reload is disconnected", async () => {
+    const { service, native, reload, connect } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await vi.waitFor(() => expect(native.claim).toHaveBeenCalledWith(bot, 0));
+    reload();
+    await settle();
+    connect(false);
+    await vi.waitFor(() => expect(native.release).toHaveBeenCalledWith(bot));
+  });
+
+  it("holds a request made after a reload is ready until its new gateway check answers", async () => {
+    let answer = () => {};
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    const checked = vi
+      .spyOn(gatewayRoutes, "routeForTurn")
+      .mockImplementation(async () => {
+        await answered;
+        return { kind: "external", revision: 2 } as never;
+      });
+    try {
+      const { service, plugin, reload, connect } = await setup();
+      await service.create({ type: "example/echo", name: "Echo" });
+      await vi.waitFor(() => expect(plugin.agents.handle(bot)).toBeDefined());
+      const handle = plugin.agents.handle(bot);
+      if (!handle?.settle) throw new Error("Expected a handle that settles");
+      const signal = new AbortController().signal;
+      // Outside a reload nothing waits on the gateway.
+      await expect(handle.settle(signal)).resolves.toBe(false);
+      expect(checked).not.toHaveBeenCalled();
+      reload();
+      await settle();
+      connect(true);
+      await settle();
+      // Only a gateway turn waits for the check; other harnesses go on.
+      await expect(handle.settle(signal)).resolves.toBe(false);
+      expect(checked).not.toHaveBeenCalled();
+      // A fresh gateway request after relay-ready waits for the new check.
+      let waited: boolean | undefined;
+      const call = handle
+        .settle(signal, true)
+        .then((result) => (waited = result));
+      await vi.waitFor(() => expect(checked).toHaveBeenCalledOnce());
+      await settle();
+      expect(waited).toBeUndefined();
+      answer();
+      await call;
+      expect(waited).toBe(true);
+      // Once answered, the marker is gone.
+      await expect(handle.settle(signal)).resolves.toBe(false);
+      expect(checked).toHaveBeenCalledOnce();
+    } finally {
+      checked.mockRestore();
+    }
+  });
+
+  it("forgets a reload's gateway marker when its session disconnects", async () => {
+    const checked = vi
+      .spyOn(gatewayRoutes, "routeForTurn")
+      .mockResolvedValue({ kind: "external", revision: 2 } as never);
+    try {
+      const { service, plugin, reload, connect } = await setup();
+      await service.create({ type: "example/echo", name: "Echo" });
+      await vi.waitFor(() => expect(plugin.agents.handle(bot)).toBeDefined());
+      reload();
+      await settle();
+      connect(true);
+      await settle();
+      const markers = (service as unknown as { reloaded: Map<string, unknown> })
+        .reloaded;
+      expect(markers.size).toBe(1);
+      // Disconnected, it no longer holds the old session alive.
+      connect(false);
+      await settle();
+      expect(markers.size).toBe(0);
+      expect(checked).not.toHaveBeenCalled();
+    } finally {
+      checked.mockRestore();
+    }
+  });
+
+  it("holds a mem_get during a reload and answers it from the new session", async () => {
+    const { service, plugin, relay, reload, connect } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await vi.waitFor(() => expect(plugin.agents.handle(bot)).toBeDefined());
+    const handle = plugin.agents.handle(bot);
+    if (!handle) throw new Error("Expected active handle");
+    const before = relay.snapshot().session;
+    const build = () => {
+      // What a harness reads when it builds its client.
+      const session = relay.snapshot().session;
+      return appClient(handle, {
+        read: vi.fn(),
+        memories: async () => ({
+          entries: [
+            {
+              slug: session === before ? "old" : "new",
+              body: "",
+              createdAt: 1,
+            },
+          ],
+          partial: false,
+        }),
+      });
+    };
+    reload();
+    let answered: unknown;
+    const call = callSessionTool(build, {}, "mem_get", {}).then(
+      (reply) => (answered = reply),
+    );
+    await settle();
+    expect(answered).toBeUndefined();
+    connect(true);
+    await call;
+    expect(String(answered)).toMatch(/^new /);
+  });
+
+  it("rejects a mem_get waiting on a reload when its call is canceled", async () => {
+    const { service, plugin, reload } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await vi.waitFor(() => expect(plugin.agents.handle(bot)).toBeDefined());
+    const handle = plugin.agents.handle(bot);
+    if (!handle) throw new Error("Expected active handle");
+    const canceled = new AbortController();
+    reload();
+    const call = callSessionTool(
+      () =>
+        appClient(handle, {
+          read: vi.fn(),
+          callSignal: canceled.signal,
+          memories: async () => ({ entries: [], partial: false }),
+        }),
+      {},
+      "mem_get",
+      {},
+    );
+    canceled.abort(new Error("canceled"));
+    await expect(call).rejects.toThrow("canceled");
+  });
 });

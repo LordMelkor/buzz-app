@@ -277,7 +277,13 @@ it("presents actual host registrations in navigation, interface sizing, search/s
   const shortcuts = new ShortcutsService(root, window, bindings);
   const appearance = createAppearance(window);
   const navigation = createNavigationController(createMemoryHistory());
-  const removeApp = registerAppShortcuts(shortcuts, appearance, vi.fn(), true);
+  const removeApp = registerAppShortcuts(
+    shortcuts,
+    appearance,
+    vi.fn(),
+    true,
+    vi.fn(),
+  );
   const removeNavigation = registerNavigationShortcuts(
     shortcuts,
     navigation.navigation,
@@ -332,6 +338,7 @@ it("presents actual host registrations in navigation, interface sizing, search/s
       "Delete selected message",
       "Quote selected text",
       "Reload Buzz",
+      "Reload Buzz and restart agents",
     ]);
   } finally {
     cleanup();
@@ -1099,7 +1106,13 @@ it("shows desktop Close as reserved and read-only while other actions remain edi
   const bindings = createShortcutBindings(window);
   const shortcuts = new ShortcutsService(root, window, bindings);
   const appearance = createAppearance(window);
-  const remove = registerAppShortcuts(shortcuts, appearance, vi.fn(), true);
+  const remove = registerAppShortcuts(
+    shortcuts,
+    appearance,
+    vi.fn(),
+    true,
+    vi.fn(),
+  );
   try {
     render(
       <ShortcutSettings

@@ -11007,3 +11007,60 @@ it("holds an early Enter while only Ask is offered, until message search answers
     owner.dispose();
   }
 });
+
+it("shows a message hit's resolved mention as a chip and keeps its highlight", async () => {
+  vi.useFakeTimers();
+  const relay = keypair();
+  const viewer = keypair();
+  const tomb = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, tomb.pubkey]),
+    profile(tomb, { name: "tomb" }),
+  ];
+  const owner = createRelaySession({
+    ...wire.transport,
+    query(filters, signal) {
+      if (filters.some((filter) => filter.search !== undefined))
+        return wire.transport.query(filters, signal);
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="getting"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openNewMessage={() => {}}
+        openConversation={() => {}}
+      />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    await act(async () =>
+      wire
+        .next()
+        .respond([
+          message(viewer, "crew", "ugh @tomb now getting errors", 1700000001, [
+            ["p", tomb.pubkey],
+          ]),
+        ]),
+    );
+    const row = screen.getByRole("option", { name: /now getting errors/ });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const chip = row.querySelector("[data-mention-kind]");
+    expect(chip).toHaveTextContent("tomb");
+    expect(chip).toHaveClass(referenceStyles.link ?? "");
+    expect(row.querySelector("mark.search-match")).toHaveTextContent("getting");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
