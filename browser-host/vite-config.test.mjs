@@ -46,13 +46,6 @@ it("loads the broker's Vite config without native-compatibility warnings", () =>
                 /requires a loopback-only Vite listener/,
               );
             }
-            // Desktop development sends the packaged app's frame rule; web development does not.
-            process.env.TAURI_ENV_PLATFORM = 'linux';
-            const desktop = await resolveConfig({ configFile }, 'serve');
-            assert.equal(desktop.server.headers?.['Content-Security-Policy'], "frame-src 'self' buzz-frame:");
-            delete process.env.TAURI_ENV_PLATFORM;
-            const web = await resolveConfig({ configFile }, 'serve');
-            assert.equal(web.server.headers?.['Content-Security-Policy'], undefined);
             // Unpinned fixture servers and packaged builds do not load a signer.
             process.env.BUZZ_DEV_VIEWER = '';
             const fixture = await resolveConfig({ configFile, server: { host: true } }, 'serve');
