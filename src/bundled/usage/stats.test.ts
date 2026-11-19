@@ -259,6 +259,47 @@ it.each([
   ]);
 });
 
+it.each([
+  [
+    "through today for read gaps",
+    { gaps: ["A subagent’s transcript is gone"] },
+    [{ partial: true }, { partial: true }],
+  ],
+  [
+    "through its end for limits alone",
+    { limits: ["No subagent totals"] },
+    [undefined, undefined],
+  ],
+])(
+  "marks the daily cost of a session that ended before today partial %s",
+  (_, missing, after) => {
+    const result = stats(
+      [
+        {
+          agent: agent("pixel"),
+          harness: "x/claude",
+          sessions: [
+            session("ended", [seen(dayStart(now, 2) + HOUR, full(1e6))], {
+              ...missing,
+              startedAt: dayStart(now, 3) + HOUR,
+            }),
+          ],
+        },
+      ],
+      now,
+      7,
+    );
+    expect(result.days.map((day) => day.costs.get("x/claude"))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      { partial: true },
+      { value: expect.closeTo(4), partial: true },
+      ...after,
+    ]);
+  },
+);
+
 it("marks the previous period partial when a gapped session began in it", () => {
   const result = stats(
     [
@@ -319,7 +360,6 @@ it("replaces a session's snapshot only with one without gaps, and keeps sessions
     session("a", [seen(today, full(10))], { revision: "a2" }),
     session("b", [seen(today, full(20))], { revision: "b2", gaps: gap }),
     session("d", [seen(today, full(4))], { gaps: gap }),
-    // Limits are in every read: the newer snapshot replaces the earlier one.
     session("e", [seen(today, full(50))], { revision: "e2", limits }),
   ]);
   expect(

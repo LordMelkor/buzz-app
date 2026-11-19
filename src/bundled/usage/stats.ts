@@ -160,8 +160,8 @@ export function stats(
   };
   const dayOf = (at: number) => dayCosts[dayIndex(at)];
   /** Marks `harness`'s cost partial on each day from the one `at` is in. */
-  const uncertain = (harness: string, at = start) => {
-    for (const day of dayCosts.slice(dayIndex(at))) {
+  const uncertain = (harness: string, at = start, until = now) => {
+    for (const day of dayCosts.slice(dayIndex(at), dayIndex(until) + 1)) {
       const spent = day.get(harness) ?? new Sum();
       spent.partial = true;
       day.set(harness, spent);
@@ -228,7 +228,11 @@ export function stats(
         // What the read missed may be in the period.
         for (const sum of [sessionCost, tokens, output, read])
           sum.partial = true;
-        uncertain(harness, session.startedAt);
+        uncertain(
+          harness,
+          session.startedAt,
+          session.gaps.length > 0 ? now : session.lastAt,
+        );
       }
       agentSessions += 1;
       agentCost.include(sessionCost);
