@@ -1,4 +1,4 @@
-import { closeSettings, openSettings } from "./navigation.mjs";
+import { openSettings, settingsDialog } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 
@@ -18,6 +18,7 @@ test("a plugin's notice shows on any page and takes the owner's answer over Sett
   await expect(ask).toHaveCount(0);
   const answered = page.getByRole("dialog", { name: "Answered once" });
   await expect(answered).toBeVisible();
-  await closeSettings(page);
+  await settingsDialog(page).press("Escape");
+  await expect(settingsDialog(page)).toHaveCount(0);
   await expect(answered).toBeVisible();
 });
