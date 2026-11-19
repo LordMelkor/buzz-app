@@ -120,8 +120,9 @@ export const incomplete = (session: SessionUsage) =>
   session.gaps.length > 0 || (session.limits?.length ?? 0) > 0;
 
 /** A new read's snapshots over those kept from earlier, as `SessionUsage`
- * says: a complete snapshot replaces the session's earlier one; an incomplete
- * one leaves it, with the new read's gaps; sessions the read missed stay. */
+ * says: a snapshot without gaps replaces the session's earlier one, even with
+ * limits; one with gaps leaves it, with the new read's gaps; sessions the read
+ * missed stay. */
 export function merge(
   kept: readonly SessionUsage[],
   read: readonly SessionUsage[],
