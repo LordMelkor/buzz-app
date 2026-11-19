@@ -23,6 +23,7 @@ const SMALLEST = 20;
 const JITTER_MS = 10_000;
 const BOUNDS = { thread: 39007, channel: 39006 } as const;
 const AUX = new Set([5, 7, 40003]);
+const AUX_PAGE = 500;
 
 /** The scan's whole life, as one value. A new sort, a withdraw or unmount aborts `scanning`. */
 type Phase =
@@ -74,6 +75,7 @@ function createArranger(initial: ComposerAccessoryProps) {
   let starts = [0];
   const events = new Map<string, RelayEvent>();
   let hold: Hold | undefined;
+  let closureRefused: string | undefined;
   let scanned = false;
   let forward: Cursor | null | undefined;
   let shown = 0;
@@ -125,30 +127,71 @@ function createArranger(initial: ComposerAccessoryProps) {
     }
   }
 
+  async function replyAux(ids: readonly string[], signal: AbortSignal) {
+    const found: RelayEvent[] = [];
+    let cursor: Cursor | undefined;
+    while (ids.length) {
+      const page = await read(
+        [
+          {
+            kinds: [5, 7, 9005, 40003],
+            "#e": [...ids],
+            limit: AUX_PAGE,
+            ...(cursor
+              ? { until: cursor.created_at, before_id: cursor.id }
+              : {}),
+          },
+        ],
+        signal,
+      );
+      const last = page.reduce<RelayEvent | undefined>(
+        (end, event) => (!end || inOrder(event, end) < 0 ? event : end),
+        undefined,
+      );
+      if (!last) return found;
+      if (cursor && inOrder(last, cursor) >= 0)
+        throw new Error("The relay did not page reactions");
+      found.push(...page);
+      cursor = { created_at: last.created_at, id: last.id };
+    }
+    return found;
+  }
+
   async function pages(
     lanes: readonly (readonly [Lane, Cursor | undefined])[],
     signal: AbortSignal,
   ) {
     const root = rootId();
-    const filters = lanes.map(([lane, cursor]) => {
-      const newer = lane === "newer";
-      return {
-        "#h": [props.channelId],
-        kinds: [9],
-        limit: PAGE,
-        include_aux: true,
-        ...(root
-          ? { thread_window: true, "#e": [root], depth_limit: 100 }
-          : { top_level: true }),
-        ...(newer ? { direction: "newer" as const } : {}),
-        ...(cursor
-          ? newer
-            ? { after: cursor.created_at, after_id: cursor.id }
-            : { until: cursor.created_at, before_id: cursor.id }
-          : {}),
-      };
-    });
-    const answer = await read(filters, signal);
+    let closure = !root || closureRefused !== root;
+    const windows = () =>
+      lanes.map(([lane, cursor]) => {
+        const newer = lane === "newer";
+        return {
+          "#h": [props.channelId],
+          kinds: [9],
+          limit: PAGE,
+          include_aux: closure,
+          ...(root
+            ? { thread_window: true, "#e": [root], depth_limit: 100 }
+            : { top_level: true }),
+          ...(newer ? { direction: "newer" as const } : {}),
+          ...(cursor
+            ? newer
+              ? { after: cursor.created_at, after_id: cursor.id }
+              : { until: cursor.created_at, before_id: cursor.id }
+            : {}),
+        };
+      });
+    let answer: readonly RelayEvent[];
+    try {
+      answer = await read(windows(), signal);
+    } catch (error) {
+      if (!root || !closure || (error as { status?: unknown }).status !== 503)
+        throw error;
+      closureRefused = root;
+      closure = false;
+      answer = await read(windows(), signal);
+    }
     const bodies = answer
       .filter((event) => event.kind === kindOfBounds())
       .map(
@@ -160,6 +203,15 @@ function createArranger(initial: ComposerAccessoryProps) {
           },
       );
     keep(answer);
+    if (!closure)
+      keep(
+        await replyAux(
+          answer
+            .filter((event) => event.kind === 9 && event.id !== root)
+            .map((event) => event.id),
+          signal,
+        ),
+      );
     return lanes.map(([lane]) => {
       const body = bodies.find((b) => (b.direction ?? "older") === lane);
       if (!body) throw new Error("The relay sent no window bounds");

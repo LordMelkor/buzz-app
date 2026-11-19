@@ -1782,7 +1782,11 @@ The scan pattern:
 
 1. Read with `snapshotRead`, `priority: "background"`, pages of 200. Never page
    with `readPage`: it feeds the host's own views and unread counts, which are
-   bounded and are not a place to hold a scan.
+   bounded and are not a place to hold a scan. A thread page's aux closure
+   repeats the root's aux; if the relay refuses a page (503) for a root with
+   many reactions, read that thread with `include_aux: false` and its replies'
+   reactions, edits and deletions with `#e` reads of their ids, paged with
+   `until` and `before_id` until a page comes back empty.
 2. Keep what was read in one `retain()` hold and fold with `foldRows`. Rank from
    the folded rows, such as the distinct accounts that reacted; the definition of
    a score is the plugin's.

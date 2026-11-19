@@ -4,6 +4,7 @@ import type {
   ReadFilter,
   RelayEvent,
 } from "../../../src/features/relay/events";
+import { ReadError } from "../../../src/features/relay/errors";
 import { createEventVerifier } from "../../../src/features/relay/events";
 import {
   newReadJournal,
@@ -91,6 +92,7 @@ export type ReadRecord = {
 };
 
 const auxKinds = new Set([REACTION, EDIT, DELETION]);
+const WINDOW_ROWS = 8192;
 const targetsOf = (event: EventData) =>
   event.tags.flatMap(([name, id]) => (name === "e" && id ? [id] : []));
 const ascending = (a: EventData, b: EventData) => relayOrder(a, b);
@@ -134,6 +136,10 @@ export function createWorld(events: readonly RelayEvent[] = []) {
       return [...new Map([...first, ...second].map((e) => [e.id, e])).values()];
     },
     auxOf: (ids: readonly string[]) => ids.flatMap((id) => aux.get(id) ?? []),
+    deleted: (event: RelayEvent) =>
+      (aux.get(event.id) ?? []).some(
+        (e) => e.kind === 5 && e.pubkey === event.pubkey,
+      ),
   };
   world.add(events);
   return world;
@@ -185,8 +191,11 @@ export function createRelay(options: {
   relay: Key;
   /** Reads held back until released, for ordering tests. */
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined;
+  /** The rows one request's thread windows may read, with their aux. */
+  windowRows?: number;
 }) {
   const { world, viewer, relay } = options;
+  const windowRows = options.windowRows ?? WINDOW_ROWS;
   const reads: ReadRecord[] = [];
   const members = roster(relay, CHANNEL, [viewer.pubkey], 1);
   const channelMeta = metadata(relay, CHANNEL, "Arranger fixture", 1);
@@ -263,11 +272,21 @@ export function createRelay(options: {
         ),
       ];
     }
-    if (filter["#e"])
-      return world
-        .auxOf(filter["#e"])
-        .filter((e) => e.created_at >= (filter.since ?? 0))
-        .slice(0, page);
+    if (filter["#e"]) {
+      const kinds = new Set(filter.kinds ?? []);
+      const found = new Map(
+        world
+          .auxOf(filter["#e"])
+          .filter(
+            (e) =>
+              (!kinds.size || kinds.has(e.kind)) &&
+              e.created_at >= (filter.since ?? 0) &&
+              !world.deleted(e),
+          )
+          .map((e) => [e.id, e]),
+      );
+      return after([...found.values()].sort(ascending), filter).slice(0, page);
+    }
     return [];
   }
   const transport: ReadTransport = {
@@ -279,7 +298,19 @@ export function createRelay(options: {
       reads.push({ filters, priority });
       await options.hold?.(filters);
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      return (await Promise.all(filters.map(answer))).flat();
+      const answers = await Promise.all(filters.map(answer));
+      const rows = answers.reduce(
+        (sum, events, i) =>
+          filters[i]?.thread_window ? sum + events.length - 1 : sum,
+        0,
+      );
+      if (rows > windowRows)
+        throw new ReadError(
+          "unavailable",
+          "thread window exceeds its row budget",
+          503,
+        );
+      return answers.flat();
     },
   };
   return { transport, reads, members, channelMeta };
@@ -292,6 +323,7 @@ export function openSession(options: {
   viewer?: Key;
   relay?: Key;
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined;
+  windowRows?: number;
 }) {
   const viewer = options.viewer ?? keypair();
   const relay = options.relay ?? keypair();

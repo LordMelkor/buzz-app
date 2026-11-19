@@ -157,12 +157,21 @@ type Mount = {
   windowNewer?: boolean;
   probe?: boolean;
   targetId?: string;
+  windowRows?: number;
 };
-async function mount({ fixture, rootId, windowNewer, probe, targetId }: Mount) {
+async function mount({
+  fixture,
+  rootId,
+  windowNewer,
+  probe,
+  targetId,
+  windowRows,
+}: Mount) {
   const world = createWorld(fixture.events);
   const relay = openSession({
     world,
     ...(windowNewer === undefined ? {} : { windowNewer }),
+    ...(windowRows === undefined ? {} : { windowRows }),
   });
   const answers: (readonly RelayEvent[])[] = [];
   const read = relay.session.snapshotRead;
@@ -371,6 +380,52 @@ it("ranks a 2,000-reply thread by Top from background reads, leaving the host's 
   expect(h.recent()).toEqual(recent);
   expect(h.unread()).toEqual(unread);
   expect(h.session.channels.window(CHANNEL)).toEqual(window);
+});
+
+it("reads a heavy root's replies' reactions by id once the relay refuses its pages' aux", async () => {
+  const { root } = thread;
+  const onRoot = await prove(
+    Array.from({ length: 500 }, (_, i) =>
+      mint(thread.reactors[i % thread.reactors.length] as never, {
+        kind: REACTION,
+        content: "👍",
+        created_at: root.created_at + 1 + i,
+        tags: [
+          ["h", CHANNEL],
+          ["e", root.id],
+        ],
+      }),
+    ),
+  );
+  const heavy = { ...thread, events: [...thread.events, ...onRoot] };
+  const want = oracle(heavy.events, root.id);
+  const h = await mount({ fixture: heavy, rootId: root.id, windowRows: 1200 });
+  const before = h.reads.length;
+  h.click("Top");
+  await ready(h);
+
+  const filters = h.scanReads(before).flatMap(({ filters }) => filters);
+  const windows = filters.filter((filter) => filter.thread_window);
+  expect(windows.map((filter) => filter.include_aux)).toEqual([
+    true,
+    true,
+    ...windows.slice(2).map(() => false),
+  ]);
+  expect(windows.slice(0, 2)).toEqual(
+    windows.slice(2, 4).map((filter) => ({ ...filter, include_aux: true })),
+  );
+  const pages = h.answers.filter((page) => page.some((e) => e.kind === 39007));
+  const aux = filters.filter((filter) => !filter.thread_window && filter["#e"]);
+  expect(new Set(aux.flatMap((filter) => filter["#e"] ?? []))).toEqual(
+    new Set(
+      pages
+        .flat()
+        .filter((e) => e.kind === 9 && e.id !== root.id)
+        .map((e) => e.id),
+    ),
+  );
+  expect(h.shown()).toEqual(idsOf(want.top.slice(0, 200)));
+  expect(want.score(h.shown()[0] as string)).toBe(20);
 });
 
 it("folds every reaction, edit and deletion of the thread as the oracle counts them", async () => {
