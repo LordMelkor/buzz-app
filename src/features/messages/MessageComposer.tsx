@@ -3503,7 +3503,9 @@ function Composer({
               extensions?.sendGates,
               {
                 channelId,
-                ...(threadRootId ? { threadRootId } : {}),
+                ...(threadRootId
+                  ? { threadRootId: sourceRootId ?? threadRootId }
+                  : {}),
                 ...(threadRootId && replyParentId
                   ? { parentId: replyParentId }
                   : {}),

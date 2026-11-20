@@ -17951,6 +17951,53 @@ it.each(["channel", "thread", "task"])(
     );
   },
 );
+it("holds a reply typed in a task subthread under the thread's root and publishes it there", async () => {
+  const root = "b".repeat(64);
+  const invocation = "c".repeat(64);
+  const empty: [] = [];
+  const none = { snapshot: () => empty, subscribe: () => () => {} };
+  const held = deferred<{ message: OutgoingMessage; session: RelaySession }>();
+  const published = deferred<RelayEvent>();
+  const gate = {
+    id: "g",
+    key: "t/g",
+    pluginId: "t",
+    revision: "1",
+    hold: (message: OutgoingMessage, session: RelaySession) => {
+      held.resolve({ message, session });
+      return true;
+    },
+  };
+  const h = await mountUploadComposer({
+    threadRootId: invocation,
+    sourceRootId: root,
+    replyParentId: invocation,
+    publish: async (event) => published.resolve(event),
+    extensions: {
+      tools: none,
+      inline: none,
+      completions: none,
+      sendGates: { ...none, snapshot: () => [gate] },
+    },
+  });
+  fireEvent.change(h.input(), { target: { value: "Held reply" } });
+  await waitFor(() => expect(h.send()).toBeEnabled());
+  fireEvent.click(h.send());
+  const { message, session } = await held.promise;
+  expect(message).toMatchObject({
+    channelId: "channel",
+    threadRootId: root,
+    parentId: invocation,
+    text: "Held reply",
+  });
+  expect(h.publish).not.toHaveBeenCalled();
+  await publishOutgoing(session, message);
+  const event = await published.promise;
+  expect(event.tags.filter(([name]) => name === "e")).toEqual([
+    ["e", root, "", "root"],
+    ["e", invocation, "", "reply"],
+  ]);
+});
 it("keeps the note and disables Send for an inaccessible pasted forward until removed", async () => {
   const h = await mountUploadComposer();
   fireEvent.change(h.input(), { target: { value: "Keep this note" } });
