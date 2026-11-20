@@ -3597,10 +3597,13 @@ enable `allowfullscreen`. The relay applies the same `sandbox`, `allow`, and
 
 The plugin handles failures as follows.
 
-- **CSP refusal or rejected mount.** If the host's CSP blocks the relay
-  (`securitypolicyviolation` with `effectiveDirective === "frame-src"`) or the
-  relay sends `buzz-embed:refused`, remove the iframe, restore the preview, and
-  fall back to opening the original link.
+- **CSP refusal or rejected mount.** If the host's CSP blocks the relay or the
+  relay sends `buzz-embed:refused`, remove the iframe and restore the preview.
+  For `securitypolicyviolation`, require `disposition === "enforce"` and
+  `effectiveDirective === "frame-src"`, and check that the blocked URI and
+  policy identify a block of the relay. Open the original link once for a
+  pending attempt. Retire the attempt when it mounts or ends, including when
+  the reader opens the link manually.
 - **Missing or unreachable relay page.** If the Pages endpoint fails to load,
   `buzz-embed:ready` never arrives and the handshake stays unanswered. Keep a
   preview visible until `buzz-embed:mounted`.
