@@ -19,8 +19,10 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type Dispatch,
   type ReactNode,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import type { Contribution } from "../../plugins/contributions";
 import type {
@@ -199,6 +201,8 @@ export function ComposerCompletions({
     registry.snapshot,
   );
   const [display] = useState(createDisplay);
+  // Only user navigation pins an ID; automatic selection follows the first result.
+  const [pin, setPin] = useState<{ scope: string; row?: string | undefined }>();
   // Query owners remount on typing. Keep the last physical position with the
   // host, recording after row handlers have compared the previous position.
   const pointerPosition =
@@ -225,6 +229,26 @@ export function ComposerCompletions({
       ...(resolved.pending ?? []),
       ...(resolved.tokens ?? []),
     ]);
+  const scope = JSON.stringify(
+    match && observation
+      ? [
+          contributionKey(match.provider),
+          observation.revision,
+          match.query.start,
+          match.query.end,
+          match.query.query,
+        ]
+      : null,
+  );
+  const select = useCallback(
+    (row: SetStateAction<string | undefined>) =>
+      setPin((previous) => {
+        const held = previous?.scope === scope ? previous.row : undefined;
+        const next = typeof row === "function" ? row(held) : row;
+        return next === held ? previous : { scope, row: next };
+      }),
+    [scope],
+  );
   const open =
     !!match &&
     !!observation &&
@@ -245,11 +269,7 @@ export function ComposerCompletions({
   return (
     <ContributionBoundary
       key={JSON.stringify([
-        contributionKey(match.provider),
-        observation.revision,
-        match.query.start,
-        match.query.end,
-        match.query.query,
+        scope,
         match.supplements.map(({ provider, query }) => [
           contributionKey(provider),
           query.end,
@@ -275,6 +295,8 @@ export function ComposerCompletions({
         input={input}
         replace={replace}
         pointerPosition={pointerPosition}
+        selected={pin?.scope === scope ? pin.row : undefined}
+        setSelected={select}
       />
     </ContributionBoundary>
   );
@@ -301,8 +323,12 @@ function OwnedCompletion({
   input,
   replace,
   pointerPosition,
+  selected,
+  setSelected,
   ...context
 }: CompletionContext & {
+  selected: string | undefined;
+  setSelected: Dispatch<SetStateAction<string | undefined>>;
   provider: Contribution<ComposerCompletion>;
   sources: readonly CompletionMatch[];
   registry: ContributionReader<ComposerCompletion>;
@@ -351,8 +377,6 @@ function OwnedCompletion({
   // This lifetime's own publication; a carried display is never acted on.
   const latest = useRef(new Map<number, HostCompletionResult>());
   const failed = useRef(new Set<number>());
-  // Only user navigation pins an ID; automatic selection follows the first result.
-  const [selected, setSelected] = useState<string>();
   const [keyboardSelection, setKeyboardSelection] = useState<string>();
   const pointerMoved = useCallback(
     (event: Pick<PointerEvent, "clientX" | "clientY">) => {
@@ -423,7 +447,7 @@ function OwnedCompletion({
       live.current = false;
       published.clear();
     };
-  }, [active, display, sources, trigger]);
+  }, [active, display, sources, trigger, setSelected]);
   // A carried result stands only until this query's provider has run its
   // mount effects, which precede this one; a provider that has not published
   // by then leaves the popup closed, as for a first query, so a stale display

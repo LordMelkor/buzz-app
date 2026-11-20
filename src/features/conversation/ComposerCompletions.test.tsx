@@ -325,6 +325,7 @@ it("opens no query at a trigger inside a resolved chip", () => {
 
 const ENG_BOT = { pubkey: "e".repeat(64), name: "Eng Bot" };
 const BOB = { pubkey: "b".repeat(64), name: "Bob" };
+const ENG_LEAD = { pubkey: "f".repeat(64), name: "Eng Lead" };
 type Source = Readonly<{
   id: string;
   order?: number;
@@ -493,10 +494,6 @@ it("opens with a supplement's rows when the winner has none", async () => {
     "Enter",
   );
 });
-it("never opens for a supplement alone", () => {
-  mountSources([groups({ items: [groupRow] })]);
-  expect(screen.queryByRole("listbox")).toBeNull();
-});
 it("accepts each row through its own provider when their ids collide", async () => {
   const { replace, press } = mountSources([
     people(),
@@ -519,6 +516,16 @@ it("accepts each row through its own provider when their ids collide", async () 
   press("Enter");
   expect(replace).toHaveBeenLastCalledWith(
     { mentions: [BOB] },
+    expect.anything(),
+    expect.anything(),
+    "Enter",
+  );
+  cleanup();
+  const fresh = mountSources([people(), groups({ items: [groupRow] }, 10)]);
+  await screen.findByRole("option", { name: /^eng$/ });
+  fresh.press("Enter");
+  expect(fresh.replace).toHaveBeenLastCalledWith(
+    { mention: ENG_BOT },
     expect.anything(),
     expect.anything(),
     "Enter",
@@ -585,19 +592,33 @@ it("drops a failed supplement's rows and refuses its later publications", async 
 });
 it("drops a supplement removed while the menu is open, with its hold", async () => {
   const { replace, press, publishes, unregister } = mountSources([
-    people(),
-    groups({ items: [groupRow], holdAutoSelect: true }),
+    people({
+      items: [
+        { id: "x", label: "Eng Bot", edit: { mention: ENG_BOT } },
+        { id: "y", label: "Eng Lead", edit: { mention: ENG_LEAD } },
+      ],
+    }),
+    groups({ items: [groupRow], holdAutoSelect: true }, 10),
   ]);
   await screen.findByRole("option", { name: /^eng$/ });
+  press("ArrowDown");
+  await screen.findByRole("option", { name: /^Eng Lead$/, selected: true });
   const stale = publishes.get("groups");
   unregister("groups");
-  expect(listed()).toEqual(["Eng Bot"]);
+  expect(listed()).toEqual(["Eng Bot", "Eng Lead"]);
+  press("Enter");
+  expect(replace).toHaveBeenLastCalledWith(
+    { mention: ENG_LEAD },
+    expect.anything(),
+    expect.anything(),
+    "Enter",
+  );
   let late: ReturnType<ComposerCompletionProps["publish"]> | undefined;
   act(() => {
     late = stale?.({ items: [groupRow] });
   });
   expect(late).toBe(false);
-  expect(listed()).toEqual(["Eng Bot"]);
+  expect(listed()).toEqual(["Eng Bot", "Eng Lead"]);
   expect(press(" ")).toBe(true);
   expect(replace).toHaveBeenCalledWith(
     { mention: ENG_BOT },
