@@ -121,7 +121,7 @@ import { TEAM_MOVES_KEY, TeamMoves } from "./team-migration";
 import { NoTeamChannel, type TeamSent } from "./team-ops";
 import { importedTeamId } from "./config-channels";
 import { STANDALONE_DEADLINE_MS } from "../agent-harness/standalone";
-import { NoticesService } from "../notices/service";
+import { NoticesService, type ShownNotice } from "../notices/service";
 import { readTeams, writeTeams, type AgentRecord } from "./store";
 import { createPluginRequests } from "../../plugins/requests";
 import {
@@ -20884,14 +20884,20 @@ describe("full external agent access", () => {
             },
           }),
       });
-      const shown = async () => {
-        await vi.waitFor(() => expect(notices.snapshot()).toHaveLength(1));
-        const [notice] = notices.snapshot();
-        if (!notice) throw new Error("No notice");
-        return notice;
-      };
+      const shown = () =>
+        new Promise<ShownNotice>((resolve) => {
+          const stop = notices.subscribe(() => {
+            const [notice] = notices.snapshot();
+            if (notice) {
+              stop();
+              resolve(notice);
+            }
+          });
+        });
+      const asked = shown();
       const call = f.call("files_delete", {});
-      const notice = await shown();
+      const notice = await asked;
+      expect(notices.snapshot()).toHaveLength(1);
       expect(notice).toMatchObject({
         title: "Let Echo delete a.txt?",
         plugin: "example.files",
@@ -20901,12 +20907,14 @@ describe("full external agent access", () => {
         content: [{ text: "answered once" }],
       });
       expect(notices.snapshot()).toEqual([]);
+      const reasked = shown();
       const cancelled = f.send({
         id: 901,
         method: "tools/call",
         params: { name: "files_delete", arguments: {} },
       });
-      await shown();
+      await reasked;
+      expect(notices.snapshot()).toHaveLength(1);
       await f.send({
         method: "notifications/cancelled",
         params: { requestId: 901 },

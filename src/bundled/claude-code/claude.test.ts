@@ -932,21 +932,28 @@ it("cancels a Buzz tool still running when its turn settles, failed or not, and 
     });
     return reached;
   };
-  const failed = claude.send("first");
-  await flush();
+  const taken = (text: string) => {
+    let submitted = () => {};
+    const written = new Promise<void>((resolve) => {
+      submitted = resolve;
+    });
+    return { settled: claude.send(text, { submitted }), written };
+  };
+  const failed = taken("first");
+  await failed.written;
   await call("r1");
   expect(signals).toHaveLength(1);
   expect(signals[0]?.aborted).toBe(false);
   fake.finish({ error: "Credit balance is too low" });
-  await expect(failed).resolves.toMatchObject({ ok: false });
+  await expect(failed.settled).resolves.toMatchObject({ ok: false });
   expect(signals[0]?.aborted).toBe(true);
-  const ok = claude.send("second");
-  await flush();
+  const ok = taken("second");
+  await ok.written;
   await call("r2");
   expect(signals).toHaveLength(2);
   expect(signals[1]?.aborted).toBe(false);
   fake.finish();
-  await expect(ok).resolves.toEqual({ ok: true });
+  await expect(ok.settled).resolves.toEqual({ ok: true });
   expect(signals[1]?.aborted).toBe(true);
 });
 
