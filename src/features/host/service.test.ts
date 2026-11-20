@@ -169,7 +169,6 @@ it("copies a plugin's text through Buzz's clipboard, natively on macOS", async (
   vi.mocked(invoke).mockResolvedValue(undefined);
   await plugin.host.writeClipboardText?.("x²");
   expect(invoke).toHaveBeenCalledWith("clipboard_write_text", { text: "x²" });
-  // Elsewhere it is the browser clipboard, which needs no host.
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { platform: "Win32", clipboard: { writeText } });
   await plugin.host.writeClipboardText?.("y");
