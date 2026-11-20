@@ -5,18 +5,32 @@ const framePage = readFileSync(
   new URL("../../src-tauri/src/frame.html", import.meta.url),
   "utf8",
 );
+const policy = /const POLICY: &str =\s*"([^"]+)";/.exec(
+  readFileSync(
+    new URL("../../src-tauri/src/frame.rs", import.meta.url),
+    "utf8",
+  ),
+)[1];
+const unsandboxed = policy
+  .split(";")
+  .filter((directive) => !directive.trim().startsWith("sandbox"))
+  .join(";");
 const origin = "http://buzz-frame.test";
 
 test.beforeEach(async ({ page }) => {
   await page.route(`${origin}/**`, (route) => {
     const { pathname } = new URL(route.request().url());
+    if (pathname === "/")
+      return route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Host</title>",
+      });
     return route.fulfill({
       contentType: "text/html",
-      headers:
-        pathname === "/top"
-          ? { "Content-Security-Policy": "sandbox allow-scripts" }
-          : {},
-      body: pathname === "/" ? "<!doctype html><title>Host</title>" : framePage,
+      headers: {
+        "Content-Security-Policy": pathname === "/same" ? unsandboxed : policy,
+      },
+      body: framePage,
     });
   });
 });
@@ -89,7 +103,7 @@ test("does nothing in a frame that shares its parent's origin", async ({
     () =>
       new Promise((resolve) => {
         const frame = document.createElement("iframe");
-        frame.src = "/frame";
+        frame.src = "/same";
         const seen = [];
         addEventListener("message", (event) => {
           if (event.source === frame.contentWindow) seen.push(event.data);

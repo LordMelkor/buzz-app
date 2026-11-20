@@ -180,21 +180,28 @@ it("uses the calling plugin identity and preserves bounded command output", asyn
 it.each([
   {
     platform: "macOS and Linux",
+    tauri: true,
     url: "buzz-frame://localhost/",
     frameUrl: "buzz-frame://localhost/",
   },
   {
     platform: "Windows",
+    tauri: true,
     url: "http://buzz-frame.localhost/",
+    frameUrl: undefined,
+  },
+  {
+    platform: "the web",
+    tauri: false,
+    url: "buzz-frame://localhost/",
     frameUrl: undefined,
   },
 ])(
   "offers the isolated frame only as a custom scheme ($platform)",
-  ({ url, frameUrl }) => {
+  ({ tauri, url, frameUrl }) => {
+    vi.mocked(isTauri).mockReturnValue(tauri);
     vi.mocked(convertFileSrc).mockReturnValue(url);
     expect(pluginContext().plugin.host.frameUrl).toBe(frameUrl);
-    vi.mocked(isTauri).mockReturnValue(false);
-    expect(pluginContext().plugin.host.frameUrl).toBeUndefined();
   },
 );
 

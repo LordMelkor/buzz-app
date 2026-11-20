@@ -3629,15 +3629,18 @@ origin is opaque. The directive covers this page's documents only. A document
 can move its own frame to one of the app's pages, which the app's policy
 allows, and only the iframe's `sandbox` attribute keeps that page sandboxed.
 The document cannot call native commands: its IPC requests carry
-`Origin: null`, and the app's IPC key runs in the main frame only. A
-`Permissions-Policy` header denies the camera, microphone, location and screen
-capture where the engine applies it. WebKit may not apply it. There, what
-denies devices is the iframe having no `allow` attribute, so never add one: the
-app grants its window's microphone requests without a prompt of its own. The
-rest of the policy is the most the document may load. To narrow it, put a
-`<meta http-equiv="Content-Security-Policy">` first in the document's `head`
-(for example `connect-src 'none'` and no `https:` sources to keep it offline);
-a written policy can only remove access. Links and anchors are the plugin's to
+`Origin: null`, and the app's IPC key runs in the main frame only. The page
+also sends a `Permissions-Policy` header that denies the camera, microphone,
+location and screen capture, but WebKit, which the app uses on macOS and
+Linux, doesn't apply it. Only the iframe having no `allow` attribute denies
+devices, so never add one: on macOS the app installs no permission handler, so
+every frame's request is granted, and on Linux the app decides by the window's
+page, not the frame that asked. The rest of the policy is the most the
+document may load. To narrow it, put a
+`<meta http-equiv="Content-Security-Policy">` first in the document's `head`;
+a written policy can only remove access. No policy keeps the document offline:
+CSP doesn't govern WebRTC, which the app enables, so treat every written
+document as online, from the moment it is written. Links and anchors are the plugin's to
 handle: the app's own policy keeps the frame from navigating to the web, so a
 plugin that wants links to open adds a script that posts clicks to its
 component.

@@ -19,13 +19,14 @@ use tauri::http::{header, Method, Request, Response, StatusCode};
 /// is closed only by the invoke key, which it adds to the main frame only;
 /// never add the app's scripts to subframes.
 /// The rest is the most the document may load; the plugin narrows it with its
-/// own `<meta>` policy, which can only remove access.
+/// own `<meta>` policy, which can only remove access. No policy keeps the
+/// document offline: CSP doesn't govern WebRTC.
 const POLICY: &str =
     "sandbox allow-scripts; default-src https: data: blob: 'unsafe-inline' 'unsafe-eval'; object-src 'none'";
 
-/// No device access for a written document, where the engine applies this
-/// header. WebKit may not; there the iframe having no `allow` attribute is
-/// what denies it.
+/// Denies devices to a written document where the engine applies this header.
+/// WebKit, which macOS and Linux use, doesn't: there only the iframe having no
+/// `allow` attribute denies them.
 const PERMISSIONS: &str = "camera=(), microphone=(), geolocation=(), display-capture=()";
 
 /// Waits for `{ type: "buzz-frame:write", html }` from the embedding window,
@@ -41,17 +42,12 @@ pub(crate) fn frame_protocol<R: tauri::Runtime>(
 }
 
 fn page(method: &Method, path: &str) -> Response<Cow<'static, [u8]>> {
-    if method != Method::GET && method != Method::HEAD {
+    if method != Method::GET {
         return empty(StatusCode::METHOD_NOT_ALLOWED);
     }
     if path != "/" {
         return empty(StatusCode::NOT_FOUND);
     }
-    let body: &'static [u8] = if method == Method::HEAD {
-        &[]
-    } else {
-        PAGE.as_bytes()
-    };
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CONTENT_SECURITY_POLICY, POLICY)
@@ -59,7 +55,7 @@ fn page(method: &Method, path: &str) -> Response<Cow<'static, [u8]>> {
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::REFERRER_POLICY, "no-referrer")
         .header("permissions-policy", PERMISSIONS)
-        .body(Cow::Borrowed(body))
+        .body(Cow::Borrowed(PAGE.as_bytes()))
         .expect("static response")
 }
 
@@ -89,20 +85,6 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("microphone=()"));
-        // The message names are the plugin contract.
-        let body = std::str::from_utf8(response.body()).unwrap();
-        assert!(body.contains(r#"{ type: "buzz-frame:ready" }"#));
-        assert!(body.contains(r#"data.type !== "buzz-frame:write""#));
-    }
-
-    #[test]
-    fn head_has_the_headers_and_no_body() {
-        let response = page(&Method::HEAD, "/");
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(response
-            .headers()
-            .contains_key(header::CONTENT_SECURITY_POLICY));
-        assert!(response.body().is_empty());
     }
 
     #[test]

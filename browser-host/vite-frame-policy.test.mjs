@@ -10,18 +10,21 @@ it("sends the packaged frame rule only when Vite serves the desktop app", () => 
       "-e",
       `
         import assert from 'node:assert/strict';
-        import { mkdtempSync, rmSync } from 'node:fs';
+        import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
         import { tmpdir } from 'node:os';
         import { join } from 'node:path';
         import { resolveConfig } from 'vite';
         const configFile = join(process.cwd(), 'vite.config.ts');
+        const packaged = JSON.parse(readFileSync(join(process.cwd(), 'src-tauri/tauri.conf.json'), 'utf8'))
+          .app.security.csp.split(';').map((rule) => rule.trim()).find((rule) => rule.startsWith('frame-src '));
+        assert.ok(packaged.split(' ').includes('buzz-frame:'), packaged);
         const directory = mkdtempSync(join(tmpdir(), 'buzz-vite-frame-'));
         const cwd = process.cwd();
         try {
           process.chdir(directory);
           process.env.TAURI_ENV_PLATFORM = 'linux';
           const desktop = await resolveConfig({ configFile }, 'serve');
-          assert.equal(desktop.server.headers?.['Content-Security-Policy'], "frame-src 'self' buzz-frame:");
+          assert.equal(desktop.server.headers?.['Content-Security-Policy'], packaged);
           delete process.env.TAURI_ENV_PLATFORM;
           const web = await resolveConfig({ configFile }, 'serve');
           assert.equal(web.server.headers?.['Content-Security-Policy'], undefined);

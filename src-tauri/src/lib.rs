@@ -1260,7 +1260,7 @@ pub fn run() {
     // Not on Windows or Android: Tauri serves custom schemes there as
     // `http://<scheme>.localhost`, which its IPC accepts as the app, and
     // WebView2 adds the app's scripts, the IPC invoke key among them, to
-    // subframes too.
+    // subframes too. Keep this gate the same as `mod frame`'s.
     #[cfg(not(any(windows, target_os = "android")))]
     let builder = builder.register_uri_scheme_protocol("buzz-frame", frame::frame_protocol);
     // Register the updater only in configured release builds; omit it locally.
