@@ -3810,7 +3810,7 @@ function Composer({
           threadRootId={threadRootId}
           canOpen={canOpenLink ?? cannotOpen}
           open={accessoryCommands.open}
-          onFocusedRemoval={() => input.current?.focus()}
+          onFocusedRemoval={toolCommands.focus}
         />
       )}
     </div>
