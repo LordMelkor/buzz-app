@@ -2007,8 +2007,9 @@ function ThreadMessages({
     );
     if (parent === undefined && snapshot.root)
       requestRows.set(snapshot.root.id, snapshot.root);
+    const foldable = presented ? [] : chronologicalSiblings;
     const presentation = activityPresentation(
-      presented ? [] : chronologicalSiblings,
+      foldable,
       activitySnapshot,
       agentPubkeys,
       parent ?? rootId,
@@ -2018,7 +2019,7 @@ function ThreadMessages({
     );
     const groups = [
       ...presentation.groups,
-      ...relayedRuns(chronologicalSiblings, lineRow ?? undefined),
+      ...relayedRuns(foldable, lineRow ?? undefined),
     ].filter((group) =>
       group.ids.every((id) => !tree.children.get(id)?.length),
     );

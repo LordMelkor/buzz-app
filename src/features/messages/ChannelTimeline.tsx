@@ -813,8 +813,9 @@ function Timeline({
         return next;
       });
   }, []);
+  const foldable = arranged ? NO_ROWS : chronologicalRows;
   const presentation = useActivityPresentation(
-    arranged ? NO_ROWS : chronologicalRows,
+    foldable,
     queries.agentActivity,
     agentPubkeys,
   );
@@ -822,9 +823,9 @@ function Timeline({
   const activity = useMemo(
     () => [
       ...presentation.groups,
-      ...relayedRuns(chronologicalRows, newMessageBoundaryId),
+      ...relayedRuns(foldable, newMessageBoundaryId),
     ],
-    [presentation.groups, chronologicalRows, newMessageBoundaryId],
+    [presentation.groups, foldable, newMessageBoundaryId],
   );
   const stableActivity = useStableRowActivity(chronologicalRows);
   const rowsById = useMemo(

@@ -149,6 +149,7 @@ function mount({
   onProps,
   navigation,
   unread = {},
+  fold,
 }: {
   replies?: readonly EventData[];
   snapshot?: Partial<ThreadSnapshot>;
@@ -157,6 +158,7 @@ function mount({
   onProps?: (props: ComposerAccessoryProps) => void;
   navigation?: PageNavigation;
   unread?: Partial<Record<string, unknown>>;
+  fold?: RelaySession["foldRows"];
 } = {}) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   let callbacks!: LiveCallbacks;
@@ -201,6 +203,7 @@ function mount({
   const thread = vi.fn(() => view);
   const session = {
     ...owner.session,
+    ...(fold ? { foldRows: fold } : {}),
     thread,
     unread: { ...owner.session.unread, ...unread },
   } as RelaySession;
@@ -606,6 +609,23 @@ it("shows activity rows as the plugin lists them, unfolded", () => {
   expect(
     screen.queryAllByRole("button", { name: /activity history/i }),
   ).toHaveLength(0);
+});
+
+it("folds no relayed run under a presentation, and folds the host's again after it", () => {
+  let relayed: ChannelMessage[] = [];
+  const h = mount({ replies: [a, b, c], fold: () => relayed });
+  relayed = h
+    .rowsOf([a, b, c])
+    .map((row) => ({ ...row, relayedFrom: { agent: "zerk", verified: true } }));
+  h.publish({ replies: relayed });
+  const run = () =>
+    screen.queryByRole("button", { name: /^Show 3 messages by zerk\./ });
+  expect(run()).toBeVisible();
+  h.present({ ids: [c.id, a.id, b.id] });
+  expect(drawn()).toEqual(["root", "c", "a", "b"]);
+  expect(run()).toBeNull();
+  h.withdraw();
+  expect(run()).toBeVisible();
 });
 
 it("takes its rows back for an inline reveal's row they leave out, and reads once it is revealed", async () => {

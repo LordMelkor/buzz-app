@@ -543,6 +543,22 @@ it("folds no agent activity under a presentation, and folds the host's again aft
   expect(screen.queryByText("Update 3")).toBeNull();
 });
 
+it("folds no relayed run under a presentation, and folds the host's again after it", () => {
+  const relayed = updates(3).map(({ audience: _audience, ...row }) => ({
+    ...row,
+    relayedFrom: { agent: "zerk", verified: true },
+  }));
+  const h = mount({ rows: relayed, fold: () => relayed });
+  const run = () =>
+    screen.queryByRole("button", { name: /^Show 3 messages by zerk\./ });
+  expect(run()).toBeVisible();
+  h.present({ ids: relayed.map((row) => row.id).reverse(), events: [] });
+  expect(drawn()).toEqual(["activity-2", "activity-1", "activity-0"]);
+  expect(run()).toBeNull();
+  h.withdraw();
+  expect(run()).toBeVisible();
+});
+
 it("draws no unread line, Jump or arrival count under a presentation, and counts none when it ends", () => {
   const h = mount();
   frame();

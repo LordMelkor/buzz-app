@@ -528,11 +528,18 @@ it("tells a subscriber each change of display and lane status, and no more", () 
   expect(arrangement.snapshot()?.revision).toBe(1);
   arrangement.present(first, { ids: [a.id], events });
   expect(arrangement.snapshot()?.revision).toBe(2);
+  const second = lane("b");
+  expect(arrangement.present(second, { ids: [a.id], events })).toBe("held");
+  expect(seen).toHaveLength(3);
+  arrangement.present(second, null);
+  expect(arrangement.status(second)).toBe("none");
+  expect(arrangement.snapshot()?.revision).toBe(2);
+  expect(seen).toHaveLength(4);
   arrangement.present(first, null);
   expect(arrangement.snapshot()).toBeUndefined();
-  expect(seen).toHaveLength(3);
+  expect(seen).toHaveLength(5);
   arrangement.present(lane("never"), null);
-  expect(seen).toHaveLength(3);
+  expect(seen).toHaveLength(5);
 });
 
 const order = ["a", "b", "c", "d", "e"];
