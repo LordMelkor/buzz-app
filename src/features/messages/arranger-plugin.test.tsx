@@ -55,6 +55,7 @@ beforeAll(async () => {
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -969,8 +970,10 @@ it("reads the whole thread again after a reconnect once it is visible, and is no
   const visibility = vi
     .spyOn(document, "visibilityState", "get")
     .mockReturnValue("hidden");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   act(() => h.connection("connected"));
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await act(() => vi.advanceTimersByTimeAsync(10_000));
+  vi.useRealTimers();
   expect(h.reads.length).toBe(before);
   expect(h.status()).toBe(`${replies(1, 200, total)}+`);
   visibility.mockReturnValue("visible");
