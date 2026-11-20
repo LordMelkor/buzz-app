@@ -223,9 +223,9 @@ export function createArrangement({
     ) {
       if (phase === "retired") return "retired";
       if (presentation === null) {
-        lanes.delete(lane);
+        const had = lanes.delete(lane);
         if (shown === lane) free();
-        else emit();
+        else if (had) emit();
         return "shown";
       }
       const held = shown !== undefined && shown !== lane;

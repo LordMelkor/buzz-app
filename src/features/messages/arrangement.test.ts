@@ -3,7 +3,6 @@ import type { PresentationLimits } from "../conversation/contracts";
 import { eventDto, type EventData, type RelayEvent } from "../relay/events";
 import { PublishRejected } from "../relay/outbox";
 import { createRelaySession } from "../relay/session";
-import { THREAD_LIMITS } from "../relay/threads";
 import type { LiveCallbacks } from "../relay/live";
 import {
   flush,
@@ -198,7 +197,7 @@ it("passes parents, open, complete and place through, nested to depth 4", () => 
   expect(arrangement.snapshot()?.parents?.size).toBe(0);
 });
 
-it("refuses duplicate ids and too many rows, events or bytes, and keeps what it shows", () => {
+it("refuses duplicate ids and too many events or bytes, and keeps what it shows", () => {
   const { root, replies, events } = thread();
   const [a, b] = replies;
   const { arrangement } = host({
@@ -248,18 +247,21 @@ it("refuses duplicate ids and too many rows, events or bytes, and keeps what it 
   expect(arrangement.snapshot()).toBe(before);
 });
 
-it("refuses the 461st row of a thread, the reader's bound", () => {
+it("refuses more ids than its row limit, and keeps what it shows", () => {
   const { root } = thread(0);
-  const { arrangement } = host({ rootId: root.id, limits: THREAD_LIMITS });
-  const names = (count: number) =>
-    Array.from({ length: count }, (_, index) => `row-${index}`);
+  const { arrangement } = host({
+    rootId: root.id,
+    limits: { rows: 2, events: 2000, bytes: 4 << 20 },
+  });
   const first = lane("one");
-  expect(arrangement.present(first, { ids: names(460), events: [] })).toBe(
+  expect(arrangement.present(first, { ids: ["x", "y"], events: [] })).toBe(
     "shown",
   );
-  expect(arrangement.present(first, { ids: names(461), events: [] })).toBe(
+  const shown = arrangement.snapshot();
+  expect(arrangement.present(first, { ids: ["x", "y", "z"], events: [] })).toBe(
     "limit",
   );
+  expect(arrangement.snapshot()).toBe(shown);
 });
 
 it("holds the root as the header without counting its reactions against the limits", () => {
@@ -528,6 +530,8 @@ it("tells a subscriber each change of display and lane status, and no more", () 
   expect(arrangement.snapshot()?.revision).toBe(2);
   arrangement.present(first, null);
   expect(arrangement.snapshot()).toBeUndefined();
+  expect(seen).toHaveLength(3);
+  arrangement.present(lane("never"), null);
   expect(seen).toHaveLength(3);
 });
 

@@ -127,7 +127,7 @@ it("matches the Rust binding vector and normalized authority, including IPv6 and
   );
   expect(threadAuthority("http://[::1]:3000")).toBe("[::1]:3000");
 });
-it("keeps the older binding when direction and root aux are explicit defaults", async () => {
+it("keeps the older binding when direction is the explicit default", async () => {
   const filter: ReadFilter = {
     thread_window: true,
     "#h": [channel],
