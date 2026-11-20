@@ -4705,7 +4705,7 @@ it("adds a plugin's row menu items after Mute, with their icons, waiting while t
       screen.getByRole("menuitem", { name: "Unwatch alpha" }),
     ).not.toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("menuitem", { name: "Mark as unread" }));
-    await waitFor(() => expect(saved).toBeTypeOf("function"));
+    expect(saved).toBeTypeOf("function");
     for (const name of ["Mute", "Unwatch alpha"])
       expect(screen.getByRole("menuitem", { name })).toHaveAttribute(
         "aria-disabled",
