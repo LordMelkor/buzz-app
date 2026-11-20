@@ -4,6 +4,7 @@ import type {
   ProtectionDefaults,
 } from "../agent-protection/service";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { SessionScope } from "../agent-harness/session-scope";
 import { eventsDto, type RelayEvent } from "../relay/events";
 import { effectiveEditDto, effectiveEditFilter } from "../relay/effective-edit";
 import { importedEmojiPicture } from "./import-picture";
@@ -78,6 +79,7 @@ export type Carry = Readonly<{
   instructions?: string;
   /** Its working directory, absolute or `~/…`. */
   workspace?: string;
+  sessionScope?: SessionScope;
 }>;
 export type PortableAgents = Readonly<{
   agents: readonly PortableAgent[];

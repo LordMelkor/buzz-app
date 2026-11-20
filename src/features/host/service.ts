@@ -1,3 +1,4 @@
+import { runtimePerformance } from "../developer/runtime-performance";
 import { Channel, convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
@@ -550,14 +551,20 @@ export class HostService extends Service implements Host {
         });
       const reply = await answerMcp(handler, body);
       try {
-        await send(reply === undefined ? null : JSON.stringify(reply));
+        await send(
+          reply === undefined
+            ? null
+            : runtimePerformance.serializeMcpReply(reply),
+        );
       } catch (error) {
         // A reply that will not encode or is too large still answers the
         // request, so the agent is not left waiting. When the agent has
         // stopped waiting, this fails too.
-        await send(JSON.stringify(mcpError(requestId(body), error))).catch(
-          () => undefined,
-        );
+        await send(
+          runtimePerformance.serializeMcpReply(
+            mcpError(requestId(body), error),
+          ),
+        ).catch(() => undefined);
       }
     };
     const onEvent = new Channel<McpEvent>((event) => {

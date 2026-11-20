@@ -22,6 +22,7 @@ test("workspace settings rename preserves filing in ordinary and composed headin
   await page.goto(app.origin);
   await newChat(page);
   const sidebar = page.getByRole("navigation", { name: "Subscribed channels" });
+  await sidebar.getByRole("button", { name: "Alpha", exact: true }).hover();
   await sidebar.getByRole("button", { name: "Actions for Alpha" }).click();
   await page.getByRole("menuitem", { name: "Move to…", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
@@ -75,6 +76,16 @@ test("workspace settings rename preserves filing in ordinary and composed headin
         exact: true,
       });
       await expect(settings).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", {
+          name: "Archive inactive chats",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      if (!composed)
+        await expect(
+          page.getByRole("menuitem", { name: "Filter", exact: true }),
+        ).toBeVisible();
       await expect(
         page.getByRole("menuitem", { name: "Rename workspace", exact: true }),
       ).toHaveCount(0);

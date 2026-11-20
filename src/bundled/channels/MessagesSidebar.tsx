@@ -9,6 +9,7 @@ import type { SidebarContextProps } from "../../features/sidebar/contracts";
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -151,8 +152,13 @@ function ScopedSidebar({
   );
   const inventory =
     !!session && (connection.status === "ready" || !!connection.cached);
+  const floatingAction = useRef<HTMLDivElement>(null);
   const footer = props.creationAction && (
-    <div className={styles.sidebarCreation} data-sidebar-floating-action="">
+    <div
+      ref={floatingAction}
+      className={styles.sidebarCreation}
+      data-sidebar-floating-action=""
+    >
       {props.creationAction}
     </div>
   );
@@ -168,7 +174,7 @@ function ScopedSidebar({
           </div>
         </div>
       )}
-      {props.children && !restriction && !inventory && (
+      {props.children && !restriction && (
         <div className={styles.destinations}>{props.children}</div>
       )}
     </>
@@ -177,7 +183,6 @@ function ScopedSidebar({
     <SidebarBoundary key={`${scope}:${connection.generation}`} header={header}>
       {session && inventory ? (
         <ChannelInventory
-          pages={restriction ? undefined : props.children}
           relay={props.relay}
           navigator={props.navigator}
           agents={props.agents}
@@ -290,6 +295,7 @@ function ScopedSidebar({
                         <SidebarUnread
                           listRef={sidebar.list}
                           dmPreviews={dmPreviews}
+                          floatingAction={footer ? floatingAction : undefined}
                         >
                           {teamContent}
                           {slots

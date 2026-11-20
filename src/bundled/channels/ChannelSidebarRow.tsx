@@ -1,6 +1,7 @@
 import { FadingLabel } from "./FadingLabel";
 import { activeChannelRows } from "../../features/channel-navigation/active-channel-rows";
 import { useSoloRowActivation } from "../../features/channel-navigation/useSoloRowActivation";
+import { useSpringLoaded } from "../../features/messages/spring-loaded-drag";
 import type { Navigation } from "../../features/navigation/controller";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
@@ -125,6 +126,7 @@ export function ChannelSidebarRow({
     activate,
     onRename ? () => onRename(channel.id) : undefined,
   );
+  const springLoaded = useSpringLoaded(activate, selected === channel.id);
   const selectButton = (
     <NavigationItem
       ref={selectRef}
@@ -139,6 +141,7 @@ export function ChannelSidebarRow({
       onPointerEnter={() => onPrepare(channel.id)}
       onFocus={() => onPrepare(channel.id)}
       {...(onRename ? soloActivation : { onClick: activate })}
+      {...springLoaded}
       selected={selected === channel.id}
       label={
         <span

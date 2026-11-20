@@ -140,6 +140,9 @@ export const sectionTitle = (tag: string) => TITLES.get(tag) ?? tag;
 export const STEER = "new-message-arrived-while-you-were-working";
 const EVENT_TAGS = new Set(["buzz-event", STEER]);
 
+/** Wrappers inside a base section's text: part of that text, not framing. */
+const INLINE = new Set(["owner-section"]);
+
 /** Split top-level `<tag attrs>` … `</tag>` prompt framing; other text is kept. */
 export function promptSections(text: string): PromptSection[] {
   const sections: PromptSection[] = [];
@@ -154,7 +157,8 @@ export function promptSections(text: string): PromptSection[] {
       continue;
     }
     const start = /^<([a-z][a-z0-9-]*)(?:\s[^<>]*)?>$/.exec(line);
-    if (start?.[1]) open = { tag: start[1], lines: [] };
+    if (start?.[1] && !INLINE.has(start[1]))
+      open = { tag: start[1], lines: [] };
     else loose.push(line);
   }
   // An unterminated section is ordinary text, not a silently dropped body.

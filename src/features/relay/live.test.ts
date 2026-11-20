@@ -1,3 +1,4 @@
+import { ARTIFACT_KIND } from "../agents/agent-config-artifacts";
 import { getLogger, setLogLevel } from "../developer/logging";
 import {
   verifyEvent,
@@ -4475,6 +4476,43 @@ it("fills three publication slots at one clock instant and refills on matching O
     h.owner.dispose();
   }
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("publishes a message while artifact updates occupy their reserved slots", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const results: Promise<unknown>[] = [];
+  try {
+    assert.exists(h.owner.publish);
+    const signal = new AbortController().signal;
+    const artifacts = Array.from({ length: 3 }, (_, index) =>
+      signed(h.key, { kind: ARTIFACT_KIND, content: String(index), tags: [] }),
+    );
+    const publish = h.owner.publish;
+    results.push(...artifacts.map((event) => publish(event, signal)));
+    await h.first.auth();
+    const writes = () =>
+      h.first.sent
+        .filter((frame) => frame[0] === "EVENT")
+        .map((frame) => (frame[1] as { id: string }).id);
+    expect(writes()).toEqual(artifacts.slice(0, 2).map((event) => event.id));
+    const chat = message(h.key, "a", "priority message", 1700000000);
+    const sentChat = publish(chat, signal);
+    results.push(sentChat);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writes().at(-1)).toEqual(chat.id);
+    await h.first.receive(["OK", chat.id, true, ""]);
+    await sentChat;
+    expect(writes()).toHaveLength(3);
+    await h.first.receive(["OK", artifacts[0]?.id, true, ""]);
+    expect(writes().at(-1)).toEqual(artifacts[2]?.id);
+    for (const event of artifacts.slice(1))
+      await h.first.receive(["OK", event.id, true, ""]);
+    await Promise.all(results);
+  } finally {
+    h.owner.dispose();
+    await Promise.allSettled(results);
+  }
 });
 
 it("presence and ordinary publications correlate independently and share only real cooldown", async () => {

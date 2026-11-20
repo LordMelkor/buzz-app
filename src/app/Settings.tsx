@@ -72,6 +72,7 @@ import {
   type PluginInstallRequests,
 } from "../plugins/installer";
 import { PluginReadme } from "./PluginReadme";
+import performanceDiagnosticsManifest from "../bundled/performance-diagnostics/manifest.json";
 import { bundledReadmes } from "../bundled/readmes";
 import { bundledIcons } from "../bundled/icons";
 import type { Identity } from "../features/identity/service";
@@ -167,6 +168,12 @@ function groupPlugins(plugins: readonly PluginInfo[]) {
   const other: PluginInfo[] = [];
   const core: PluginInfo[] = [];
   for (const plugin of plugins) {
+    // Diagnostics are offered through agent requests in this panel.
+    if (
+      plugin.source === "bundled" &&
+      plugin.manifest.id === performanceDiagnosticsManifest.id
+    )
+      continue;
     if (isCorePlugin(plugin)) {
       core.push(plugin);
       continue;

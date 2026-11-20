@@ -4,6 +4,7 @@ import {
   type GatewayDescriptor,
   parseGatewayDescriptor,
   PROTECTED_HEADERS,
+  selectGatewayDescriptor,
 } from "./descriptor";
 import VECTORS from "./descriptor-vectors.json";
 
@@ -63,4 +64,58 @@ describe("parseGatewayDescriptor", () => {
       if (value.length > 3)
         expect(message.toLowerCase()).not.toContain(value.toLowerCase());
   });
+});
+
+type Select = {
+  name: string;
+  explicit?: unknown;
+  explicit_raw?: string;
+  listed?: unknown;
+  listed_raw?: string;
+  community_url: string;
+  expect?: unknown;
+  error?: string;
+  explicit_error?: string;
+};
+const select = (vector: Select) =>
+  selectGatewayDescriptor(
+    vector.explicit_raw ??
+      (vector.explicit === undefined ? "" : JSON.stringify(vector.explicit)),
+    vector.listed_raw ?? JSON.stringify(vector.listed),
+    vector.community_url,
+  );
+
+describe("selectGatewayDescriptor", () => {
+  const failure = (vector: Select): unknown => {
+    try {
+      select(vector);
+    } catch (error) {
+      return error;
+    }
+    throw new Error(`${vector.name} was accepted`);
+  };
+
+  it.each(
+    (VECTORS.select as Select[]).filter((v) => !v.error && !v.explicit_error),
+  )("selects $name", (vector) => {
+    expect(select(vector)).toEqual(vector.expect);
+  });
+
+  it.each((VECTORS.select as Select[]).filter((v) => v.error))(
+    "refuses $name",
+    (vector) => {
+      expect((failure(vector) as Error).message).toBe(vector.error);
+    },
+  );
+
+  it.each((VECTORS.select as Select[]).filter((v) => v.explicit_error))(
+    "refuses $name",
+    (vector) => {
+      const error = failure(vector);
+      expect(error).toBeInstanceOf(GatewayDescriptorError);
+      expect((error as GatewayDescriptorError).code).toBe(
+        vector.explicit_error,
+      );
+    },
+  );
 });

@@ -67,7 +67,10 @@ import {
   useChannelNavigation,
 } from "./ChannelNavigationState";
 import { readView, writeView } from "../../shared/view-state";
-import styles from "../../bundled/channels/MessagesSidebar.module.css";
+import {
+  SECTION_ROW_CAP,
+  SECTION_ROW_STEP,
+} from "../../bundled/channels/sidebar-section-caps";
 import { BestieNavigationProvider } from "../../app/shell/BestieNavigation";
 import { PageNavigation } from "../../app/shell/PageNavigation";
 import { createAgentChoices } from "../agents/choices";
@@ -237,8 +240,7 @@ function fixture(
       attempt: { id: "visit" },
     }),
   } as unknown as Navigation;
-  /** Any `controls` other than the default page navigation mount beside the
-   * sidebar, so they keep their state when the pages section mounts. */
+  /** Any `controls` other than the default page navigation mount beside the sidebar. */
   const view = (
     id: string,
     controls: ReactNode = defaultPages,
@@ -1208,16 +1210,49 @@ it("explains and disables unavailable move retries, then enables them after pref
 });
 
 it.each(["ready", "error"] as const)(
-  "keeps the supplied page navigation while the relay is %s",
-  (status) => {
-    const h = fixture(undefined, status);
-    render(h.view("alpha"));
-    const pages = screen.getByRole("navigation", { name: "Pages" });
-    expect(
-      within(pages).getByRole("button", { name: "Projects" }),
-    ).toBeVisible();
-    // A ready inventory lists pages itself, in their orderable section.
-    expect(!!pages.closest(`.${styles.destinations}`)).toBe(status === "error");
+  "keeps plugin pages above the conversation list while the relay is %s",
+  async (status) => {
+    const data = {
+      sections: [],
+      assignments: {},
+      sectionOrder: ["solo", "channels", "pages", "starred"],
+      starred: [],
+      muted: [],
+    };
+    const preferences = createSidebarPreferencesStore({
+      read: async () => data,
+      available: true,
+      write: async () => data,
+      writeStar: async () => [],
+      writeOrder: async () => data,
+    });
+    try {
+      await preferences.queries.ensure();
+      const h = fixture(preferences.queries, status);
+      render(h.view("alpha"));
+      const pages = screen.getByRole("navigation", { name: "Pages" });
+      expect(
+        screen.queryByText("Plugins", { exact: true }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(pages).getByRole("button", { name: "Projects" }),
+      ).toBeVisible();
+      if (status === "ready") {
+        await screen.findByRole("button", { name: "alpha" });
+        const conversations = screen.getByRole("navigation", {
+          name: "Subscribed channels",
+        });
+        expect(conversations).not.toContainElement(pages);
+        expect(pages.compareDocumentPosition(conversations)).toBe(
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+        expect(
+          screen.queryByRole("button", { name: "More actions for Plugins" }),
+        ).not.toBeInTheDocument();
+      }
+    } finally {
+      preferences.dispose();
+    }
   },
 );
 
@@ -2546,10 +2581,10 @@ it("moves a saved group from its menu, rolls back a failed save, and retries it"
     expect(order).toHaveBeenLastCalledWith(
       [
         "pages",
+        "solo",
         "starred",
         "group:later",
         "group:work",
-        "solo",
         "channels",
         "forums",
         "dms",
@@ -4307,4 +4342,234 @@ it("keeps default Solo recency as live activity changes", async () => {
   await waitFor(() => expect(soloOrder()).toEqual(["alpha", "beta"]));
   h.publish("beta", { lastActivityAt: 4 });
   await waitFor(() => expect(soloOrder()).toEqual(["beta", "alpha"]));
+});
+
+const soloChats = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `chat-${index}`,
+    name: `Chat ${index}`,
+    channelType: "solo" as const,
+    lastActivityAt: count - index,
+  }));
+const sectionRows = (key: string) =>
+  [
+    ...document.querySelectorAll(
+      `[data-sidebar-section="${key}"] [data-channel-id]:not([inert] *)`,
+    ),
+  ].map((row) => row.getAttribute("data-channel-id"));
+
+it("caps Solo at its newest chats and remembers Show more and Show fewer", async () => {
+  const h = fixture(undefined, "ready", [
+    ...soloChats(SECTION_ROW_CAP + 3),
+    { id: "gamma", name: "gamma", channelType: "stream" },
+  ]);
+  const user = userEvent.setup();
+  const { unmount } = render(h.view("gamma"));
+  await waitFor(() =>
+    expect(sectionRows("solo")).toEqual(
+      soloChats(SECTION_ROW_CAP).map(({ id }) => id),
+    ),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Show fewer in Solo" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Show more in Solo" }));
+  expect(sectionRows("solo")).toHaveLength(SECTION_ROW_CAP + 3);
+  // Show more is spent; focus stays on the row's remaining action.
+  expect(
+    screen.queryByRole("button", { name: "Show more in Solo" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Show fewer in Solo" }),
+  ).toHaveFocus();
+  unmount();
+  render(h.view("gamma"));
+  await waitFor(() =>
+    expect(sectionRows("solo")).toHaveLength(SECTION_ROW_CAP + 3),
+  );
+  await user.click(screen.getByRole("button", { name: "Show fewer in Solo" }));
+  expect(sectionRows("solo")).toHaveLength(SECTION_ROW_CAP);
+});
+
+it("keeps the Show more steps Solo saved before sections were unified", async () => {
+  const h = fixture(undefined, "ready", [
+    ...soloChats(SECTION_ROW_CAP + 3),
+    { id: "gamma", name: "gamma", channelType: "stream" },
+  ]);
+  const scope = h.snapshot.scope;
+  assert.exists(scope);
+  writeView(scope, "solo:expanded-projects", { "": SECTION_ROW_STEP });
+  render(h.view("gamma"));
+  await waitFor(() =>
+    expect(sectionRows("solo")).toHaveLength(SECTION_ROW_CAP + 3),
+  );
+  expect(
+    screen.getByRole("button", { name: "Show fewer in Solo" }),
+  ).toBeVisible();
+});
+
+it("keeps the open chat listed past Solo's cap", async () => {
+  const chats = soloChats(SECTION_ROW_CAP + 3);
+  const open = `chat-${SECTION_ROW_CAP + 2}`;
+  const h = fixture(undefined, "ready", chats);
+  render(h.view(open));
+  await waitFor(() =>
+    expect(sectionRows("solo")).toEqual([
+      ...chats.slice(0, SECTION_ROW_CAP).map(({ id }) => id),
+      open,
+    ]),
+  );
+  expect(
+    screen.getByRole("button", { name: "Show more in Solo" }),
+  ).toBeVisible();
+});
+
+it("starts other workspaces expanded and lets them show fewer", async () => {
+  const channels = Array.from({ length: SECTION_ROW_CAP + 2 }, (_, index) => ({
+    id: `work-${index}`,
+    name: `work ${index}`,
+    channelType: "stream" as const,
+  }));
+  const data: SidebarPreferences = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: Object.fromEntries(channels.map(({ id }) => [id, "work"])),
+    starred: [],
+    muted: [],
+  };
+  const preferences = createSidebarPreferencesStore({
+    read: async () => data,
+    available: true,
+    write: async () => data,
+    writeStar: async () => [],
+  });
+  await preferences.queries.ensure();
+  const h = fixture(preferences.queries, "ready", [
+    ...channels,
+    { id: "gamma", name: "gamma", channelType: "stream" },
+  ]);
+  const user = userEvent.setup();
+  render(h.view("gamma"));
+  await waitFor(() =>
+    expect(sectionRows("group:work")).toHaveLength(SECTION_ROW_CAP + 2),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Show more in Work" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Show fewer in Work" }));
+  expect(sectionRows("group:work")).toHaveLength(SECTION_ROW_CAP);
+  await user.click(screen.getByRole("button", { name: "Show more in Work" }));
+  expect(sectionRows("group:work")).toHaveLength(SECTION_ROW_CAP + 2);
+});
+
+it("starts old Solo workspaces capped with their saved steps and Team ones expanded, after a reload", async () => {
+  const rows = (section: string, channelType: "solo" | "stream") =>
+    Array.from({ length: 12 }, (_, index) => ({
+      id: `${section}-${index}`,
+      name: `${section} ${index}`,
+      channelType,
+      lastActivityAt: 12 - index,
+    }));
+  const channels = [
+    ...rows("buzz", "solo"),
+    ...rows("reviews", "solo"),
+    ...rows("uptop", "stream"),
+    ...rows("fresh", "stream"),
+  ];
+  const sections = [
+    { id: "buzz", name: "Buzz", order: 0 },
+    { id: "reviews", name: "Reviews", order: 1 },
+    { id: "uptop", name: "Uptop", order: 2 },
+    { id: "fresh", name: "Fresh", order: 3 },
+  ];
+  // A saved unified record; the legacy Solo record lists Buzz and Reviews.
+  const data: SidebarPreferences = {
+    sections,
+    assignments: Object.fromEntries(
+      channels.map(({ id }) => [id, id.split("-")[0] ?? ""]),
+    ),
+    sectionOrder: [
+      "group:buzz",
+      "group:reviews",
+      "solo",
+      "starred",
+      "group:uptop",
+      "group:fresh",
+    ],
+    starred: [],
+    muted: [],
+    soloWorkspaces: ["buzz", "reviews"],
+  };
+  const store = (read: SidebarPreferences) =>
+    createSidebarPreferencesStore({
+      read: async () => read,
+      available: true,
+      write: async () => read,
+      writeStar: async () => [],
+    });
+  const first = store(data);
+  await first.queries.ensure();
+  const h = fixture(first.queries, "ready", channels);
+  const scope = h.snapshot.scope;
+  assert.exists(scope);
+  writeView(scope, "solo:expanded-projects", { reviews: SECTION_ROW_STEP });
+  const expectLayout = async () => {
+    await waitFor(() =>
+      expect(sectionRows("group:buzz")).toHaveLength(SECTION_ROW_CAP),
+    );
+    expect(
+      screen.getByRole("button", { name: "Show more in Buzz" }),
+    ).toBeVisible();
+    expect(sectionRows("group:reviews")).toHaveLength(12);
+    expect(
+      screen.getByRole("button", { name: "Show fewer in Reviews" }),
+    ).toBeVisible();
+    // Team and new workspaces list everything.
+    expect(sectionRows("group:uptop")).toHaveLength(12);
+    expect(sectionRows("group:fresh")).toHaveLength(12);
+    expect(
+      screen.queryByRole("button", { name: "Show more in Uptop" }),
+    ).not.toBeInTheDocument();
+  };
+  const { unmount } = render(h.view("uptop-0"));
+  await expectLayout();
+  unmount();
+  first.dispose();
+  // A later launch whose legacy Solo read failed keeps the same starts.
+  const { soloWorkspaces: _solo, ...withoutLegacy } = data;
+  const second = store(withoutLegacy);
+  await second.queries.ensure();
+  try {
+    render(fixture(second.queries, "ready", channels).view("uptop-0"));
+    await expectLayout();
+  } finally {
+    second.dispose();
+  }
+});
+
+it("keeps a chat whose menu is open listed when a newer chat passes it", async () => {
+  const chats = soloChats(SECTION_ROW_CAP);
+  const last = `chat-${SECTION_ROW_CAP - 1}`;
+  const h = fixture(undefined, "ready", [
+    ...chats,
+    {
+      id: "newer",
+      name: "Newer",
+      channelType: "solo",
+      lastActivityAt: 0,
+    },
+    { id: "gamma", name: "gamma", channelType: "stream" },
+  ]);
+  render(h.view("gamma"));
+  await waitFor(() => expect(sectionRows("solo")).toContain(last));
+  fireEvent.keyDown(
+    await screen.findByRole("button", { name: `Chat ${SECTION_ROW_CAP - 1}` }),
+    { key: "ContextMenu" },
+  );
+  expect(
+    await screen.findByRole("menuitem", { name: "Copy link" }),
+  ).toBeVisible();
+  h.publish("newer", { lastActivityAt: SECTION_ROW_CAP + 1 });
+  await waitFor(() => expect(sectionRows("solo")[0]).toBe("newer"));
+  expect(sectionRows("solo")).toContain(last);
+  expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
 });

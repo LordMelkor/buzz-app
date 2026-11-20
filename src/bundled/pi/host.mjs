@@ -33,6 +33,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AssistantEntry,
   createRegistry,
+  DEFAULT_COMPACTION_POLICY,
   defineDoc,
   defineExtension,
   defineTool,
@@ -510,7 +511,7 @@ const Places = defineDoc({
   initial: () => ({}),
   checkpointWhen,
 });
-/** An Attention wake's reply destination belongs to its request, independently
+/** A request's reply destination is stored independently
  * of the conversation's tool defaults. Recorded before submission for recovery. */
 const Replies = defineDoc({
   kind: "buzz.replies",
@@ -567,6 +568,42 @@ const UNRUN = new Set([
 ]);
 /** Messages that arrive while Pi works join its run at the next boundary. */
 const SETTINGS = { steeringMode: "all" };
+/** An agent's compaction at `tokens`, for every model `models` lists, so a
+ * run resumed on any of them has it: a compaction starts in the background
+ * there, or as early as Pi's own would. */
+export class Compaction {
+  tokens;
+  overrides;
+  constructor(models) {
+    this.models = models;
+  }
+  /** Compacts at `tokens`, or Pi's default when unset. */
+  use(tokens) {
+    if (tokens === this.tokens) return;
+    this.tokens = tokens;
+    this.overrides = undefined;
+  }
+  /** Pi's settings, read at each use. */
+  settings() {
+    const { tokens } = this;
+    if (!tokens) return SETTINGS;
+    const { reserveTokens, backgroundTokens } = DEFAULT_COMPACTION_POLICY;
+    this.overrides ??= Object.fromEntries(
+      this.models()
+        .filter(({ contextWindow }) => contextWindow > 0)
+        .map(({ provider, id, contextWindow }) => [
+          `${provider}/${id}`,
+          {
+            backgroundTokens: Math.max(
+              backgroundTokens,
+              contextWindow - reserveTokens - tokens,
+            ),
+          },
+        ]),
+    );
+    return { ...SETTINGS, compaction: { modelOverrides: this.overrides } };
+  }
+}
 /** Pi's own default thinking level, for a model that thinks. */
 const THINKING = "medium";
 /** A lock left by a host that was killed is taken over after this long. */
@@ -1264,6 +1301,15 @@ export function serve({
       install(createToolSearchExtension());
       for (const extension of packages.extensions) install(extension);
       const storage = await openNodeSqliteStorage(path);
+      const compaction = new Compaction(() =>
+        models.getProviders().flatMap((provider) =>
+          models.getModels(provider.id).map((model) => ({
+            provider: provider.id,
+            id: model.id,
+            contextWindow: model.contextWindow,
+          })),
+        ),
+      );
       harness = await Harness.open(
         storage,
         {
@@ -1271,7 +1317,7 @@ export function serve({
             ? protectModels(routed, inspect, conversationFor)
             : routed,
           registry,
-          settings: SETTINGS,
+          settings: () => compaction.settings(),
           telemetry: requestTelemetry(),
           // Its tools' commands, and only theirs, act as this agent.
           env: ({ cwd }) => {
@@ -1293,6 +1339,7 @@ export function serve({
         harness,
         storage,
         registry,
+        compaction,
         install,
         conversations,
         release,
@@ -1966,7 +2013,15 @@ export function serve({
    * steers a run working in it, `busy`, changes only what its owner picked,
    * as in Claude. The agent's `core` memory read for it is the
    * conversation's latest; a failed read shows it none if not yet shown. */
-  async function submit(opened, conversation, turn, busy, refresh, withdrawn) {
+  async function submit(
+    opened,
+    conversation,
+    turn,
+    busy,
+    refresh,
+    accept,
+    withdrawn,
+  ) {
     opened.cores.set(conversation.id, turn.core?.text);
     const steers = busy && turn.steer;
     const chosen = await choose(turn);
@@ -1991,6 +2046,9 @@ export function serve({
       turn = { ...turn, ...prompt };
     }
     if (withdrawn?.()) return;
+    const apply = await accept?.();
+    if (withdrawn?.()) return;
+    apply?.();
     // Its work carries its request: see `requestTelemetry`.
     const submission = await conversation.submit(
       {
@@ -2152,9 +2210,11 @@ export function serve({
         : { ok: true, message: `Connected to ${model.modelId}` };
     },
     /** Opens the agent's storage, once, with its Buzz tools as they are now. */
-    async open({ agent, tools, hint, credential }) {
+    async open({ agent, tools, hint, credential, compactAt }) {
       if (credential) credentials.set(agent, credential);
       const opened = await opening(agent);
+      // Before anything resumes a run left unfinished.
+      opened.compaction.use(compactAt);
       const listed = JSON.stringify([tools, hint]);
       if (opened.tools !== listed) {
         opened.install(buzz(opened, tools, hint));
@@ -2285,6 +2345,8 @@ export function serve({
         throw error;
       }
       if (gatewayTurn) opened.recorded.keys.add(key);
+      // Before this turn waits on a run it resumes.
+      opened.compaction.use(turn.compactAt);
       const prior = opened.queues.get(key);
       const delivered = (async () => {
         await prior?.catch(() => undefined);
@@ -2311,7 +2373,24 @@ export function serve({
           }, context);
         }
         opened.conversations.add(conversation.id);
-        opened.contexts.set(conversation.id, tools);
+        // The conversation's tools follow a turn only once Pi takes it, so
+        // one dropped before then leaves the running turn's.
+        const accept = async () => {
+          // Tools must recover at this source even if the host stops after
+          // acceptance, before the history watermark can advance.
+          await harness.commit(async (tx) => {
+            const places = await tx.doc(Places);
+            places[key] = {
+              conversation: conversation.id,
+              context: tools,
+              seen:
+                places[key]?.conversation === conversation.id
+                  ? places[key].seen
+                  : 0,
+            };
+          }, context);
+          return () => opened.contexts.set(conversation.id, tools);
+        };
         const state = await watch(opened, conversation.id);
         // Recorded once Pi has the turn: one that could not start leaves the
         // messages it would have been shown for the next.
@@ -2361,6 +2440,7 @@ export function serve({
               turn,
               busy,
               prompt,
+              accept,
             );
             if (!submitted) return false;
             if (session !== undefined) Object.assign(submitted, { session });
@@ -2376,6 +2456,7 @@ export function serve({
           );
           if (held) {
             opened.cores.set(conversation.id, turn.core?.text);
+            opened.contexts.set(conversation.id, tools);
             return placed({
               submission: held.id,
               conversation: conversation.id,
@@ -2408,6 +2489,7 @@ export function serve({
               turn,
               busy,
               prompt,
+              accept,
               () => waiting.interrupted,
             ));
           if (!submitted) {
@@ -2459,6 +2541,7 @@ export function serve({
      * requests, and no Activity. */
     async once({ agent, gatewayTurn, ...turn }) {
       const opened = await agentOf(agent);
+      opened.compaction.use(turn.compactAt);
       const conversation = await opened.harness.createConversation(
         { ownership: { kind: "ownerless" } },
         context,
@@ -2488,6 +2571,10 @@ export function serve({
     async unfinished({ agent }) {
       const opened = await agentOf(agent);
       const { submissions } = await opened.harness.inspect(context);
+      const places = (await opened.harness.snapshot(Places, context)) ?? {};
+      const keys = new Map(
+        Object.entries(places).map(([key, place]) => [place.conversation, key]),
+      );
       const replies = (await opened.harness.snapshot(Replies, context)) ?? {};
       return {
         submissions: submissions.flatMap(
@@ -2499,6 +2586,9 @@ export function serve({
                   {
                     submission: id,
                     conversation: conversationId,
+                    ...(keys.has(conversationId)
+                      ? { key: keys.get(conversationId) }
+                      : {}),
                     request: requestId,
                     ...(replies[requestId]
                       ? { reply: replies[requestId] }
@@ -2551,7 +2641,10 @@ export function serve({
             delete (await tx.doc(Replies))[request];
           }, context);
         } catch (error) {
-          console.warn("Pi could not clear a wake's reply destination", error);
+          console.warn(
+            "Pi could not clear a request's reply destination",
+            error,
+          );
         }
       }
       return result;

@@ -8,6 +8,8 @@ test.use({
   lifecycleRole: "guest",
   channelWriteKinds: [9, 9007, 40100],
   historyCounts: { alpha: 1, beta: 1 },
+  // Follow taps need the complete read-state snapshot (NIP-RS startup gate).
+  readState: true,
 });
 
 const readerChannelId = "11111111-1111-4111-8111-111111111111";

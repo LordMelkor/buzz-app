@@ -253,7 +253,7 @@ export function SidebarSection({
                             <MenuIcon>
                               <TimerIcon size={14} />
                             </MenuIcon>
-                            Active in the last
+                            Active
                             {filter.value === "active" && (
                               <MenuTrailing>
                                 {activeWindowLabel(filter.activeWindowSeconds)}
@@ -274,7 +274,8 @@ export function SidebarSection({
                                 </MenuGroupLabel>
                                 {channels.rows.map((channel) => {
                                   const select = () => {
-                                    onToggle(true);
+                                    if (channel.channelType !== "solo")
+                                      onToggle(true);
                                     channels.select(channel.id);
                                     setMenuOpen(false);
                                   };

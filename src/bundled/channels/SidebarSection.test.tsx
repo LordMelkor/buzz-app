@@ -45,9 +45,7 @@ it("chooses a filter with the keyboard and appends hidden channels below its opt
   expect(
     await screen.findByRole("menuitemradio", { name: "Unreads" }),
   ).toHaveAttribute("aria-checked", "true");
-  await user.click(
-    screen.getByRole("menuitemradio", { name: /Active in the last/ }),
-  );
+  await user.click(screen.getByRole("menuitemradio", { name: "Active" }));
   expect(change).not.toHaveBeenCalled();
   await user.click(await screen.findByRole("button", { name: "Apply" }));
   expect(change).toHaveBeenCalledExactlyOnceWith("active", 30 * 86400);
@@ -66,7 +64,7 @@ it("chooses a filter with the keyboard and appends hidden channels below its opt
   expect(popup?.querySelector('[role="separator"]')).toBeInTheDocument();
   expect(
     screen
-      .getByRole("menuitemradio", { name: /Active in the last/ })
+      .getByRole("menuitemradio", { name: "Active" })
       .compareDocumentPosition(quiet) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   // jsdom has no submenu geometry; browser checks own pointer travel/focus.
@@ -481,6 +479,42 @@ it("keeps hidden-channel navigation available when filter choices are read-only"
   );
   expect(select).toHaveBeenCalledExactlyOnceWith("quiet");
   expect(change).not.toHaveBeenCalled();
+});
+
+it("opens a filtered Solo chat without expanding its workspace", async () => {
+  const user = userEvent.setup();
+  function Workspace() {
+    const [open, setOpen] = useState(false);
+    const [chat, select] = useState<string>();
+    return (
+      <>
+        <SidebarSection
+          sectionKey="group:work"
+          title="Work"
+          open={open}
+          onToggle={setOpen}
+          filter={{ value: "unreads", change: () => {} }}
+          channels={{
+            rows: [{ id: "quiet", name: "Quiet chat", channelType: "solo" }],
+            select,
+          }}
+        >
+          <p>Workspace chats</p>
+        </SidebarSection>
+        <output aria-label="Open chat">{chat}</output>
+      </>
+    );
+  }
+  render(<Workspace />);
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Work" }),
+  );
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Quiet chat" }));
+  expect(screen.getByLabelText("Open chat")).toHaveTextContent("quiet");
+  expect(screen.getByLabelText("Work").closest("details")).not.toHaveAttribute(
+    "open",
+  );
 });
 
 it("opens workspace settings from a saved section's menu", async () => {

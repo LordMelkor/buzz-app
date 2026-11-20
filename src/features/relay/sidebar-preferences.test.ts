@@ -14,6 +14,7 @@ import { createRelaySession } from "./session";
 import {
   projectSidebarPreferences,
   readSidebarPreferences,
+  workspaceSectionOrder,
 } from "./sidebar-preferences";
 import { keypair, signed, scriptedTransport, flush, roster } from "./testing";
 import type { LiveCallbacks } from "./live";
@@ -37,6 +38,36 @@ const expected = {
   starred: ["general"],
   muted: [],
 };
+
+it.each([
+  { saved: [], workspaces: ["group:work", "group:later"] },
+  { saved: ["group:later"], workspaces: ["group:later", "group:work"] },
+])(
+  "inserts new workspaces in a saved layout with groups $saved",
+  ({ saved, workspaces }) => {
+    const sectionOrder = [
+      "channels",
+      "starred",
+      ...saved,
+      "solo",
+      "forums",
+      "dms",
+    ];
+    const sections = [
+      ...groups.sections,
+      { id: "later", name: "Later", order: 1 },
+    ];
+    expect(workspaceSectionOrder({ sections, sectionOrder })).toEqual([
+      "pages",
+      "channels",
+      "starred",
+      ...workspaces,
+      "solo",
+      "forums",
+      "dms",
+    ]);
+  },
+);
 
 it("decodes four individually bounded populated preferences beyond the former aggregate limit", async () => {
   const viewer = keypair();
@@ -164,10 +195,20 @@ it("reads legacy preferences through the production session, transport, and boun
       body: JSON.stringify(value),
     });
   try {
-    expect(await owner.session.sidebarPreferences.read()).toEqual({
+    const legacy = await owner.session.sidebarPreferences.read();
+    expect(legacy).toEqual({
       ...expected,
       sectionOrder: [],
     });
+    expect(workspaceSectionOrder(legacy)).toEqual([
+      "pages",
+      "solo",
+      "starred",
+      "group:work",
+      "channels",
+      "forums",
+      "dms",
+    ]);
     const reads = upstream.mock.calls.flatMap(([, init]) =>
       (JSON.parse(String(init?.body ?? "[]")) as { "#d"?: string[] }[]).flatMap(
         (filter) => filter["#d"] ?? [],

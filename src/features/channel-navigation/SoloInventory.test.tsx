@@ -801,11 +801,11 @@ it("keeps the open, unread and working chats listed past a workspace's cap", () 
       .getAllByRole("button")
       .map((button) => button.getAttribute("data-solo-channel-id"))
       .filter(Boolean);
-  // Seven newest, then unread Planning and open Other past the cap, in order.
+  // Seven newest, then open Other and unread Planning past the cap, in order.
   expect(listed()).toEqual([
     ...Array.from({ length: 7 }, (_, index) => `newer-${index}`),
-    id,
     other,
+    id,
   ]);
   // Reading it does not pull the row away; it stays until the workspace folds.
   f.clearUnread();
@@ -1041,3 +1041,19 @@ it.each([false, true])(
     }
   },
 );
+
+it("orders SoloInventory rows by Recent creation fallback rather than updatedAt", () => {
+  const f = fixture(false);
+  f.roster((channels) =>
+    channels.map((channel) =>
+      channel.id === id
+        ? { ...channel, createdAt: 10, updatedAt: 500, lastActivityAt: 50 }
+        : { ...channel, createdAt: 100 },
+    ),
+  );
+  const listed = screen
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("data-solo-channel-id"))
+    .filter(Boolean);
+  expect(listed).toEqual([other, id]);
+});

@@ -177,10 +177,7 @@ test("manage a channel message, peer unread state, and its thread", async ({
   // toggle happens to occupy the same menu row when the click is dispatched.
   await peerRow.click();
   await expect
-    .poll(
-      async () =>
-        (await readJournal(page))?.state.frontiers["activity:alpha"] ?? 0,
-    )
+    .poll(async () => (await readJournal(page))?.state.frontiers["alpha"] ?? 0)
     .toBeGreaterThanOrEqual(peer.created_at);
   const toggle = page.getByRole("menuitem", {
     name: /^Mark as (read|unread)$/,

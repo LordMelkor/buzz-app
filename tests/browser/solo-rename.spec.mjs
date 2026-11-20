@@ -323,8 +323,24 @@ test("failed Enter-save and explicit reload retain keyboard control", async ({
     await expect(input(page)).toHaveCount(0);
     await expect(row(page, alpha)).toContainText("Keep this draft");
     expect(app.report.detailsPublications).toHaveLength(1);
+    // The new name sorts this chat below Beta, and the rows trade places after
+    // a quiet period. A double-click during that slide can land its second
+    // press on Beta and open the wrong editor; wait for the rows to stop.
+    await expect
+      .poll(() =>
+        sidebar(page)
+          .locator("[data-solo-destination-id]:not([inert] *)")
+          .evaluateAll((rows) =>
+            rows.map((item) => item.dataset.soloDestinationId),
+          ),
+      )
+      .toEqual([beta, alpha]);
+    await expect(sidebar(page).locator("[data-moving]")).toHaveCount(0);
     await row(page, alpha).dblclick();
     await expect(input(page)).toBeFocused();
+    await expect(sidebar(page).getByRole("form")).toHaveAccessibleName(
+      "Rename Keep this draft",
+    );
     await input(page).press("Escape");
     await expect(row(page, alpha)).toBeFocused();
   } finally {

@@ -836,9 +836,9 @@ it("reorders sections through native signing and readback, never rewriting a sat
     sectionOrder: [
       "group:later",
       "pages",
+      "solo",
       "starred",
       "group:work",
-      "solo",
       "channels",
       "forums",
       "dms",
@@ -848,7 +848,7 @@ it("reorders sections through native signing and readback, never rewriting a sat
   if (!head) throw new Error("Missing sections head");
   vi.mocked(invoke).mockClear();
   await transport.writeSidebarSectionOrder(
-    ["group:later", "pages", "starred", "group:work"],
+    ["group:later", "pages", "solo", "starred", "group:work"],
     signal,
   );
   expect(

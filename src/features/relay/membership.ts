@@ -49,6 +49,8 @@ export function rowProfileIds(row: ChannelMessage): readonly string[] {
     : [
         row.authorId,
         ...(row.workflowOwnerId ? [row.workflowOwnerId] : []),
+        // Loading the claimed agent's profile is what lets its owner verify.
+        ...(row.relayedFrom ? [row.relayedFrom.agent] : []),
         ...row.mentions,
         ...(row.mentionReferences ?? []),
         ...row.participants,

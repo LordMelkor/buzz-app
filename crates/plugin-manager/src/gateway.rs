@@ -226,6 +226,69 @@ pub fn parse(raw: &str) -> Result<Option<(Native, String)>, Invalid> {
     Ok(Some((native, canonical.to_string())))
 }
 
+/// At most this many descriptors in `src/bundled/org-gateways.json`.
+const ORG_GATEWAY_LIMIT: usize = 8;
+
+/// The build's descriptor, as the frontend's `selectGatewayDescriptor`
+/// chooses it: an explicit `BUZZ_AGENT_GATEWAY` when one is set, else the
+/// entry of `src/bundled/org-gateways.json` (an organization's packaged
+/// descriptors, `[]` in open-source builds) that lists the build's
+/// `BUZZ_DEFAULT_COMMUNITY_URL`, else none. Every listed entry is checked
+/// even when none is chosen, and no community may be listed twice, so a bad
+/// file fails every build that carries it.
+pub fn select(
+    explicit: &str,
+    listed: &str,
+    community_url: &str,
+) -> Result<Option<(Native, String)>, String> {
+    let fail = |problem: &str| format!("src/bundled/org-gateways.json is invalid: {problem}.");
+    let entries: Value = serde_json::from_str(listed).map_err(|_| fail("it is not JSON"))?;
+    let entries = entries
+        .as_array()
+        .filter(|entries| entries.len() <= ORG_GATEWAY_LIMIT)
+        .ok_or_else(|| {
+            fail(&format!(
+                "it must be a list of at most {ORG_GATEWAY_LIMIT} descriptors"
+            ))
+        })?;
+    let mut descriptors = Vec::new();
+    for entry in entries {
+        if !entry.is_object() {
+            return Err(fail("each entry must be a descriptor"));
+        }
+        let (native, canonical) = parse(&entry.to_string())
+            .map_err(|invalid| fail(&format!("an entry is invalid ({})", invalid.code())))?
+            .expect("an object is never blank");
+        let value: Value = serde_json::from_str(&canonical).expect("canonical JSON");
+        let origins: Vec<String> = value["communities"]
+            .as_array()
+            .expect("canonical communities")
+            .iter()
+            .map(|community| community["origin"].as_str().unwrap().to_owned())
+            .collect();
+        descriptors.push((native, canonical, origins));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for origin in descriptors.iter().flat_map(|(_, _, origins)| origins) {
+        if !seen.insert(origin) {
+            return Err(fail("two entries list the same community"));
+        }
+    }
+    if let Some(chosen) = parse(explicit).map_err(|invalid| invalid.to_string())? {
+        return Ok(Some(chosen));
+    }
+    // A blank or non-secure URL selects nothing rather than failing: dev builds
+    // may point at a local `ws://` relay, and Vite's `build` already refuses a
+    // bad URL for packaged frontends.
+    let Some(origin) = relay_origin(community_url) else {
+        return Ok(None);
+    };
+    Ok(descriptors
+        .into_iter()
+        .find(|(_, _, origins)| origins.contains(&origin))
+        .map(|(native, canonical, _)| (native, canonical)))
+}
+
 fn exactly(object: &Map<String, Value>, keys: &[&str]) -> bool {
     object.len() == keys.len() && keys.iter().all(|key| object.contains_key(*key))
 }
@@ -291,7 +354,9 @@ fn uuid(value: &str) -> bool {
 /// A community's relay as the frontend's `relayOrigin` canonicalizes it: a
 /// `wss://` or `https://` host, as its `https://` origin without a final dot.
 fn relay_origin(input: &str) -> Option<String> {
-    let value = input.trim();
+    // Match JavaScript's trim() and \s, including BOM but excluding NEL.
+    let whitespace = |c: char| c == '\u{feff}' || (c.is_whitespace() && c != '\u{0085}');
+    let value = input.trim_matches(whitespace);
     let lower = value.to_ascii_lowercase();
     let scheme = ["wss://", "https://"]
         .into_iter()
@@ -302,7 +367,7 @@ fn relay_origin(input: &str) -> Option<String> {
         || authority.is_empty()
         || authority
             .chars()
-            .any(|c| "/?#\\@".contains(c) || c.is_whitespace())
+            .any(|c| "/?#\\@".contains(c) || whitespace(c))
     {
         return None;
     }

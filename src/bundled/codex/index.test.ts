@@ -7,6 +7,9 @@ import { CodexRuntime } from "./runtime";
 import { CodexSetup } from "./setup";
 import { CodexProvider } from "./tabs";
 import { apply } from "./index";
+import { apply as applyClaude } from "../claude-code/index";
+import { apply as applyGoose } from "../goose/index";
+import { apply as applyPi } from "../pi/index";
 
 const desktop = vi.hoisted(() => ({ tauri: true }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => desktop.tauri }));
@@ -21,11 +24,12 @@ afterEach(() => {
 });
 
 /** Applies the plugin to a stand-in context and returns the registered type. */
-function applied(binding?: AgentExecutionBinding) {
+function applied(binding?: AgentExecutionBinding, applyType = apply) {
   let type: AgentType | undefined;
   const subscribe = () => () => undefined;
   const ctx = {
     agentProtection: { registerModels: vi.fn() },
+    settingsCards: { register: vi.fn() },
     pluginOwner: { id: "buzz.codex", revision: "r1" },
     host: { spawn: vi.fn(), readFile: vi.fn(), request: vi.fn() },
     agents: {
@@ -41,9 +45,43 @@ function applied(binding?: AgentExecutionBinding) {
     },
     effect: vi.fn(),
   };
-  apply(ctx as never);
+  applyType(ctx as never);
   return type;
 }
+
+it.each([
+  ["Claude", applyClaude],
+  ["Goose", applyGoose],
+  ["Pi", applyPi],
+])("keeps session scope when switching between Codex and %s", (_, plugin) => {
+  const codex = applied();
+  const target = applied(undefined, plugin);
+  const migrate = (
+    source: AgentType | undefined,
+    destination: AgentType | undefined,
+    saved: unknown,
+  ) =>
+    destination?.adopt?.(
+      source?.carry?.(saved) ?? {},
+      destination.defaults().config,
+    );
+  for (const scope of ["thread", "channel", "community"]) {
+    const switched = migrate(codex, target, {
+      scope,
+      instructions: "Triage.",
+      model: "codex-only",
+    });
+    expect(switched).toMatchObject({
+      scope,
+      instructions: "Triage.",
+      model: "",
+    });
+    expect(migrate(target, codex, switched)).toMatchObject({
+      scope,
+      instructions: "Triage.",
+    });
+  }
+});
 
 it("registers only where the desktop app can run codex and base64", () => {
   const check = vi.spyOn(CodexProvider.prototype, "check").mockResolvedValue();
@@ -69,7 +107,7 @@ it("registers only where the desktop app can run codex and base64", () => {
   expect(applied()).toBeUndefined();
 });
 
-it("adopts and carries an agent's instructions and workspace, nothing else", () => {
+it("adopts an agent's instructions and compatible workspace without its model", () => {
   const type = applied();
   const saved = type?.defaults().config;
   expect(
@@ -95,12 +133,7 @@ it("adopts and carries an agent's instructions and workspace, nothing else", () 
     { id: "model", label: "Model", isOverride: false },
     { id: "thinking", label: "Thinking", isOverride: false },
     { id: "voice", label: "Voice", isOverride: false },
-    {
-      id: "sessions",
-      label: "Sessions",
-      isOverride: false,
-      unchangedKey: "thread",
-    },
+    { id: "apps", label: "Codex apps and plugins", isOverride: false },
   ]);
   expect(
     type?.describeMigration?.({
@@ -109,17 +142,13 @@ it("adopts and carries an agent's instructions and workspace, nothing else", () 
       effort: "high",
       scope: "channel",
       voice: "maple",
+      apps: true,
     }),
   ).toEqual([
     { id: "model", label: "Model", isOverride: true },
     { id: "thinking", label: "Thinking", isOverride: true },
     { id: "voice", label: "Voice", isOverride: true },
-    {
-      id: "sessions",
-      label: "Sessions",
-      isOverride: true,
-      unchangedKey: "channel",
-    },
+    { id: "apps", label: "Codex apps and plugins", isOverride: true },
   ]);
   expect(type?.migrationWarning).toBe(
     "Any commands Codex left running will stop.",
@@ -269,10 +298,12 @@ it("observes each saved conversation as a session, read-only", () => {
       at: 2000,
     },
     { key: JSON.stringify(["dm", "channel"]), channelId: "dm", threadId: "t2" },
+    { key: "shared", channelId: "dm", threadId: "shared", community: true },
   ]);
   expect(applied()?.sessions?.list("a".repeat(64))).toEqual([
     { channelId: "room", root: "r".repeat(64), at: 2000 },
     { channelId: "dm" },
+    { channelId: "dm", community: true },
   ]);
 });
 

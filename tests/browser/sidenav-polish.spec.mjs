@@ -59,7 +59,7 @@ test("sidebar scrollbar stays close to the divider without clipping its native t
     };
   });
   expect(geometry).toEqual({
-    rightInset: 2,
+    rightInset: 0,
     clipped: false,
     paddingTop: 8,
   });
@@ -118,8 +118,9 @@ test("compact sidenav keeps its geometry across persistent page navigation", asy
     });
     expect(visual.scrollbarWidth).toBe(visual.offsetWidth - visual.clientWidth);
     expect(visual.leftContentInset).toBe(0);
-    expect(visual.rightContentInset).toBe(0);
-    expect(visual.fillInset).toBe(10);
+    const unusedGutter = Math.max(0, 6 - visual.scrollbarWidth);
+    expect(visual.rightContentInset).toBe(unusedGutter);
+    expect(visual.fillInset).toBe(4 + unusedGutter);
     expect(Number.parseFloat(visual.radius)).toBeGreaterThan(0);
     expect(visual.overflow).toBe("visible");
   };

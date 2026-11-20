@@ -9,10 +9,10 @@ filing is private client-side organization, independent of access; see
 - A Solo chat is a channel with the `buzz.solo` label.
 - Channel visibility and signed membership control access. Direct invitations
   add members; sharing from Chat access to a channel opens community reading.
-- A shared chat link is an ordinary message containing
-  `[Chat: name](buzz://channel/<id>)`. It renders as a chat card when the target
-  is a Solo chat; the `Chat:` label lets a viewer without access see it as one.
-  Links carry no other share marker, and older `Session:` labels still render.
+- A shared chat link is an ordinary Markdown link,
+  `[name](buzz://channel/<id>)`. A known Solo chat uses the round chat bubble.
+  An unavailable destination shows a lock. Older `Chat:` and `Session:` labels
+  remain part of the authored message.
 
 The access dialog has two ways to share:
 
@@ -48,8 +48,14 @@ Where the viewer cannot add agents, a note says to mention an agent in the chat
 instead.
 Current access uses the channel groups (**People**, **Agents**) with Owner and
 Admin tags, and each row has the channel members' actions menu, so the chat owner
-can remove someone. The verified roster shows loading or failure, never treating a
-failed read as an empty audience.
+can remove someone. In a Private chat on a relay that supports Solo role updates,
+the owner can confirm a lower role for any current non-owner, including people
+and agents.
+**Viewing only** gives read-only access
+to the chat. A verified agent can move from **Viewing only** to **Participating**,
+and the chat owner can grant **Admin** to their own verified agents. The
+verified roster shows loading or failure, never treating a failed read as an
+empty audience.
 
 Invitations use the same groups and controls as channels: **Your agents** first,
 then **People**, **Other agents** and **Your other agents**, omitting empty groups.
@@ -162,8 +168,8 @@ automatically resending.
 
 ## Sending a chat link in a channel
 
-Pasting a recognized Solo chat link into a composer stages it as a chat card.
-Sending the card into a channel, thread or DM uses the same policy as Share.
+Pasting a recognized Solo chat link keeps it editable inline in the composer.
+Sending it into a channel, thread or DM uses the same policy as Share.
 For a Private chat you own, **Share** confirms community access to
 its full history and Canvas, opens reading, then sends your original message.
 **Cancel** leaves access and the draft unchanged.

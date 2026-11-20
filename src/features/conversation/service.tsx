@@ -48,6 +48,10 @@ import {
   ChannelGeneralAccess,
   type ChannelGeneralAccessProps,
 } from "../../bundled/channels/ChannelGeneralAccess";
+import {
+  DocumentEditor,
+  type DocumentEditorProps,
+} from "../messages/DocumentEditor";
 
 /** A Solo chat's sidebar icon: what the plugin knows about the chat, or
  * `fallback` when it has nothing to show. */
@@ -104,6 +108,8 @@ export type Conversation = {
     MembersDialog: ComponentType<ChannelMembersDialogProps>;
     /** Signed General access editor with optional resource wording and policy. */
     GeneralAccess: ComponentType<ChannelGeneralAccessProps>;
+    /** Controlled document editing with the host engine, formatting and link policy. */
+    DocumentEditor: ComponentType<DocumentEditorProps>;
     /** Bounded document Markdown with host-owned link and image trust rules. */
     Markdown: (props: MarkdownProps) => ReactNode;
     Thread: (props: EmbeddedThreadProps) => ReactNode;
@@ -305,6 +311,7 @@ export class ConversationService extends Service implements Conversation {
     this.ui = {
       MembersDialog: ChannelMembersDialog,
       GeneralAccess: ChannelGeneralAccess,
+      DocumentEditor,
       Markdown: (props: MarkdownProps) => (
         <PluginMarkdown
           {...props}

@@ -106,6 +106,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     description:
       "Pi on this computer, with any provider Pi supports. Each thread it is mentioned in is one continuing conversation.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    settingsProposal: { compactAt: true },
     readModelSettings: (saved) =>
       readModelSettings(config(saved), { provider: true }),
     Create,
@@ -126,13 +127,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
+      scope: carry.sessionScope ?? saved.scope,
       workspace: carry.workspace ?? saved.workspace,
     }),
     carry: (saved) => {
-      const { instructions, workspace } = config(saved);
+      const { instructions, workspace, scope } = config(saved);
       return {
         ...(instructions.trim() && { instructions }),
         ...(workspace !== DEFAULT_CONFIG.workspace && { workspace }),
+        ...(scope !== DEFAULT_CONFIG.scope && { sessionScope: scope }),
       };
     },
     summary: (agent) => {

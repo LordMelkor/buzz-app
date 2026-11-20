@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { StrictMode } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import {
   GhUnavailable,
@@ -23,6 +23,16 @@ import { createPullStates } from "./pull-states";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { PanelWorkspace } from "../../features/panels/PanelWorkspace";
 
+beforeEach(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -1534,12 +1544,22 @@ it("shows a pull request's changes under Changes, with its line counts", async (
   const changes = screen.getByRole("tab", { name: /^Changes/ });
   expect(changes).toHaveTextContent("+3 −1");
   await user.click(changes);
-  expect(
-    await screen.findByRole("region", { name: "src/app.ts" }),
-  ).toHaveTextContent("+1−1");
-  expect(screen.getByRole("region", { name: "README.md" })).toHaveTextContent(
-    "New file",
-  );
+  const file = await screen.findByRole("region", { name: "src/app.ts" });
+  const added = await screen.findByRole("region", { name: "README.md" });
+  await waitFor(() => {
+    const root = file.querySelector("diffs-container")?.shadowRoot;
+    expect(root?.querySelector("[data-additions-count]")).toHaveTextContent(
+      "+1",
+    );
+    expect(root?.querySelector("[data-deletions-count]")).toHaveTextContent(
+      "-1",
+    );
+    expect(
+      added
+        .querySelector("diffs-container")
+        ?.shadowRoot?.querySelector("[data-diffs-header]"),
+    ).toHaveAttribute("data-change-type", "new");
+  });
   expect(
     screen.queryByRole("heading", { name: "Private change #9" }),
   ).not.toBeInTheDocument();

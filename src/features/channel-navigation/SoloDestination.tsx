@@ -1,4 +1,5 @@
 import { useSoloRowActivation } from "./useSoloRowActivation";
+import { useSpringLoaded } from "../messages/spring-loaded-drag";
 import { SoloChatTitle } from "../solo/SoloChatTitle";
 import {
   type ReactNode,
@@ -40,7 +41,6 @@ import type { ChannelSummary } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import { conversationTarget, matchesConversation } from "./routes";
 import { soloSuccessor } from "./solo-successor";
-import type { SoloRegion } from "./solo-navigation-model";
 import type {
   SoloCardProps,
   SoloConversationLinkProps,
@@ -51,7 +51,8 @@ import styles from "./SoloDestination.module.css";
 
 export const RegionDestinationContext = createContext<
   | {
-      region: SoloRegion;
+      channels: readonly ChannelSummary[];
+      live: ReadonlySet<string>;
       session: RelaySession;
       navigator: Navigation;
       pendingClick: RefObject<ReturnType<typeof setTimeout> | undefined>;
@@ -93,10 +94,10 @@ export function RegionConversation(props: SoloConversationProps) {
     chosenItem.current = null;
   }, []);
   useLayoutEffect(() => openMenu, [openMenu]);
-  const channel = context?.region.channels.find(
+  const channel = context?.channels.find(
     (channel) => channel.id === props.channelId,
   );
-  const visible = !!channel && !!context?.region.live.has(channel.id);
+  const visible = !!channel && !!context?.live.has(channel.id);
   const [dialog, setDialog] = useState<"rename" | "settings" | "share">();
   const [error, setError] = useState<string>();
   const focusProps = useDestinationFocus(root, props.channelId, visible);
@@ -236,7 +237,6 @@ export function RegionConversation(props: SoloConversationProps) {
   };
   return (
     <div
-      ref={root}
       data-solo-destination-root={channel.id}
       {...focusProps}
       className={`${styles.destination} ${rowStyles.sidebarContents}`}
@@ -297,6 +297,7 @@ function ConversationLink(props: SoloConversationLinkProps) {
       ? state.rename
       : undefined,
   );
+  const springLoaded = useSpringLoaded(() => state?.open(), state?.selected);
   if (!state) return null;
   return (
     <NavigationItem
@@ -320,6 +321,7 @@ function ConversationLink(props: SoloConversationLinkProps) {
       multiline={!!props.multiline}
       selected={primary && state.selected}
       {...activation}
+      {...springLoaded}
     />
   );
 }
@@ -464,12 +466,15 @@ export function RecoveryDestination({ channelId }: { channelId: string }) {
   useLayoutEffect(() => {
     if (context?.current === channelId) context.retryReveal();
   });
-  const channel = context?.region.channels.find(
-    (channel) => channel.id === channelId,
-  );
+  const channel = context?.channels.find((channel) => channel.id === channelId);
+  const open = () => {
+    if (context)
+      void context.navigator.open(conversationTarget(context.scope, channelId));
+  };
+  const springLoaded = useSpringLoaded(open, context?.current === channelId);
   if (!context || !channel) return null;
   return (
-    <div ref={root} data-solo-destination-root={channelId} {...focusProps}>
+    <div data-solo-destination-root={channelId} {...focusProps}>
       <NavigationItem
         data-solo-destination-id={channelId}
         label={channel.name}
@@ -481,11 +486,8 @@ export function RecoveryDestination({ channelId }: { channelId: string }) {
             preserveUnread
           />
         }
-        onClick={() => {
-          void context.navigator.open(
-            conversationTarget(context.scope, channelId),
-          );
-        }}
+        onClick={open}
+        {...springLoaded}
       />
     </div>
   );
@@ -498,14 +500,21 @@ function useDestinationFocus(
 ) {
   const focused = useRef(false);
   const neighbors = useRef<string[]>([]);
-  useLayoutEffect(() => {
-    if (!focused.current) return;
+  const rememberNeighbors = useCallback(() => {
     const region = root.current?.closest("[data-sidebar-section]");
     if (region)
       neighbors.current = [
         ...region.querySelectorAll<HTMLElement>("[data-solo-destination-id]"),
       ].map((row) => row.dataset.soloDestinationId ?? "");
-  });
+  }, [root]);
+  const attach = useCallback(
+    (node: HTMLDivElement | null) => {
+      // The source can reorder siblings without rendering this destination.
+      if (!node && focused.current) rememberNeighbors();
+      root.current = node;
+    },
+    [rememberNeighbors, root],
+  );
   useLayoutEffect(() => {
     if (!visible) return;
     const node = root.current;
@@ -515,15 +524,19 @@ function useDestinationFocus(
         "[data-solo-destination-root]",
       );
       if (!node || (owner ? owner !== node : !focused.current)) return;
-      const rows = neighbors.current;
-      const index = rows.indexOf(channelId);
-      const ids = [
-        channelId,
-        ...rows.slice(index + 1),
-        ...rows.slice(0, index).reverse(),
-      ];
       queueMicrotask(() => {
         if (document.activeElement !== document.body) return;
+        // The ref can capture the final order after this effect cleans up.
+        const rows = neighbors.current;
+        const index = rows.indexOf(channelId);
+        const ids = [
+          channelId,
+          ...rows.slice(index + 1),
+          ...rows.slice(0, index).reverse(),
+        ];
+        const section = document.querySelector(
+          `[data-sidebar-section="${CSS.escape(region?.getAttribute("data-sidebar-section") ?? "")}"]`,
+        );
         const candidates = [
           ...ids.map(
             (id) =>
@@ -532,9 +545,10 @@ function useDestinationFocus(
                 `[data-solo-destination-id="${CSS.escape(id)}"]`,
               ),
           ),
-          document.querySelector<HTMLElement>(
-            `[data-sidebar-section="${CSS.escape(region?.getAttribute("data-sidebar-section") ?? "")}"] summary`,
-          ),
+          ...(section?.querySelectorAll<HTMLElement>(
+            "[data-solo-destination-id]",
+          ) ?? []),
+          section?.querySelector<HTMLElement>("summary"),
           document.querySelector<HTMLElement>("[data-solo-heading]"),
           ...document.querySelectorAll<HTMLElement>(
             '[data-sidebar-section^="solo-region:"] summary',
@@ -549,13 +563,10 @@ function useDestinationFocus(
     };
   }, [root, channelId, visible]);
   return {
+    ref: attach,
     onFocusCapture() {
       focused.current = true;
-      const region = root.current?.closest("[data-sidebar-section]");
-      if (region)
-        neighbors.current = [
-          ...region.querySelectorAll<HTMLElement>("[data-solo-destination-id]"),
-        ].map((row) => row.dataset.soloDestinationId ?? "");
+      rememberNeighbors();
     },
     onBlurCapture(event: FocusEvent<HTMLDivElement>) {
       if (

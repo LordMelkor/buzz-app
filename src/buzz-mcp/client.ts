@@ -7,6 +7,7 @@ import type {
   AgentAttention,
   SoloPlacement,
   AgentReadout,
+  AgentUpdateInput,
   TeamReadout,
   TeamUpdateInput,
 } from "../features/agents/service";
@@ -98,11 +99,13 @@ export type Memory = Readonly<{
 }>;
 
 export interface BuzzClient {
-  /** The host's cancellation signal for this call. Keep this signal across
-   * waits; a later turn cannot restore a canceled call. Hosts without request
-   * cancellation omit it. */
+  /** Cancellation for this call, or its owning turn or connection when the
+   * host only supplies a lifetime signal. Keep it across waits. */
   readonly signal?: AbortSignal;
   protect?(action: ProtectionAction): Promise<void>;
+  /** Waits while the agent's community reloads in place; a call built from a
+   * client builder is built again after it. */
+  settle?(): Promise<void>;
   /** The runtime reviews each tool call itself before Buzz dispatches it. */
   readonly nativeToolGate?: true;
   readonly pubkey: string;
@@ -121,14 +124,7 @@ export interface BuzzClient {
     }>,
   ): Promise<Readonly<{ requestId: string; saved: false }>>;
   updateAgent?(
-    input: Readonly<{
-      agent: string;
-      name?: string;
-      type?: string;
-      instructions?: string;
-      /** Uploads the picture once the request is valid: its URL. */
-      picture?: () => Promise<string>;
-    }>,
+    input: AgentUpdateInput,
   ): Promise<Readonly<{ requestId: string; saved: false }>>;
   readAgents?(agent?: string): Promise<AgentReadout | readonly AgentReadout[]>;
   readTeams?(team?: string): Promise<TeamReadout | readonly TeamReadout[]>;
@@ -156,6 +152,10 @@ export interface BuzzClient {
   readonly owner?: string | undefined;
   /** Trusted connection authorities, never inferred from query results. */
   readonly relayAuthor?: string | undefined;
+  /** Without `relayAuthor`: learns the relay's key when a people search first
+   * needs it for verified names, so no other tool waits for it. `undefined`
+   * when the relay has no key; rejects when the key cannot be learned. */
+  readonly relayAuthorLookup?: () => Promise<string | undefined>;
   readonly signingAuthority?: string | undefined;
   /** Reads the community as the agent. Every filter names its kinds. */
   query(filters: readonly Filter[]): Promise<readonly BuzzEvent[]>;

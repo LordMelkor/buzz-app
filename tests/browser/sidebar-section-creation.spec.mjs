@@ -1,6 +1,12 @@
 import { test, expect } from "./fixture.mjs";
 import { openPage, settleShellToggle } from "./navigation.mjs";
 
+// The roster can paint before the saved stars and workspaces arrive. Alpha then
+// starts in its default section and leaves it, inert, while its saved copy
+// enters. Name the saved section so a gesture waits for the row it means.
+const starredAlpha =
+  '[data-sidebar-section="starred"] [data-channel-id="alpha"]';
+
 // Browser ownership: real pointer collision/activation, menu-to-modal focus,
 // relocation and cold reload through the production preference broker.
 // Input/error permutations remain in the colocated component/store tests.
@@ -358,7 +364,7 @@ test("Move to… → Create new saves the selected icon and assignment atomicall
 }) => {
   await page.goto(app.origin);
   await openPage(page, "Messages");
-  await page.locator('[data-channel-id="alpha"]').click({ button: "right" });
+  await page.locator(starredAlpha).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Move to…", exact: true }).hover();
   await page
     .getByRole("menuitem", { name: "Create new…", exact: true })
@@ -493,8 +499,21 @@ test("only the top channel-section boundary reveals creation, latches, cancels a
   await page.goto(app.origin);
   await openPage(page, "Messages");
   const target = page.locator("[data-create-section-drop]");
-  const row = page.locator('[data-channel-id="alpha"]');
+  const row = page.locator(starredAlpha);
   await expect(target).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.locator("[data-create-section-trigger]").evaluate((trigger) => {
+        const starred = document.querySelector(
+          '[data-sidebar-section="starred"]',
+        );
+        return (
+          trigger.getBoundingClientRect().top -
+          starred.getBoundingClientRect().bottom
+        );
+      }),
+    )
+    .toBeGreaterThanOrEqual(0);
   const pointer = await startDrag(page, row);
   // The preview stays where the row was grabbed, under the pointer.
   const preview = page.locator('[class*="channelDragOverlay"]');
@@ -602,12 +621,14 @@ test("only the top channel-section boundary reveals creation, latches, cancels a
   const section = page
     .locator("[data-sidebar-section]")
     .filter({ has: page.locator("summary").filter({ hasText: /Release/ }) });
-  await expect(section.locator('[data-channel-id="alpha"]')).toBeVisible();
+  // The move leaves the Starred copy fading out beside the one in Release.
+  const moved = section.locator('[data-channel-id="alpha"]');
+  await expect(moved).toBeVisible();
   const ordered = page.locator('[data-sidebar-section^="group:"] summary');
   await expect(ordered).toHaveCount(2);
   await expect(ordered.nth(0)).toHaveAccessibleName("Release");
   await expect(ordered.nth(1)).toHaveAccessibleName("Work");
-  await expect(row).toBeFocused();
+  await expect(moved).toBeFocused();
   await expect.poll(() => app.report.sidebarPublications?.length ?? 0).toBe(2);
   const { blob } = app.report.sidebarPublications.find(
     ({ coordinate }) => coordinate === "channel-workspaces",
@@ -616,14 +637,14 @@ test("only the top channel-section boundary reveals creation, latches, cancels a
   expect(saved?.icon).toBe("🚌");
   await page.reload();
   await openPage(page, "Messages");
-  await expect(section.locator('[data-channel-id="alpha"]')).toBeVisible();
+  await expect(moved).toBeVisible();
   await expect(ordered.nth(0)).toHaveAccessibleName("Release");
   await expect(ordered.nth(1)).toHaveAccessibleName("Work");
   await page.locator(".shell-sidebar").screenshot({
     path: testInfo.outputPath("created-section-first.png"),
   });
   // The original per-channel creation entry remains available.
-  await row.click({ button: "right" });
+  await moved.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Move to…", exact: true }).hover();
   await expect(
     page.getByRole("menuitem", { name: "Create new…", exact: true }),

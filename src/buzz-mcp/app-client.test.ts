@@ -111,6 +111,23 @@ it("withholds file bytes when the protected handle retires during a read", async
   }
 });
 
+it.each(["call", "route"])(
+  "exposes %s cancellation to added tools",
+  (scope) => {
+    const route = new AbortController();
+    const call = new AbortController();
+    const client = appClient({ pubkey: "agent" } as AgentHandle, {
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+      signal: route.signal,
+      ...(scope === "call" ? { callSignal: call.signal } : {}),
+    });
+    const reason = new Error("Tool stopped");
+    (scope === "call" ? call : route).abort(reason);
+    expect(() => client.signal?.throwIfAborted()).toThrow(reason);
+  },
+);
+
 it("binds shared-tool review to native conversation context and refuses missing context", async () => {
   const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
   const agent = {

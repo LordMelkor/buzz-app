@@ -52,7 +52,7 @@ export function NewWorkspace({
   create(project: SidebarSectionDraft): Promise<unknown>;
   moveConversation?: boolean;
   close(): void;
-  onCreated(id: string): void | Promise<void>;
+  onCreated?(id: string): void | Promise<void>;
 }) {
   const [id] = useState(() => crypto.randomUUID());
   const [name, setName] = useState("");
@@ -168,7 +168,7 @@ export function NewWorkspace({
           );
       }
       if (chosen) appliedTemplate.write(session.scope, id, chosen.id);
-      await onCreated(id);
+      await onCreated?.(id);
       setOpen(false);
     } catch (reason) {
       refocusAfterFailure.current = true;

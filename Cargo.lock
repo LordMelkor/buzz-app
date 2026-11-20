@@ -1155,6 +1155,8 @@ dependencies = [
  "mesh-llm-host-runtime",
  "mesh-llm-system",
  "nostr",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "reqwest",
  "serde",
  "serde_json",

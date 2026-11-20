@@ -3,16 +3,21 @@ import { KIT_TAG, ME_KIT_TAG, type Groups } from "../channel-templates/model";
 import { TEAM_MANIFEST_TAG } from "../channel-templates/team-payload";
 import {
   editSidebarAssignment,
+  editSidebarSectionOrder,
   editSidebarSectionRemoval,
   editSidebarSectionRename,
 } from "./sidebar-edits";
 import { createRelaySession } from "./session";
 import { importWorkspaceFallback } from "./sidebar-registers";
 import {
+  decodeLegacyWorkspaceEnvelope,
+  encodeLegacyWorkspaceEnvelope,
+  projectWorkspaceGroups,
   workspaceBaseRecord,
   expandWorkspaceRecord,
   workspacePayloadForSigning,
   workspaceRecordForWrite,
+  workspaceSectionOrder,
   type SidebarGroups,
 } from "./sidebar-preferences";
 import { flush, keypair, roster, scriptedTransport } from "./testing";
@@ -95,9 +100,180 @@ it("preserves both sets of filings, template coordinates and ordering when legac
       { id: "legacy-team:work", name: "Release", order: 1, icon: "📚" },
       { id: "second", name: "Later", order: 2 },
     ],
+    sectionOrder: [
+      "group:work",
+      "solo",
+      "starred",
+      "group:legacy-team:work",
+      "group:second",
+    ],
     assignments: { chat: "work", dm: "legacy-team:work", forum: "second" },
     legacyTemplates: { work: "old-template" },
   });
+});
+
+const soloGroups: Groups = {
+  type: "groups",
+  id: "me",
+  groups: [{ id: "notes", name: "Notes", defaultTemplateId: "" }],
+  assignments: {},
+};
+const teamGroups: SidebarGroups = {
+  sections: [{ id: "release", name: "Release", order: 0 }],
+  assignments: {},
+};
+const emptyGroups: SidebarGroups = { sections: [], assignments: {} };
+
+it.each([
+  {
+    name: "both legacy lists",
+    team: teamGroups,
+    solo: soloGroups,
+    before: ["group:notes"],
+    after: ["group:release"],
+  },
+  {
+    name: "only Solo available",
+    team: emptyGroups,
+    solo: soloGroups,
+    before: ["group:notes"],
+    after: [],
+  },
+  {
+    name: "only Team available",
+    team: teamGroups,
+    solo: undefined,
+    before: [],
+    after: ["group:release"],
+  },
+  {
+    name: "no groups",
+    team: emptyGroups,
+    solo: undefined,
+    before: [],
+    after: [],
+  },
+])(
+  "keeps the first-load order after the first save with $name",
+  ({ team, solo, before, after }) => {
+    const legacy = mergeLegacyWorkspaces(team, solo);
+    const expected = [
+      "pages",
+      ...before,
+      "solo",
+      "starred",
+      ...after,
+      "channels",
+      "forums",
+      "dms",
+    ];
+    expect(workspaceSectionOrder(legacy)).toEqual(expected);
+    const hostLegacy = decodeLegacyWorkspaceEnvelope(
+      encodeLegacyWorkspaceEnvelope(legacy),
+    );
+    const base = workspaceBaseRecord(hostLegacy);
+    const sectionId = legacy.sections[0]?.id;
+    const edited = sectionId
+      ? editSidebarAssignment(base, 0, { channelId: channel, sectionId })
+      : base;
+    const saved = workspacePayloadForSigning(edited, hostLegacy, base);
+    // The first save keeps the order worked out from the legacy records.
+    expect(saved.sectionOrder).toEqual(legacy.sectionOrder ?? []);
+    const readback = importWorkspaceFallback(
+      expandWorkspaceRecord(saved),
+      hostLegacy,
+    );
+    expect(workspaceSectionOrder(projectWorkspaceGroups(readback))).toEqual(
+      expected,
+    );
+  },
+);
+
+it("accepts a legacy order without Starred and restores it at the top", () => {
+  // The derived order is used as saved, never split around Starred again.
+  const legacy = decodeLegacyWorkspaceEnvelope({
+    version: 1,
+    sections: [
+      { id: "notes", name: "Notes", order: 0 },
+      { id: "release", name: "Release", order: 1 },
+    ],
+    assignments: {},
+    sectionOrder: ["solo", "group:notes", "group:release"],
+  });
+  const base = workspaceBaseRecord(legacy);
+  const order = [
+    "pages",
+    "starred",
+    "solo",
+    "group:notes",
+    "group:release",
+    "channels",
+    "forums",
+    "dms",
+  ];
+  expect(workspaceSectionOrder(projectWorkspaceGroups(base))).toEqual(order);
+  const saved = workspacePayloadForSigning(
+    editSidebarAssignment(base, 0, { channelId: channel, sectionId: "notes" }),
+    legacy,
+    base,
+  );
+  expect(
+    workspaceSectionOrder(
+      projectWorkspaceGroups(
+        importWorkspaceFallback(expandWorkspaceRecord(saved), legacy),
+      ),
+    ),
+  ).toEqual(order);
+});
+
+it("gives an existing unified record without a saved order the new default", () => {
+  const legacy = mergeLegacyWorkspaces(teamGroups, soloGroups);
+  const current = { ...workspaceBaseRecord(legacy), sectionOrder: [] };
+  const loaded = importWorkspaceFallback(current, legacy);
+  expect(loaded).toBe(current);
+  const defaults = [
+    "pages",
+    "solo",
+    "starred",
+    "group:notes",
+    "group:release",
+    "channels",
+    "forums",
+    "dms",
+  ];
+  expect(workspaceSectionOrder(projectWorkspaceGroups(loaded))).toEqual(
+    defaults,
+  );
+  // An ordinary edit keeps the order empty rather than pinning a layout.
+  const edited = editSidebarAssignment(loaded, 1, {
+    channelId: channel,
+    sectionId: "release",
+  });
+  const signed = workspacePayloadForSigning(edited, legacy, current);
+  expect(signed.sectionOrder).toEqual([]);
+  expect(
+    workspaceSectionOrder(
+      projectWorkspaceGroups(expandWorkspaceRecord(signed)),
+    ),
+  ).toEqual(defaults);
+  const reordered = editSidebarSectionOrder(loaded, 1, [
+    "starred",
+    "group:release",
+    "group:notes",
+    "solo",
+  ]);
+  expect(
+    workspacePayloadForSigning(reordered, legacy, current).sectionOrder,
+  ).toEqual([
+    "starred",
+    "group:release",
+    "group:notes",
+    "solo",
+    "pages",
+    "channels",
+    "forums",
+    "dms",
+  ]);
 });
 
 function legacyWithFilings(count: number, idLength: number): SidebarGroups {

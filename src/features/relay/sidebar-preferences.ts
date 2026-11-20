@@ -105,7 +105,7 @@ export function workspaceBaseRecord(groups: SidebarGroups) {
     version: 1,
     sections: groups.sections,
     assignments: groups.assignments,
-    sectionOrder: [],
+    sectionOrder: groups.sectionOrder ?? [],
     ...(groups.legacyTemplates
       ? { legacyTemplates: groups.legacyTemplates }
       : {}),
@@ -115,7 +115,11 @@ export function workspaceBaseRecord(groups: SidebarGroups) {
 
 export function decodeLegacyWorkspaceEnvelope(value: unknown): SidebarGroups {
   const data = object(value);
-  return projectWorkspaceGroups({ ...data, version: 1, sectionOrder: [] });
+  return projectWorkspaceGroups({
+    ...data,
+    version: 1,
+    sectionOrder: data.sectionOrder ?? [],
+  });
 }
 
 type WorkspaceRecord = SidebarGroups & {
@@ -386,11 +390,13 @@ export function workspaceSectionOrder(
   groups: Pick<SidebarGroups, "sections" | "sectionOrder"> | undefined,
 ): readonly string[] {
   const [starred, ...home] = HOME_SIDEBAR_SECTIONS;
+  const [solo, ...otherHomes] = home;
   const defaults = [
     SIDEBAR_PAGES_SECTION,
+    solo,
     starred,
     ...(groups?.sections ?? []).map(({ id }) => `group:${id}`),
-    ...home,
+    ...otherHomes,
   ];
   if (!groups?.sectionOrder?.length) return defaults;
   const available = new Set(defaults);
@@ -468,6 +474,8 @@ export type SidebarPreferences = SidebarGroups &
     activeWindowSeconds?: Readonly<Record<string, number>>;
     /** A first write still needs both verified legacy workspace records. */
     workspaceMigrationPending?: true;
+    /** Workspace IDs from the old Solo sidebar, read from its legacy record. */
+    soloWorkspaces?: readonly string[];
   }>;
 export type SidebarSectionDraft = Readonly<{
   id: string;

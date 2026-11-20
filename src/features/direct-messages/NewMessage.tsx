@@ -10,6 +10,7 @@ import {
 } from "../conversation/Conversation";
 import type { ConversationHostServices } from "../conversation/ConversationHost";
 import { composerMarkdown } from "../messages/composer-markdown";
+import { restoreChatLinks } from "../messages/composer-chat-cards";
 import {
   useCallback,
   useEffect,
@@ -406,8 +407,8 @@ export function NewMessage({
       if (
         current &&
         (current.recipients !== key ||
-          JSON.stringify(current.draft) !==
-            JSON.stringify(mentionDraft(draft)) ||
+          JSON.stringify(mentionDraft(restoreChatLinks(current.draft))) !==
+            JSON.stringify(mentionDraft(restoreChatLinks(draft))) ||
           (files &&
             JSON.stringify(current.attachments) !==
               JSON.stringify(attachments)))

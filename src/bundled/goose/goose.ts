@@ -199,6 +199,8 @@ export const GooseProcess = {
     launch: Readonly<{
       cwd: string;
       env?: Readonly<Record<string, string | null>>;
+      /** The context size, in tokens, its sessions compact by. */
+      compactAt?: number;
       serve?: ServeMcp;
       protected?: boolean;
       signal?: AbortSignal;
@@ -212,6 +214,10 @@ export const GooseProcess = {
         ...databricks(),
         ...launch.env,
         ...(launch.protected && { GOOSE_DISABLE_SESSION_NAMING: "true" }),
+        // goose compacts at the lower of this and its share of the window.
+        ...(launch.compactAt && {
+          GOOSE_AUTO_COMPACT_TOKEN_LIMIT: String(launch.compactAt),
+        }),
       },
     });
     const cancel = () => void goose.kill();

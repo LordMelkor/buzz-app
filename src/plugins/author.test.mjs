@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops } from "@buzz/author";
+import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, Seen } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -52,6 +52,9 @@ const ExamplePreview = ({ close }: PagePreviewProps) =>
   createElement("button", { type: "button", onClick: close }, "Open");
 export const inject = ["agents", "decisions", "host", "identityNames", "pages", "relay"];
 export function apply(ctx: Context) {
+  const seen: Seen | undefined = ctx.reflect.get("seen");
+  const key = "example.plugin/welcome";
+  if (seen?.has(key) === false) seen.mark(key);
   const sharingPolicy: GeneralAccessPolicy = { subject: "record", allowPublic: false, visibilityDescription: () => "Record access changes." };
   const general: ChannelGeneralAccessProps = { capability: ctx.relay.snapshot().session.channelDetails, channelId: "record", policy: sharingPolicy };
   const picker: ChannelMembersDialogProps = { session: ctx.relay.snapshot().session, channelId: "record", trigger: { current: null }, close() {},
@@ -64,6 +67,23 @@ export function apply(ctx: Context) {
   void pickerHasNoHostProps;
   // @ts-expect-error Host navigation visits are not plugin props.
   createElement(ctx.conversation.ui.MembersDialog, { ...picker, visit: true });
+  const editorRef: { current: DocumentEditorHandle | null } = { current: null };
+  const selection: DocumentEditorSelection = { start: 0, end: 1, source: false };
+  const editor: DocumentEditorProps = { ref: editorRef, value: "**Hello**", onChange(value) { void value.length; }, editing: true, source: false, onSourceChange() {}, linkOpen: false, onLinkOpenChange() {}, onSave() {}, maxLength: 32768, destinations: [{label: "Reference", href: "buzz://plugin?id=example.plugin"}] };
+  createElement(ctx.conversation.ui.DocumentEditor, editor);
+  editorRef.current?.focusSelection(selection);
+  // @ts-expect-error Source mode must be controlled with a boolean.
+  const invalidEditor: DocumentEditorProps = { ...editor, source: "Markdown" };
+  void invalidEditor;
+  const ui: PluginUi | undefined = ctx.reflect.get("ui");
+  if (ui) {
+    void createElement(ui.Dialog, { open: true, onOpenChange: (open: boolean) => void open, title: "Edit",
+      actions: createElement(ui.Button, { variant: "prominent", onClick: () => {} }, "Save") },
+      createElement(ui.Field, { label: "Name" }, createElement(ui.Input, { onValueChange: (value: string) => void value })));
+    void createElement(ui.Switch, { label: "Alerts", onCheckedChange: (checked: boolean) => void checked });
+    // @ts-expect-error Internal and legacy variants are not part of the plugin contract.
+    void createElement(ui.Button, { variant: "glass", children: "Glass" });
+  }
   const unread: UnreadCapability = ctx.relay.snapshot().session.unread;
   const conversations: ReturnType<UnreadCapability["inbox"]> = unread.inbox();
   if (unread.markCapturedMessagesRead) {

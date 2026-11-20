@@ -87,7 +87,9 @@ import { openArchive } from "./archive.mjs";
 import { observerGeneration } from "../src/features/agents/observer.ts";
 import {
   decodeReadState,
+  decodeThreadFollows,
   signReadState,
+  signThreadFollows,
   READ_STATE_DECODE_BYTES,
 } from "./read-state.mjs";
 import { READ_STATE_TIMESTAMP_REFUSAL } from "../src/features/relay/read-state-host.ts";
@@ -345,6 +347,9 @@ async function relayAuthority(fetch, relay) {
     channelIdentity:
       Array.isArray(nip11.supported_extensions) &&
       nip11.supported_extensions.includes("nip-cl"),
+    soloMemberRoleUpdates:
+      Array.isArray(nip11.supported_extensions) &&
+      nip11.supported_extensions.includes("buzz-solo-member-role"),
     // NIP-AR sync: REQ with `"artifact": "current"` keeps a set current.
     artifactSync: nip11.artifacts?.sync?.version === 1,
     artifactSupport:
@@ -1349,11 +1354,14 @@ export function relayBrokerPlugin({
             [
               "/api/relay/sidebar-preferences",
               "/api/relay/read-state-decode",
+              "/api/relay/thread-follows-decode",
               "/api/relay/channel-kit-decode",
             ].includes(route) &&
             req.method === "POST"
           ) {
-            const readStateDecode = route === "/api/relay/read-state-decode";
+            const followsDecode = route === "/api/relay/thread-follows-decode";
+            const readStateDecode =
+              followsDecode || route === "/api/relay/read-state-decode";
             const kitDecode = route === "/api/relay/channel-kit-decode";
             if (sidebarUploads >= SIDEBAR_UPLOAD_SLOTS)
               return json(res, 429, { error: "Sidebar decoder is busy" });
@@ -1383,16 +1391,20 @@ export function relayBrokerPlugin({
                 200,
                 kitDecode
                   ? decodeChannelKit(events, key, relay)
-                  : readStateDecode
-                    ? decodeReadState(events, key)
-                    : decodeSidebarPreferences(events, key),
+                  : followsDecode
+                    ? decodeThreadFollows(events, key)
+                    : readStateDecode
+                      ? decodeReadState(events, key)
+                      : decodeSidebarPreferences(events, key),
               );
             } catch {
               if (!res.destroyed)
                 return json(res, 400, {
-                  error: readStateDecode
-                    ? "Read state could not be decoded"
-                    : "Sidebar preferences could not be decoded",
+                  error: followsDecode
+                    ? "Thread follows could not be decoded"
+                    : readStateDecode
+                      ? "Read state could not be decoded"
+                      : "Sidebar preferences could not be decoded",
                 });
             } finally {
               clearTimeout(deadline);
@@ -2500,6 +2512,8 @@ export function relayBrokerPlugin({
               "/api/relay/read-state-sign",
               "/api/relay/channel-kit-prepare",
               "/api/relay/read-state-publish",
+              "/api/relay/thread-follows-sign",
+              "/api/relay/thread-follows-publish",
               "/api/relay/profile",
               "/api/relay/direct-message",
               "/api/relay/agent-log-proof",
@@ -2951,15 +2965,32 @@ export function relayBrokerPlugin({
                 }
               : { code: filters.code, policy_receipt: filters.policy_receipt };
           }
-          const readSigning = route === "/api/relay/read-state-sign";
-          const readPublishing = route === "/api/relay/read-state-publish";
+          const followSigning = route === "/api/relay/thread-follows-sign";
+          const followPublishing =
+            route === "/api/relay/thread-follows-publish";
+          const readSigning =
+            followSigning || route === "/api/relay/read-state-sign";
+          const readPublishing =
+            followPublishing || route === "/api/relay/read-state-publish";
           if (readSigning || readPublishing) {
             try {
+              if (followSigning)
+                return json(res, 200, signThreadFollows(filters, key));
               if (readSigning)
                 return json(res, 200, signReadState(filters, key));
               // A valid own signature alone is not permission to publish arbitrary kind-30078 data.
               // Receive-only compatibility must not widen publication admission.
-              decodeReadState([filters], key, READ_STATE_EVENT_BYTES);
+              // Never publish an own follow coordinate that can't be read back.
+              if (followPublishing) {
+                if (
+                  !decodeThreadFollows(
+                    [filters],
+                    key,
+                    READ_STATE_EVENT_BYTES,
+                  )[0].payload
+                )
+                  throw new Error("Unreadable thread-follows event");
+              } else decodeReadState([filters], key, READ_STATE_EVENT_BYTES);
             } catch {
               return json(res, 400, {
                 error: "Read-state operation rejected",

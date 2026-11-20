@@ -1,3 +1,4 @@
+import { sessionScope } from "../../features/agent-harness/session-scope";
 import type { AgentExecutionBinding } from "../../features/agents/execution";
 import {
   readModelSettings,
@@ -15,7 +16,10 @@ import {
 } from "../../shared/design-system/icons";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
-import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
+import {
+  AgentSaveButton,
+  ClearModelOverrides,
+} from "../../features/agents/AgentSaveButton";
 // The type's tabs: Codex's setup on this computer, and the agent's settings;
 // and its part of the New agent dialog.
 import {
@@ -30,12 +34,16 @@ import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { ModelPicker } from "../../features/agents/ModelPicker";
 import { AISettings, runsOnDetails } from "../../features/agents/AISettings";
+import { CompactionField } from "../../features/agents/Compaction";
+import { withCompactAt } from "../../features/agents/compact-at";
 import {
   candidatesFor,
   followRecommended,
   offRecommended,
   onRecommended,
   type RecommendedCandidate,
+  recommendationFinal,
+  recommendationReady,
   withRecommended,
 } from "../../features/agents/recommended";
 import {
@@ -85,8 +93,10 @@ import {
   type PreviewHost,
 } from "./voice-preview";
 
-const label = ({ channelId, name, root }: SavedConversation) =>
-  `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
+const label = ({ channelId, name, root, community }: SavedConversation) =>
+  community
+    ? "Community session"
+    : `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
 
 type Catalog = {
   previews?: Record<string, string> | undefined;
@@ -303,14 +313,16 @@ export class CodexProvider {
     this.set({ defaults });
   }
   /** Whether Codex is installed, signed in and offers the candidate's model
-   * on its thinking level. */
+   * on its thinking level. Rejects when its check failed some other way, so
+   * that answer is unsure rather than no. */
   async recommends(candidate: RecommendedCandidate) {
-    if (this.state.readiness !== "ready") await this.check();
-    return (
-      this.state.readiness === "ready" &&
-      !!this.state.data &&
-      offers(this.state.data, candidate)
-    );
+    // A refresh under way keeps the last readiness meanwhile: wait for it.
+    if (this.state.checking || this.state.readiness !== "ready")
+      await this.check();
+    const { readiness, data, error } = this.state;
+    if (readiness === "ready" && data) return offers(data, candidate);
+    if (error === NOT_INSTALLED || error === SIGN_IN_ERROR) return false;
+    throw new Error("Codex couldn't say whether it is ready");
   }
   /** What its agents on Recommended run on: the first Codex candidate its
    * catalog offers. Undefined until the catalog is read; `null`, for Codex's
@@ -325,10 +337,21 @@ export class CodexProvider {
     const found =
       candidatesFor("codex").find((candidate) => offers(data, candidate)) ??
       null;
-    if (found) this.found = found;
+    // Kept only once the setup is final: before that, a bundled plugin may
+    // still replace the build's, so readers are told to look again then.
+    if (recommendationFinal()) {
+      if (found) this.found = found;
+    } else if (!this.waiting) {
+      this.waiting = true;
+      void recommendationReady().then(() => {
+        this.waiting = false;
+        this.set({});
+      });
+    }
     return found;
   }
   private found: RecommendedCandidate | undefined;
+  private waiting = false;
   resolve(raw: unknown, remote = false): Config {
     // A remote target's catalog isn't this computer's: an agent on
     // Recommended there runs on its Codex default. Apps follow this
@@ -386,7 +409,9 @@ export class CodexProvider {
         ? "execution-unavailable"
         : execution === "remote"
           ? "remote"
-          : recommended && candidate === undefined
+          : // Before the setup is final, a bundled plugin may still
+            // replace the build's pick, so it isn't reported yet.
+            recommended && (candidate === undefined || !recommendationFinal())
             ? "not-loaded"
             : undefined;
     const data = this.state.data;
@@ -468,6 +493,7 @@ const SCOPES = [
     options: [
       { value: "thread", label: "One session per thread" },
       { value: "channel", label: "One session per channel" },
+      { value: "community", label: "One session per community" },
     ],
   },
 ];
@@ -1269,8 +1295,14 @@ export function createTabs(
       conversations,
       conversation,
       (place, signal) =>
-        runtime.find({ key: agent.key, name: agent.name }, place, signal),
+        runtime.find(
+          { key: agent.key, name: agent.name },
+          place,
+          signal,
+          readConfig(agent.config).scope === "community",
+        ),
       (channelId) => runtime.channelLabel(agent.key, channelId),
+      readConfig(agent.config).scope,
     );
     const recent = conversations
       .filter((item) => item.key !== here?.key)
@@ -1461,6 +1493,40 @@ export function createTabs(
         });
         if (!validWorkspace(settings.workspace))
           throw new Error("Enter an absolute or ~/… workspace path.");
+        // A verified execution target accepts custom model IDs. Its runtime
+        // checks the overrides against its own catalog when it starts a turn.
+        if (
+          !bound &&
+          settingsHost?.proposedModelOrEffort &&
+          (settings.model || settings.effort)
+        ) {
+          if (!data)
+            throw new Error(
+              "Check Codex models or clear the model and thinking overrides before saving.",
+            );
+          const model = catalogModel(provider.resolve(settings).model, data);
+          if (!model)
+            throw new Error(
+              "Choose an available Codex model or Codex default before saving.",
+            );
+          if (
+            settings.effort &&
+            !model.supportedReasoningEfforts.some(
+              (choice) => choice.reasoningEffort === settings.effort,
+            )
+          )
+            throw new Error(
+              "Choose a thinking level this Codex model supports or use Default.",
+            );
+        }
+        if (settingsHost?.proposedVoice && settings.voice) {
+          if (!data?.voices)
+            throw new Error(
+              "Check Huddle voices or choose Codex default before saving.",
+            );
+          if (!data.voices.includes(settings.voice))
+            throw new Error("Choose an available Huddle voice.");
+        }
         // A Custom agent's save drops a mark left from before, which a later
         // blank synced model would otherwise turn back on.
         await save(
@@ -1582,6 +1648,11 @@ export function createTabs(
                   {customization}
                 </>
               )}
+              <CompactionField
+                value={draft.compactAt}
+                disabled={saving}
+                onChange={(value) => setDraft(withCompactAt(draft, value))}
+              />
             </SettingsGroup>
             <AgentInstructions
               value={draft.instructions}
@@ -1611,7 +1682,8 @@ export function createTabs(
               />
             </Field>
             <Select
-              label="Sessions"
+              label="Session scope"
+              description="Choose how your agent uses sessions to keep context."
               variant="preference"
               value={draft.scope}
               groups={SCOPES}
@@ -1619,7 +1691,7 @@ export function createTabs(
               onValueChange={(value) =>
                 setDraft({
                   ...draft,
-                  scope: value === "channel" ? "channel" : "thread",
+                  scope: sessionScope(value),
                 })
               }
             />
@@ -1700,6 +1772,15 @@ export function createTabs(
             )}
           </>
         )}
+        {settingsHost?.proposedModelOrEffort &&
+          (draft.model || draft.effort) && (
+            <ClearModelOverrides
+              disabled={saving}
+              onClick={() =>
+                setDraft(offRecommended({ ...draft, model: "", effort: "" }))
+              }
+            />
+          )}
         <AgentSaveButton form={form} saving={saving} disabled={!changed} />
         {settingsSection !== "identity" && settingsContent}
       </form>

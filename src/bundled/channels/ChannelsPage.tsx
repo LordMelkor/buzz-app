@@ -2501,6 +2501,9 @@ function ChannelWorkspace({
       data-channel-workspace={currentId ?? ""}
       data-reading-thread={readingThread ? "" : undefined}
       data-companion={companion ? "" : undefined}
+      // Entering a channel shows its own dock without animating the split, so
+      // its new timeline measures its final width and reuses saved geometry.
+      data-instant-split={continuingVisit ? undefined : ""}
       ref={split.ref}
       style={split.style}
       className={`${styles.board} ${panelStyles.splitMotion}`}

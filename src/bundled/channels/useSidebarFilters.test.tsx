@@ -43,9 +43,9 @@ it("filters sections independently while preserving their saved sort and roster 
   expect(
     result.current.map(({ key, rows }) => [key, rows.map(({ id }) => id)]),
   ).toEqual([
+    ["solo", []],
     ["starred", []],
     ["group:work", []],
-    ["solo", []],
     ["channels", ["newer", "older"]],
     ["forums", []],
     ["dms", []],

@@ -6,6 +6,7 @@ import {
   parseKitRecord,
 } from "../channel-templates/model";
 import {
+  agentCanvas,
   validateWorkspace,
   loadChatSetup,
   readWorkspace,
@@ -303,6 +304,82 @@ it.each([
     expect(await loadChatSetup(f.session, "work")).toMatchObject({
       agents: [pubkey],
     });
+  }
+});
+
+it("prints a generated workspace block again for the agent, by where the conversation works", () => {
+  const worktree = { location: "~/trees", baseBranch: "main" };
+  const saved = workspaceCanvas({
+    folders: ["/repo"],
+    worktree,
+    canvas: "Notes",
+  });
+  expect(agentCanvas(saved)).toBe(
+    [
+      "## Workspace instructions",
+      "",
+      "- Use `/repo` for review only. Do not make changes directly in it.",
+      "- Before starting new work, fetch the latest `main` branch from origin.",
+      "- For each repository that needs changes, create a new worktree under `~/trees` from `origin/main`.",
+      "- Make code changes in that new worktree. A task that only reads code, or does not use a repository, usually does not need one.",
+      // Follow-up work keeps its branch, which Canvases do not hold.
+      "- These steps are for new work. For follow-up work on an existing branch or pull request, keep using that branch: reuse its linked worktree, or add one under `~/trees` if it has none.",
+      "",
+      "Notes",
+    ].join("\n"),
+  );
+  expect(saved).not.toContain("These steps are for new work.");
+  // A Canvas saved with the earlier rule reads the same.
+  expect(
+    agentCanvas(
+      saved.replace(
+        /- Make code changes.*/,
+        "- Make all changes in that new worktree.",
+      ),
+    ),
+  ).toBe(agentCanvas(saved));
+  // The conversation has its own folder: no rule to make another worktree.
+  expect(agentCanvas(saved, true)).toBe(
+    "## Project folders\n\n- `/repo`\n\nNotes",
+  );
+
+  const folders = workspaceCanvas({ folders: ["/repo"], canvas: "Notes" });
+  // Without the worktree setting, the working location rule applies to the
+  // folders, as before: the block only lists them.
+  expect(agentCanvas(folders)).toBe("## Project folders\n\n- `/repo`\n\nNotes");
+  expect(agentCanvas(folders, true)).toBe(
+    "## Project folders\n\n- `/repo`\n\nNotes",
+  );
+  expect(readWorkspace(folders).canvas).toBe("Notes");
+});
+
+it("keeps a workspace block the owner edited, and says so when it replaces the conversation's rule", () => {
+  const edited = workspaceCanvas({
+    folders: ["/repo"],
+    worktree: { location: "~/trees", baseBranch: "main" },
+    canvas: "Notes",
+  }).replace("for review only", "for small fixes");
+  expect(agentCanvas(edited)).toBe(edited);
+  expect(agentCanvas(edited, true)).toBe(
+    edited.replace(
+      "\n\nNotes",
+      "\n\nThe owner wrote the worktree rules of this block. They replace this conversation's working-location rule.\n\nNotes",
+    ),
+  );
+  // An edited block without worktree rules has none to replace it with.
+  const note = workspaceCanvas({ folders: ["/repo"], canvas: "Notes" }).replace(
+    "- `/repo`",
+    "- `/repo` (the API)",
+  );
+  expect(agentCanvas(note)).toBe(note);
+  expect(agentCanvas(note, true)).toBe(note);
+  for (const canvas of [
+    "# Plain Canvas",
+    "<!-- buzz-session-workspace:v1 broken",
+    '<!-- buzz-session-workspace:v1 {"folders":[]} -->\n<!-- /buzz-session-workspace -->\n\nNotes',
+  ]) {
+    expect(agentCanvas(canvas)).toBe(canvas);
+    expect(agentCanvas(canvas, true)).toBe(canvas);
   }
 });
 

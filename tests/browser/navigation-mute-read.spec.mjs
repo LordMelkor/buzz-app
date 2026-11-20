@@ -196,7 +196,7 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   await expect(menu).toHaveCount(0);
   await expect(beta).toBeFocused();
   const localMark = beta.getByRole("img", {
-    name: "Marked unread on this device only",
+    name: "Marked unread",
   });
   await expect(localMark).toBeVisible();
   await expect(alpha).toHaveAttribute("aria-current", "page");

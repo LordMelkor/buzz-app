@@ -330,7 +330,7 @@ it("keeps Solo creation to chats and the New menu above the sections", async () 
   const solo = document.querySelector('[data-sidebar-section="solo"]');
   if (!(solo instanceof HTMLElement)) throw new Error("Missing Solo section");
   expect(
-    within(solo).getByRole("button", { name: "New chat in Solo" }),
+    within(solo).getByRole("button", { name: "New Solo chat" }),
   ).not.toHaveAttribute("aria-haspopup");
   expect(
     within(solo).queryByRole("button", { name: "New options" }),
@@ -430,7 +430,7 @@ it("expands Team when navigation selects one of its conversations", async () => 
   }
 });
 
-it("expands fallback Solo when navigation selects an ordinary chat", async () => {
+it("keeps a manually collapsed Solo section closed when navigation selects a chat", async () => {
   vi.useFakeTimers();
   try {
     const f = fixture(true);
@@ -453,6 +453,8 @@ it("expands fallback Solo when navigation selects an ordinary chat", async () =>
     expect(panel).toHaveAttribute("hidden");
 
     await act(() => f.open(conversationTarget(scope, id)));
+    expect(panel).toHaveAttribute("hidden");
+    fireEvent.click(summary as HTMLElement);
     expect(panel).not.toHaveAttribute("hidden");
   } finally {
     vi.useRealTimers();

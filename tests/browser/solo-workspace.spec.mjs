@@ -109,6 +109,94 @@ test("a unified Solo row describes and opens shared access", async ({
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(shared).toBeFocused();
+
+  await expect.poll(() => app.relay.hasRoute("primary", "observer")).toBe(true);
+  app.observer(
+    {
+      kind: "turn_liveness",
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      channelId: id,
+      sessionId: "S",
+      turnId: id,
+    },
+    generateSecretKey(),
+  );
+  const outer = page.locator("[data-channel-sidebar-row]").filter({ has: row });
+  const action = outer.locator("[data-solo-row-action]");
+  await expect(outer.locator("[data-channel-working]")).toBeVisible();
+
+  const geometry = () =>
+    outer.evaluate((element) => {
+      const rect = (selector) =>
+        element.querySelector(selector).getBoundingClientRect();
+      const shared = rect("[data-solo-shared]");
+      const badge = rect("[data-channel-working]");
+      const action = rect("[data-solo-row-action]");
+      const fillEnd = parseFloat(getComputedStyle(element, "::before").right);
+      const root = parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      );
+      return {
+        sharedEndGap: element.getBoundingClientRect().right - shared.right,
+        badgeInset: (shared.left - fillEnd - badge.right) / root,
+        badgeClearance: action.left - badge.right,
+        sharedClearance: shared.left - action.right,
+        titleWidth: rect(".navigation-item-label").width,
+      };
+    });
+  for (const [mode, width, scale] of [
+    ["light", 1440, 1],
+    ["dark", 900, 2],
+  ]) {
+    await page.setViewportSize({ width, height: 950 });
+    await page.evaluate(
+      ({ mode, scale }) => {
+        localStorage.setItem("buzz-appearance.v1", mode);
+        localStorage.setItem("buzz-font-scale.v1", String(scale));
+        window.dispatchEvent(
+          new StorageEvent("storage", { key: null, storageArea: localStorage }),
+        );
+      },
+      { mode, scale },
+    );
+    await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);
+    await expect(page.locator("html")).toHaveCSS(
+      "--buzz-text-scale",
+      String(scale),
+    );
+    await page.mouse.move(0, 0);
+    await shared.blur();
+    await action.blur();
+    await expect(action).toHaveCSS("opacity", "0");
+
+    await expect
+      .poll(geometry)
+      .toMatchObject({ sharedEndGap: 0, badgeInset: 0.625 });
+    const { titleWidth } = await geometry();
+    await shared.hover();
+    await expect(action).toHaveCSS("opacity", "1");
+    await expect.poll(geometry).toMatchObject({ sharedEndGap: 0, titleWidth });
+    await expect
+      .poll(async () => (await geometry()).badgeClearance)
+      .toBeGreaterThanOrEqual(0);
+    await expect
+      .poll(async () => (await geometry()).sharedClearance)
+      .toBeGreaterThanOrEqual(0);
+
+    await page.mouse.move(0, 0);
+    await shared.focus();
+    await page.keyboard.press("Tab");
+    await expect(action).toBeFocused();
+    await expect(action).toHaveCSS("opacity", "1");
+    await expect.poll(geometry).toMatchObject({ sharedEndGap: 0, titleWidth });
+    await expect
+      .poll(async () => (await geometry()).badgeClearance)
+      .toBeGreaterThanOrEqual(0);
+    await expect
+      .poll(async () => (await geometry()).sharedClearance)
+      .toBeGreaterThanOrEqual(0);
+  }
 });
 // The row owns status/action geometry. Compare painted centers on desktop;
 // on touch, status flows immediately before the actual actions (Shared or menu).
@@ -693,7 +781,7 @@ test.describe("personal recipients", () => {
       await page
         .locator(`[data-message-id="${link.id}"]`)
         .getByRole("link", {
-          name: "Open Chat: Beta",
+          name: "Open Beta",
           exact: true,
         })
         .click();

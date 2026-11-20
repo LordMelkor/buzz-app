@@ -11,6 +11,7 @@ import {
 } from "react";
 import { MagnifyingGlassIcon } from "../../shared/design-system/icons/index";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
+import { activeModal } from "../../shared/design-system/overlayLayer";
 import { Button } from "../../shared/design-system/ui/Button";
 import type { RegisteredPage } from "../../features/pages/service";
 import { communityDestination } from "../../features/communities/destination";
@@ -63,6 +64,7 @@ export type SearchServices = Pick<
       | "plugins"
       | "adminAccess"
       | "settingsCards"
+      | "decisions"
     >
   >;
 const SEARCH_ID = "global-search";
@@ -177,6 +179,12 @@ export function PageSearch({
   }, [open]);
   const beginScoped = useCallback(() => {
     if (!currentChannelId) return;
+    // From an open search it narrows what is typed, where it is.
+    if (openRef.current) {
+      setScopedChannelId(currentChannelId);
+      input.current?.focus();
+      return;
+    }
     composerChannel.current = undefined;
     returnFocus.current =
       document.activeElement instanceof HTMLElement
@@ -207,7 +215,10 @@ export function PageSearch({
         binding: CONVERSATION_SEARCH_BINDING,
         order: HOST_SHORTCUT_ORDER.search + 1,
         allowInEditable: true,
-        when: () => !!currentChannelId,
+        // Search's own dialog, but no other.
+        allowInModal: true,
+        when: () =>
+          !!currentChannelId && (openRef.current || !activeModal(document)),
         run: beginScoped,
       }),
     [services, currentChannelId, beginScoped],
@@ -252,6 +263,8 @@ export function PageSearch({
     overrides[PREVIOUS_RESULT_ID] ?? DEFAULT_SEARCH_STEPS.previous;
   const next = overrides[NEXT_RESULT_ID] ?? DEFAULT_SEARCH_STEPS.next;
   const steps = useMemo(() => ({ previous, next }), [previous, next]);
+  const conversationBinding =
+    overrides[CONVERSATION_SEARCH_ID] ?? CONVERSATION_SEARCH_BINDING;
   const apple = isApplePlatform(navigator.platform);
   // Every search surface reads pages from here, so rank and underline them
   // here too: the disconnected and personal-space views show this list as is.
@@ -382,6 +395,7 @@ export function PageSearch({
               )}
               scopedChannelId={scopedChannelId}
               currentChannelId={currentChannelId}
+              conversationBinding={conversationBinding}
               onScopeChange={(channelId) => {
                 setScopedChannelId(channelId);
                 input.current?.focus();
@@ -426,6 +440,7 @@ function CommunitySearch({
   enabled,
   scopedChannelId,
   currentChannelId,
+  conversationBinding,
   onScopeChange,
   isOpen,
   close,
@@ -438,6 +453,8 @@ function CommunitySearch({
   enabled: boolean;
   scopedChannelId?: string | undefined;
   currentChannelId?: string | undefined;
+  /** The chord that searches the current conversation, as rebound. */
+  conversationBinding?: KeyBinding | undefined;
   onScopeChange: (channelId?: string) => void;
   /** Whether the palette is still open. A choice that resolves after it
    * closed, such as a DM still opening, must not navigate. */
@@ -511,7 +528,11 @@ function CommunitySearch({
         label={scopedChannelId ? "Search this conversation" : "Search Buzz"}
         scope={
           scopedChannelId
-            ? { label: "This conversation", onRemove: () => onScopeChange() }
+            ? {
+                id: scopedChannelId,
+                label: "This conversation",
+                onRemove: () => onScopeChange(),
+              }
             : undefined
         }
         groups={
@@ -533,7 +554,7 @@ function CommunitySearch({
                 ]
               : [
                   {
-                    label: "Recent activity",
+                    label: "Recents",
                     destinations: [],
                     empty: !enabled
                       ? "Enable Messages to see conversations."
@@ -597,9 +618,12 @@ function CommunitySearch({
         pages={pages}
         scopedChannelId={scopedChannelId}
         currentChannelId={currentChannelId}
+        conversationBinding={conversationBinding}
         onScopeChange={onScopeChange}
         usageScope={usageScope(scope)}
         sidebarScope={connection.scope}
+        decisions={services.decisions}
+        community={scope.communityOrigin}
         views={views}
         offline={saved ? offline : undefined}
         openConversation={openConversation}

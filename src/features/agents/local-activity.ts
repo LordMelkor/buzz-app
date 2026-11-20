@@ -50,6 +50,8 @@ export type LocalWork = Readonly<{
   messageId: string;
   /** The request ID has no published message to open. */
   syntheticMessage?: true;
+  /** The host scheduler's timer ID, present only on a scheduled timer wake. */
+  attentionTimerId?: string;
   /** The synthetic request text supplied to the harness, without truncation. */
   requestText?: string;
   threadRootId: string;

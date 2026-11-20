@@ -14,8 +14,9 @@ across versions yet, and the author types are `0.0.0-preview.1`.
 - **Steady:** the plugin envelope (manifest, `inject`/`apply`, `ctx.effect`
   cleanup) and capability services: host grants, `addTool` (the tool's shape, not
   the whole client passed to `call`), shortcuts, notifications, settings cards, and
-  navigation `open` for plugin pages, Home and Settings. Owning a whole page or
-  panel is steady, but placement is not.
+  navigation `open` for plugin pages, Home and Settings, and the `ui`
+  [host controls](#host-controls). Owning a whole page or panel is steady, but
+  placement is not.
 - **Borderline:** decisions, and link and code-block renderers.
 - **Likely to break:** the relay session read model; conversation contributions;
   sidebar sections and rows, the Solo region and backdrops; agent hooks, execution
@@ -384,7 +385,32 @@ external source project with `pnpm exec tsc` in that directory.
 The host owns navigation, Settings, loading errors, and render error boundaries.
 Settings controls and CLI management do not depend on plugin activation. Updates are detected while the app
 is running. A selected page remounts when its revision changes; its local React
-state resets. Plugin-specific persistent data has no host API yet; bundled plugins such as Reminders and Focus keep small device-local state in namespaced `localStorage` keys.
+state resets. Use [Seen](#remembering-one-time-experiences) to remember one-time
+experiences. Bundled plugins such as Reminders and Focus keep other device-local
+state in namespaced `localStorage` keys.
+
+### Remembering one-time experiences
+
+Get Seen with `const seen = ctx.reflect.get("seen")`. Leave it out of the
+required `inject` list so your plugin still activates on older Buzz hosts.
+Skip the hint when the service is unavailable.
+
+Choose a key in the form `<plugin-id>/<name>`, up to 96 Unicode code points.
+Use your plugin's ID as the prefix to avoid collisions. For an invalid key or
+before sign-in, `has()` returns `undefined` and `mark()` has no effect. Keys
+belong to the signed-in identity and are shared across communities on this
+device.
+
+Show the hint only when `seen?.has(key) === false`. A result of `true` means
+the experience already happened. A result of `undefined` means Buzz does not
+know yet. Once you have the service, a React component can use
+`useSyncExternalStore(seen.subscribe, () => seen.has(key))` to rerender when
+the answer changes.
+
+Call `seen?.mark(key)` when the experience happens. Repeated marks are safe.
+Use a new key to show an updated experience again. If device storage cannot
+save a mark, it stays active in the current window while that identity is
+signed in.
 
 Plugins are trusted code executing in the app's JavaScript context. They are not
 sandboxed: infinite loops, global changes, and external side effects cannot be
@@ -397,6 +423,33 @@ See [foundation status and open gates](status.md) for maintained decisions,
 remaining acceptance work and historical evidence.
 
 ## Starting contracts
+
+### Host controls
+
+External plugins cannot import app source, so the host provides its own
+controls. Read the optional `ui` service with `ctx.reflect.get("ui")`; it is
+`undefined` on older hosts. It offers `Button`, `Input`, `Field`, `Switch` and
+`Dialog`, rendered by the host with its React instance, theme, focus handling
+and overlay layer. The props are `PluginButtonProps`, `PluginInputProps`,
+`PluginFieldProps`, `PluginSwitchProps` and `PluginDialogProps` in
+`@buzz/author` (`src/features/plugin-ui/contract.ts`).
+
+Each control forwards only its documented props: other props are ignored and
+an unsupported value uses the default, so internal and migrating variants never
+become plugin behavior. Change handlers receive plain values (`onValueChange(value)`,
+`onCheckedChange(checked)`, `onOpenChange(open)`); `onClick` receives nothing.
+The host owns appearance. Like the other services, the set is a preview; the
+narrow props keep later changes small. Shared primitives belong in `ui`;
+feature components stay with the service that owns them, such as
+`conversation.ui`. A component reads the same on every
+access, so it is safe to use as a React element type. Plugin page state stays
+in the plugin's components; unmounting a page with an open `Dialog` removes its
+portal and scroll lock.
+
+For styling beyond these controls, rely on the `core` roles in the token
+registry and the classes the authoring guide names (`ui-card`,
+`shell-sidebar-default`). Control class names and `data-*` attributes are
+internal.
 
 ### Subject lift
 
@@ -1100,6 +1153,59 @@ the base prompt ranks them below the owner's messages and above a Solo chat's
 Canvas. They are kept on this device for now. `conversationInstructions(agent,
 place)` resolves with the text. See [Agents](agents.md).
 
+A bundled plugin can give this launch's recommended agent setup in place of
+the build's `BUZZ_RECOMMENDED_AGENT` with
+`ctx.agents.recommend(source)`; see [Recommended agent](configuration.md#recommended-agent).
+Call it while the plugin starts. Buzz calls `source(signal)` once, as soon as
+the plugin registers it. Its answer has the setting's shape, `{recommendedBy?,
+description?, candidates}`, and Buzz checks it with `setRuntimeRecommendation`
+like the setting, replacing attribution, description and candidates together.
+Finds and picks wait until the answer comes, or until every plugin
+has started with none calling `recommend`, but never more than five seconds
+(`SOURCE_MS`) from when the agents service started. After that the setup is
+final for the launch: a late answer is dropped, so nothing already found would
+be found again. No answer (`undefined`, `null` or no candidates), a throw, or an
+invalid setup keeps the build's. `signal` aborts when the wait ends. Only the first
+plugin to call it in a launch is asked; later calls only log. Views that read
+the setup before it is final, such as whether a harness offers Automatic, see
+the build's. Turning the plugin off stops it answering from the next launch.
+
+Bundled plugins also get the building blocks to move agents onto
+Automatic themselves, with their own rules and wording. Each throws for any
+other plugin:
+
+- `ctx.agents.isReady()` is true once plugin start-up is over, the agent list
+  has loaded and the recommended setup is final; `subscribe` hears when it
+  changes, and `whenReady(signal?)` resolves the first time it is. Don't
+  await it in `apply`: start-up isn't over until `apply` returns.
+- `switchable(agent)` says whether an agent could run on Automatic here: not
+  hosted nor bound to another execution target, of a type registered on this device and not remote, whose harness
+  the setup has a candidate for. An agent of a type this device doesn't know
+  isn't. `switchableAgents()` lists the person's, one per agent.
+- `switchToAutomatic(agent, {note?})` puts it on Automatic and resolves with
+  the `model`, `provider` and `effort` it had; `restoreSettings(agent,
+  previous, {note?})` undoes that while the agent is still on Automatic. Both
+  save its settings from the copy passed in, so a copy that changed since it
+  was read, here or by sync, is refused, and only for an agent set up on
+  this computer whose synced settings have arrived. Where a community can't
+  sync agent settings, they always refuse.
+- `readNote(agent)` and `setNote(agent, note | null)` keep a small note per
+  plugin in the agent's synced settings (`pluginNotes`, by plugin id), so it
+  follows the agent to every device and settings history never reverts it:
+  `{data, tag?}`, with JSON `data` of at most 1 KB. A note is known only once
+  the agent's synced settings have arrived (`configBase.settings` is a
+  string). Any other save, such as from a settings form, keeps notes as they
+  are. Each settings revision
+  carries a tagged note as `["note", pluginId, tag]` beside the `preset`
+  tag. `switchToAutomatic` and `restoreSettings` take the note too, to save
+  it in the same revision.
+- `ctx.pages.registerOverlay({id, component})` mounts a component once in
+  the app shell, beside the app's own notices, while the plugin is on, such
+  as a notice or a dialog; it places itself. It renders inside the app's
+  toast host, so the design system's toasts work there.
+  For focus and visibility, read `document.hasFocus()` and
+  `document.visibilityState`.
+
 ### Agent operation proofs
 
 A plugin can provide an operation that another installed plugin calls from a
@@ -1428,7 +1534,7 @@ contracts with their own layout and local navigation.
 ### Bundled defaults
 
 **Channels is the only required bundled plugin.** Usage, Reminders,
-Workflows, Changesets, Shared compute, Charts and File viewer are off by default for fresh installs. Bestie,
+Workflows, Changesets, Shared compute and Charts are off by default for fresh installs. Bestie,
 Feedback, Diff viewer, Identity Naming, Agent Activity, Terminal, Links, GitHub, Inbox,
 Repositories, Agents, Claude, Codex, Builderlab,
 Membership, and Moderation are on by default, but optional. Both browser and
@@ -1476,6 +1582,28 @@ signed-in `gh` account. That allows any query or mutation the account may make;
 the token stays inside `gh`. Without `gh` it reads public data only. Unsupported
 URLs retain ordinary link behavior. A host-owned GitHub connection with narrower scopes, and agent
 execution, remain future shared capabilities.
+
+### Organization plugins
+
+An organization that packages its own build of Buzz can bundle its own plugins
+without changing any other file. `src/bundled/org.json` lists each one's
+manifest and whether it starts on, as
+`[{ "manifest": { … }, "enabledByDefault": true }]`, and `src/bundled/org.ts`
+gives each one's code (its module) by manifest id. Both are empty in
+open-source builds; a packager replaces both at build time. The web build reads
+them through `orgPlugins`, which `bundledPlugins` lists after the rest, and the
+desktop app's native catalog (`crates/plugin-manager`) compiles `org.json` in,
+so both agree on the list, the defaults, and the host access each manifest
+declares. A listed plugin without code is left out and logged; the native catalog still
+lists it, so it shows as failing to load. Like any
+bundled plugin it shows in Settings → Plugins, where the person can turn it
+off, and it needs no README. Its declared network origins are granted without
+an access review, as for every bundled plugin: the packager chose them.
+Choose ids no other plugin uses, such as one under the organization's domain.
+
+The same packager can ship the build's agent gateway descriptors in
+`src/bundled/org-gateways.json`, also `[]` in open-source builds; see
+[Packaged gateway descriptors](configuration.md#packaged-gateway-descriptors).
 
 ### Optional channel menu panels
 
@@ -2962,7 +3090,12 @@ credential-free HTTP(S) and supported Buzz links. Markdown labels preserve their
 formatting, escaped pasted wrappers are normalized outside code, and paired `<…>`
 autolink wrappers are hidden in display. Buzz links use known channel names with corresponding icons, falling back
 to Channel, Message or Thread when that name is unavailable in the current community;
-the full destination remains on the anchor. A raw message or thread link in a listed
+the full destination remains on the anchor. A channel link whose label is only `#` and a channel name, as `#` completion
+writes it, shows the channel's current name once known, so it follows a rename, and selection copy takes that
+name; until then, and for a withheld channel, DM or Solo chat, the written label shows. A channel name may hold
+spaces, so `[#weekly sync](buzz://channel/<id>)` is such a label whoever typed it. Any other label, such as text
+without the `#`, longer than a channel name's 120 characters or with formatting, and `#name` prose stay as written. A
+message shows an image written in a link's text as an attachment, so the text beside it is judged alone. A raw message or thread link in a listed
 channel reads as “<author> in #<channel>” once its author has a name, and a workflow’s
 as “Workflow in #<channel>”; DMs, Solo chats, authored labels and drafts keep the channel
 name. So does a message the lookup cannot find or read, whether deleted or not yet
@@ -3035,22 +3168,6 @@ tooltips and anything else that fetches or injects. Marks use the four
 `chart-series` roles, with extra version 1 series summed into Other. Its action
 opens the chart in an expanded dialog, and invalid JSON shows the error with the
 source. The host's Copy action copies the fenced JSON.
-The bundled **File viewer** plugin (`buzz.file-viewer`, off by default) claims
-file cards for PDFs, Markdown, code, text, CSV and TSV at `order: 100`, the
-bundled catch-all band, so a plugin registered at a lower order for the same
-files takes them over. The
-card's preview opens a `buzz-file:?url=…&name=…&mime=…&time=…` panel target,
-which other plugins may also open. The panel reads only `/media/` URLs on the
-current community's origin, through the session's media proxy, and caps text at
-20 MB and PDFs at 100 MB; tables stop at 50,000 cells. Markdown, code and text
-are indexed once and shown in parts of at most 12,500 characters, mounted near
-the view and dropped away from it. Markdown renders through the shared `MarkdownDocument` with the document profile,
-which the viewer extends with heading ids, code highlighting, in-document `#`
-links and images, which load only from the same community media. PDFs use
-[PDF.js](https://mozilla.github.io/pdf.js/) in a worker, loaded on the first
-PDF, and draw only the pages near the viewport. Its CMaps, standard fonts and
-image decoders are bundled assets served through a `BinaryDataFactory`, so
-PDFs need no network access beyond the file.
 
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /
@@ -3306,7 +3423,7 @@ channel metadata, which the store reuses while the viewer types. While the next
 lookup runs, the previous one's still-matching rows stay. Names match by the
 channel pickers' rule (`matchName`): exact, prefix, word start, substring,
 then letter runs that each begin a word (`tlp` for `team-launch-planning`), with
-alphabetical ties. Its last rank, letters merely in order, is left out, because
+alphabetical ties. Its last rank, typed words in any order, is left out, because
 Enter and Tab pick the first row while the viewer writes prose. The same rule
 applies to open channels from the lookup. Open channels follow joined ones, as in
 Command-K, so a late search result never moves the first row; when joined

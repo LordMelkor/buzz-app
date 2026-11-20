@@ -44,21 +44,23 @@ it("allows every kind in Starred and workspaces, and each kind in its home secti
   expect(isChannelSectionKey("starred")).toBe(false);
 });
 it("keeps Starred visible and lists only authorized starred rows", () => {
-  expect(sidebarSections([])[0]).toMatchObject({ key: "starred", rows: [] });
+  expect(
+    sidebarSections([]).find(({ key }) => key === "starred")?.rows,
+  ).toEqual([]);
   const preferences = {
     sections: [],
     assignments: {},
     starred: ["alpha"],
     muted: [],
   };
-  expect(sidebarSections([], preferences)[0]).toMatchObject({
-    key: "starred",
-    rows: [],
-  });
-  expect(sidebarSections([row("alpha")], preferences)[0]).toMatchObject({
-    key: "starred",
-    rows: [row("alpha")],
-  });
+  expect(
+    sidebarSections([], preferences).find(({ key }) => key === "starred")?.rows,
+  ).toEqual([]);
+  expect(
+    sidebarSections([row("alpha")], preferences).find(
+      ({ key }) => key === "starred",
+    )?.rows,
+  ).toEqual([row("alpha")]);
 });
 it("intersects groups/stars with active authorized streams and movable DMs", () => {
   const roster = [
@@ -118,9 +120,9 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       ).toHaveLength(1);
   };
   const expectedProjection = [
+    { key: "solo", ids: [] },
     { key: "starred", ids: ["forum", "solo", "star", "starred-dm"] },
     { key: "group:channels", ids: ["grouped-dm", "work"] },
-    { key: "solo", ids: [] },
     { key: "channels", ids: ["other"] },
     { key: "forums", ids: [] },
     { key: "dms", ids: ["home-dm"] },
@@ -131,7 +133,11 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
     "grouped-dm",
     "starred-dm",
   ]);
-  expect(sidebarSections(roster, preferences)[1]?.icon).toBe(":party:");
+  expect(
+    sidebarSections(roster, preferences).find(
+      ({ key }) => key === "group:channels",
+    )?.icon,
+  ).toBe(":party:");
   // Hidden conversations remain absent even when their saved placement is stale.
   const hiddenProjection = project(
     roster,
@@ -147,8 +153,8 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
     ).find(({ key }) => key === "starred")?.ids,
   ).toEqual(["forum", "solo", "star"]);
   expect(sidebarSections([])).toEqual([
-    { key: "starred", title: "Starred", icon: undefined, rows: [] },
     { key: "solo", title: "Solo", icon: undefined, rows: [] },
+    { key: "starred", title: "Starred", icon: undefined, rows: [] },
     { key: "channels", title: "Team", icon: undefined, rows: [] },
     { key: "forums", title: "Forums", icon: undefined, rows: [] },
     { key: "dms", title: "Direct messages", icon: undefined, rows: [] },
@@ -206,9 +212,9 @@ it("sorts every section independently with deterministic inactive and tie fallba
       section.rows.map((channel) => channel.id),
     ]),
   ).toEqual([
+    ["solo", []],
     ["starred", []],
     ["group:work", ["new", "a-id", "z-id", "quiet-a", "quiet-b"]],
-    ["solo", []],
     ["channels", []],
     ["forums", ["forum-new", "forum-old"]],
     ["dms", []],
@@ -218,6 +224,37 @@ it("sorts every section independently with deterministic inactive and tie fallba
       .find(({ key }) => key === "channels")
       ?.rows.map((channel) => channel.id),
   ).toEqual(["quiet-a", "quiet-b", "a-id", "z-id", "new"]);
+});
+it("Recent places a chat without known activity by when it was created", () => {
+  const solo = { channelType: "solo" as const };
+  const roster = [
+    row("talked", {
+      ...solo,
+      name: "Talked",
+      createdAt: 5,
+      lastActivityAt: 25,
+    }),
+    row("queued-earlier", {
+      ...solo,
+      name: "Queued earlier",
+      createdAt: 40,
+      lastActivityAt: 20,
+    }),
+    row("unknown", { ...solo, name: "Unknown" }),
+    row("old-empty", { ...solo, name: "Old empty", createdAt: 10 }),
+    row("just-started", { ...solo, name: "Just started", createdAt: 30 }),
+  ];
+  expect(
+    sidebarSections(roster)
+      .find(({ key }) => key === "solo")
+      ?.rows.map((channel) => channel.id),
+  ).toEqual([
+    "queued-earlier",
+    "just-started",
+    "talked",
+    "old-empty",
+    "unknown",
+  ]);
 });
 it("Star projection is exclusive and retains empty saved groups", () => {
   const channels = [row("alpha"), row("beta")];
@@ -233,17 +270,17 @@ it("Star projection is exclusive and retains empty saved groups", () => {
       section.rows.map((channel) => channel.id),
     ]);
   expect(placements(saved.starred)).toEqual([
+    ["solo", []],
     ["starred", ["alpha", "beta"]],
     ["group:work", []],
-    ["solo", []],
     ["channels", []],
     ["forums", []],
     ["dms", []],
   ]);
   expect(placements(["alpha"])).toEqual([
+    ["solo", []],
     ["starred", ["alpha"]],
     ["group:work", ["beta"]],
-    ["solo", []],
     ["channels", []],
     ["forums", []],
     ["dms", []],

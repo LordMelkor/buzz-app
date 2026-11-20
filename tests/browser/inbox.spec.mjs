@@ -379,9 +379,7 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
   await page.keyboard.press("Shift+F10");
   let action = page.getByRole("menuitem", { name: "Mark as unread" });
   await expect(action).toBeVisible();
-  await expect(
-    page.getByText("Mark as unread on this device only."),
-  ).toHaveCount(0);
+  await expect(page.locator('[title="Mark as unread"]')).toHaveCount(0);
   await action.click();
   await expect(row.getByRole("img", { name: "Unread" })).toBeVisible();
   await row.getByRole("button", { name: /^Open / }).click({ button: "right" });

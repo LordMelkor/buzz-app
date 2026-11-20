@@ -253,9 +253,9 @@ test("channel sidebar resizes from the full gutter and persists", async ({
   expect(grip.x).toBeCloseTo(before.x + before.width, 0);
   expect(grip.width).toBe(8);
   expect(grip.height).toBeGreaterThan(500);
-  // Joined regions retain the 2px scrollbar inset without an inner panel border.
+  // The scrollport reaches the joined panel seam without an inner border.
   expect(before.x + before.width - (listBox.x + listBox.width)).toBeCloseTo(
-    2,
+    0,
     0,
   );
   await expect(handle).not.toHaveAttribute("title");

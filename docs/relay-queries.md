@@ -329,9 +329,12 @@ retain their previous lifetime. This does not yet add main-pane tabs or dragging
 
 ## Global message search and public previews
 
-Global message searches (`kinds: [9, 40002]`, no `#h`) keep the relay's order.
-Before admitting hits, the session resolves only their distinct nonmember channel
-IDs through the existing verified reader. The palette requests 20 hits; resolution
+Global message searches (`kinds: [9, 40002]`, no `#h`) keep the relay's order,
+unless the device's Decisions API provider can answer: then a relevance-ranked
+search with text reads 60 hits in its first request and the client reorders those
+60 by the provider's yes/no answers, keeping the relay order if any call fails.
+Later pages use `limit: 20` from page 4. Before admitting hits, the session resolves only their distinct nonmember channel
+IDs through the existing verified reader. A palette page is at most 60 hits; resolution
 accepts at most 128 IDs in one bounded request for signed metadata and
 viewer-scoped membership. This also resolves members omitted from a capped roster. Missing/forged metadata
 cannot grant a preview; read/capacity failures remain visible rather than becoming
@@ -374,12 +377,12 @@ which it is true when it arrived, kept while the event waits, so watches do not
 change who a mention wakes; they still hear the rest. A channel leaves the
 agents-only set once a lookup of the viewer's own succeeds, not when it starts:
 an exact lookup marked `viewerLookup` (a name search, a label lookup, a mounted
-link, a search read, or any `session.channels.resolve` call, which only the
-viewer's own surfaces make) reports through `resolved`, and so does a mounted link
+link, a search read, or a `session.channels.resolve` call with its default viewer lookup) reports through `resolved`, and so does a mounted link
 to a channel already known, which needs no lookup: links hold their demand
 even when readable. Rechecks, such as preview
 revalidation after an access-revoked CLOSED or a member-added confirmation,
-leave it as it was.
+leave it as it was. Watch admission calls `session.channels.resolve` with
+`viewerLookup: false`, preserving agent-only provenance instead of promoting the channel into viewer mention traffic.
 Shared composers and reactions remain unavailable for nonmembers; message helpers
 and workflows do not acquire write eligibility from public metadata. The relay
 remains the final write authority, including low-level outbox intent.
@@ -425,7 +428,8 @@ If the directory fails, an in-flight provisional lookup can still supply rows
 before the error; a stalled lookup then waits for its existing transport timeout.
 Names match by
 the joined-channel rule (`matchRank`: exact, prefix, word start, substring,
-word runs, then letters in order), so `buzz community` finds `buzz-community`.
+word runs, then every typed word in any order), so `buzz community` finds
+`buzz-community`.
 The best eight are resolved through the same exact `resolve` path as message
 hits; the page itself never grants access. So
 `channels.get(id)` returns a `readOnly` summary and `channels.list()` stays

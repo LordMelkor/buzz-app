@@ -399,6 +399,33 @@ it("preserves split UTF-8 section names in the published record and response", a
   }
 });
 
+it("saves the order worked out from legacy records with the first edit", async () => {
+  const h = await harness();
+  const legacy = {
+    sections: [
+      { id: "notes", name: "Notes", order: 0 },
+      { id: "release", name: "Release", order: 1 },
+    ],
+    assignments: {},
+    sectionOrder: ["group:notes", "solo", "starred", "group:release"],
+  };
+  const response = await h.post(
+    { intent: { channelId: "alpha", sectionId: "release" }, legacy },
+    undefined,
+    "sidebar-assignment",
+  );
+  expect(response.status).toBe(200);
+  expect((await response.json()).sectionOrder).toEqual(legacy.sectionOrder);
+  const key = nip44.v2.utils.getConversationKey(h.key, h.viewer);
+  try {
+    const published = h.heads.get("channel-workspaces");
+    const projection = JSON.parse(nip44.v2.decrypt(published.content, key));
+    expect(projection.sectionOrder).toEqual(legacy.sectionOrder);
+  } finally {
+    key.fill(0);
+  }
+});
+
 it("signs and confirms a full migrated workspace roster through the broker", async () => {
   const h = await harness();
   const signal = new AbortController().signal;
@@ -676,8 +703,8 @@ it("real broker reorders sections through the signed, confirmed narrow command",
       `group:${ids[1]}`,
       `group:${ids[0]}`,
       "pages",
-      "starred",
       "solo",
+      "starred",
       "channels",
       "forums",
       "dms",

@@ -56,6 +56,7 @@ import {
 } from "../../features/solo/default-agent";
 import { readView, writeView } from "../../shared/view-state";
 import type { RelayData } from "../../features/relay/service";
+import { keypair, signed } from "../../features/relay/testing";
 import type { CommunityReader } from "../../features/communities/service";
 import {
   createNavigationController,
@@ -487,6 +488,7 @@ function setup(
         : [],
     registerTab: () => {},
     controlAttention: () => {},
+    recommend: () => {},
     registerSessionRouter: () => {},
     registerExecution: () => {},
     bindExecution: async () => {},
@@ -495,6 +497,14 @@ function setup(
     execution: async () => undefined,
     harness: {} as Agents["harness"],
     subscribeSteps: () => () => {},
+    isReady: () => true,
+    whenReady: async () => {},
+    switchable: () => false,
+    switchableAgents: () => [],
+    switchToAutomatic: async () => ({ previous: {} }),
+    restoreSettings: async () => {},
+    readNote: () => undefined,
+    setNote: async () => {},
   } satisfies Agents;
   const disconnected = { status: "disconnected", generation: 0, scope };
   const relay = {
@@ -612,10 +622,23 @@ it("opens memory Buzz links in their community and rejects a retired page's call
     channelId = "11111111-1111-4111-8111-111111111111",
     messageId = "e".repeat(64);
   const url = `buzz://message?channel=${channelId}&id=${messageId}`;
+  // The relay names the linked channel, so its link isn't withheld.
+  const relayKey = keypair();
+  const metadata = signed(relayKey, {
+    kind: 39000,
+    content: "",
+    tags: [["d", channelId], ["name", "open"], ["public"]],
+  });
   const owner = createRelaySession({
     viewer,
-    relayAuthor: "d".repeat(64),
-    query: async () => [],
+    relayAuthor: relayKey.pubkey,
+    query: async (filters) =>
+      filters.some(
+        (filter) =>
+          filter.kinds?.includes(39000) && filter["#d"]?.includes(channelId),
+      )
+        ? [metadata]
+        : [],
     media: () => undefined,
   });
   const memories = createAgentMemories(

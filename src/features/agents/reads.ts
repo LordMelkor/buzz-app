@@ -10,7 +10,7 @@ import { validVerifiedName } from "../relay/verified-profile";
 import type { AuthorNames } from "../agent-harness/turn-records";
 import type { EventData, ReadFilter, RelayEvent } from "../relay/events";
 import type { RelayData } from "../relay/service";
-import { ownerCanvas } from "../agent-harness/project";
+import { type OwnerCanvas, ownerCanvas } from "../agent-harness/project";
 import type { ChannelLabel } from "../channels/channel-icon";
 import { soloChat } from "./solo-chat";
 import { communityDestination } from "../communities/destination";
@@ -69,7 +69,7 @@ export type AgentReads = Readonly<{
   /** The channel's current Canvas text when `owner`, or an agent they
    * attest, wrote it; undefined when it has none, someone else wrote it, or
    * the reader cannot read Canvas. */
-  canvas?(channelId: string, owner: string): Promise<string | undefined>;
+  canvas?(channelId: string, owner: string): Promise<OwnerCanvas | undefined>;
   /** Whether a mention in this channel continues `owner`'s Solo chat. Only the
    * owner's own connection can tell; other readers answer false. */
   soloChat(

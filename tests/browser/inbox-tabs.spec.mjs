@@ -527,9 +527,9 @@ test("Reaction activity turns Unread off and opens the exact message", async ({
     });
   }
 
-  // Each window width leaves the dock's 66px beside the list: a 540px list at
-  // 606, then 522px and 402px lists, where Unread and then From wrap.
-  for (const width of [1280, 606, 588, 468]) {
+  // The dock and gutters take 60px. At list widths of 540px, 522px and
+  // 402px, the controls stay on one row, wrap Unread, and wrap From, respectively.
+  for (const width of [1280, 600, 582, 462]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(
       inbox.getByRole("tab", { name: "Reactions", exact: true }),
@@ -563,13 +563,15 @@ test("Reaction activity turns Unread off and opens the exact message", async ({
         unreadY: centerY('[role="switch"][aria-label="Unread"]'),
       };
     });
-    if (width === 606) {
+    if (width === 600) {
       expect(geometry.width).toBe(540);
       expect(Math.abs(geometry.tabsY - geometry.unreadY)).toBeLessThan(3);
-    } else if (width === 588) {
+    } else if (width === 582) {
+      expect(geometry.width).toBe(522);
       expect(geometry.unreadY).toBeGreaterThan(geometry.tabsY + 20);
       expect(Math.abs(geometry.tabsY - geometry.fromY)).toBeLessThan(3);
-    } else if (width === 468) {
+    } else if (width === 462) {
+      expect(geometry.width).toBe(402);
       expect(geometry.fromY).toBeGreaterThan(geometry.tabsY + 20);
       expect(Math.abs(geometry.fromY - geometry.unreadY)).toBeLessThan(3);
     }

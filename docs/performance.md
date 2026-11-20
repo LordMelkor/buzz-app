@@ -17,7 +17,7 @@ or the fixture server. `--browser webkit` runs the `thread-scroll` cases in WebK
 `--repeat` defaults to 5. Every sample gets fresh browser storage, signed
 histories and server state; a production frontend build is shared by the worker.
 One worker runs serially with no retries. Required CI runs every case once in
-**Browser measurements** without timing thresholds. Locally, use `pnpm perf`;
+**Perf suite smoke check**, on its own isolated runner, without timing thresholds. Locally, use `pnpm perf`;
 `pnpm test` / `just scan` do not run these cases.
 
 The existing browser fixture owns the production React/services/IndexedDB/Virtua

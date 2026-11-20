@@ -1,4 +1,6 @@
 import { useSoloRowActivation } from "../../features/channel-navigation/useSoloRowActivation";
+import { SpringLoadedNavigationItem } from "../../features/channel-navigation/SpringLoadedNavigationItem";
+import { useSpringLoaded } from "../../features/messages/spring-loaded-drag";
 import { useIsPresent } from "motion/react";
 import { SoloChatTitle } from "../../features/solo/SoloChatTitle";
 import type { ComposeWorkspaces } from "../../features/channel-navigation/WorkspaceComposition";
@@ -33,6 +35,7 @@ import { useWorkingAgents } from "./useWorkingAgents";
 import { WorkingAgentsBadge } from "./WorkingAgentsBadge";
 import { UnreadBadge } from "./UnreadBadge";
 import { useUnreadChannelIds } from "./useSidebarFilters";
+import { compareRecent } from "./sidebar-sections";
 import { SoloWorkspaces, type ChatListItem } from "./SoloWorkspaces";
 import {
   soloSharedMarkId,
@@ -287,11 +290,7 @@ export function SoloInventory({
             : preferences.data?.assignments[item.id],
         ),
     )
-    .sort(
-      (a, b) =>
-        (b.lastActivityAt ?? b.updatedAt ?? 0) -
-          (a.lastActivityAt ?? a.updatedAt ?? 0) || a.id.localeCompare(b.id),
-    );
+    .sort(compareRecent);
   // Capped workspaces never hide the open chat or one that needs the viewer.
   const unreadChats = useUnreadChannelIds(
     session.unread,
@@ -441,12 +440,12 @@ export function SoloInventory({
             {
               id: route?.linked ?? route?.project ?? "solo",
               projectId: route?.project,
-              selected,
               content: (
-                <NavigationItem
+                <SpringLoadedNavigationItem
                   label="New chat"
                   aria-description="Unsent draft"
                   selected={selected}
+                  onSpring={() => void navigator.open(destination)}
                   icon={
                     <span
                       className={styles.conversationIcon}
@@ -611,6 +610,7 @@ function SoloConversationRow({
     onSelect,
     onRename,
   );
+  const springLoaded = useSpringLoaded(onSelect, selected);
   const { agents, agentProfiles, waiting } = useWorkingAgents(
     session,
     id,
@@ -640,6 +640,7 @@ function SoloConversationRow({
           aria-current={selected ? "page" : undefined}
           aria-describedby={shared ? soloSharedMarkId(id) : undefined}
           {...activation}
+          {...springLoaded}
           icon={
             Icon ? (
               <Icon session={session} channelId={id} fallback={chatIcon} />

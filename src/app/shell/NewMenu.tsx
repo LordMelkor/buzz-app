@@ -25,9 +25,16 @@ import {
   MenuTrigger,
   MenuPopup,
   MenuItem,
+  MenuIcon,
   MenuSeparator,
 } from "../../shared/design-system/ui/Menu";
-import { PlusIcon } from "../../shared/design-system/icons";
+import {
+  ChatCircleIcon,
+  FolderSimpleIcon,
+  HashIcon,
+  PlusIcon,
+  UserCircleIcon,
+} from "../../shared/design-system/icons";
 
 type Props = {
   relay: RelayData;
@@ -39,9 +46,9 @@ type Props = {
 };
 
 const actions = {
-  chat: "New chat",
-  channel: "New channel",
-  dm: "New DM",
+  chat: { label: "New chat", icon: ChatCircleIcon },
+  channel: { label: "New channel", icon: HashIcon },
+  dm: { label: "New DM", icon: UserCircleIcon },
 } as const;
 type Action = keyof typeof actions;
 
@@ -115,6 +122,7 @@ function ReadyNewMenu({
           disabled={!available}
           aria-label="New options"
           title="New options"
+          shape="round"
           size="md"
           icon={<PlusIcon strokeWidth={2.5} size={18} />}
         />
@@ -142,15 +150,21 @@ function ReadyNewMenu({
                 : undefined
           }
         >
-          {(["chat", "channel", "dm"] as const).map((kind) => (
-            <MenuItem
-              key={kind}
-              disabled={disabled(kind)}
-              onClick={() => run(kind)}
-            >
-              {actions[kind]}
-            </MenuItem>
-          ))}
+          {(["chat", "channel", "dm"] as const).map((kind) => {
+            const { label, icon: Icon } = actions[kind];
+            return (
+              <MenuItem
+                key={kind}
+                disabled={disabled(kind)}
+                onClick={() => run(kind)}
+              >
+                <MenuIcon>
+                  <Icon size={16} />
+                </MenuIcon>
+                {label}
+              </MenuItem>
+            );
+          })}
           <MenuSeparator />
           <MenuItem
             disabled={!preferences.sectionCreationWritable}
@@ -160,6 +174,9 @@ function ReadyNewMenu({
               setCreatingWorkspace(true);
             }}
           >
+            <MenuIcon>
+              <FolderSimpleIcon size={16} />
+            </MenuIcon>
             New workspace
           </MenuItem>
         </MenuPopup>

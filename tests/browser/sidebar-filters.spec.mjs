@@ -83,11 +83,9 @@ test("section filters save activity windows and recover hidden channels", async 
       page.getByRole("menu", { name: "Filter Team", exact: true }),
     ).toBeVisible();
   };
-  const active = async () => {
+  const active = async (name = "Active") => {
     await menu();
-    await page
-      .getByRole("menuitemradio", { name: /Active in the last/ })
-      .click();
+    await page.getByRole("menuitemradio", { name, exact: true }).click();
     await expect(
       page.getByRole("dialog", { name: "Active in the last", exact: true }),
     ).toBeVisible();
@@ -128,7 +126,9 @@ test("section filters save activity windows and recover hidden channels", async 
     page.getByRole("menuitemradio", { name: "Unreads", exact: true }),
   ).toHaveAttribute("aria-checked", "true");
   expect(app.report.sidebarPublications).toHaveLength(beforeCancel);
-  await page.getByRole("menuitemradio", { name: /Active in the last/ }).click();
+  await page
+    .getByRole("menuitemradio", { name: "Active", exact: true })
+    .click();
   await page.getByRole("radio", { name: "7 days", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(
@@ -147,12 +147,12 @@ test("section filters save activity windows and recover hidden channels", async 
   await page.reload();
   await expect(section.locator('[data-channel-id="gamma"]')).toBeVisible();
   await menu();
-  await expect(
-    page.getByRole("menuitemradio", { name: /Active in the last/ }),
-  ).toHaveAttribute("aria-checked", "true");
-  await expect(
-    page.getByRole("menuitemradio", { name: /Active in the last/ }),
-  ).toContainText("7 days");
+  const selectedActive = page.getByRole("menuitemradio", {
+    name: "Active 7 days",
+    exact: true,
+  });
+  await expect(selectedActive).toHaveAttribute("aria-checked", "true");
+  await expect(selectedActive).toContainText("7 days");
   await expect(
     page.getByRole("menuitem", { name: "Archive", exact: true }),
   ).toBeVisible();
@@ -170,7 +170,7 @@ test("section filters save activity windows and recover hidden channels", async 
   await expect(section.locator('[data-channel-id="delta"]')).toBeVisible();
   await shot("07-open-hidden-channel");
   // A failed duration save keeps the dialog draft; retry goes through the broker.
-  await active();
+  await active("Active 7 days");
   await page.getByRole("radio", { name: "30 days", exact: true }).click();
   let release;
   let started;
@@ -219,7 +219,7 @@ test("section filters save activity windows and recover hidden channels", async 
   await expect(
     page.getByRole("button", { name: "Retry filter", exact: true }),
   ).toHaveCount(0);
-  await active();
+  await active("Active 7 days");
   await page.getByRole("radio", { name: "30 days", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText(
@@ -237,7 +237,7 @@ test("section filters save activity windows and recover hidden channels", async 
           ?.channels,
     )
     .toBe(30 * 86400);
-  await active();
+  await active("Active 30 days");
   await page.emulateMedia({ colorScheme: "dark" });
   await shot("10-dialog-dark");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -245,7 +245,9 @@ test("section filters save activity windows and recover hidden channels", async 
     .getByRole("button", { name: "More actions for Work", exact: true })
     .click();
   await page.getByRole("menuitem", { name: "Filter", exact: true }).hover();
-  await page.getByRole("menuitemradio", { name: /Active in the last/ }).click();
+  await page
+    .getByRole("menuitemradio", { name: "Active", exact: true })
+    .click();
   await page.getByRole("radio", { name: "1 day", exact: true }).click();
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   const work = page.locator('[data-sidebar-section="group:work"]');
@@ -258,7 +260,7 @@ test("section filters save activity windows and recover hidden channels", async 
   await shot("11-empty-header-dark");
   await page.emulateMedia({ colorScheme: "light" });
   await page.setViewportSize({ width: 800, height: 850 });
-  await active();
+  await active("Active 30 days");
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "150%";
   });
@@ -286,15 +288,14 @@ test("section filters save activity windows and recover hidden channels", async 
   await expect(
     page.getByRole("menuitemradio", { name: "All", exact: true }),
   ).toBeDisabled();
-  await expect(
-    page.getByRole("menuitemradio", { name: /Active in the last/ }),
-  ).toBeDisabled();
+  const disabledActive = page.getByRole("menuitemradio", {
+    name: "Active 1 day",
+    exact: true,
+  });
+  await expect(disabledActive).toBeDisabled();
   await expect(
     page.getByRole("menuitem", { name: "Planning", exact: true }),
   ).toBeEnabled();
-  const disabledActive = page.getByRole("menuitemradio", {
-    name: /Active in the last/,
-  });
   // Real CSS must mute the duration and selected check with the disabled label.
   for (const theme of ["light", "dark"]) {
     await page.emulateMedia({ colorScheme: theme });
@@ -379,7 +380,9 @@ test("failed activity reads explain the filter and recover on Retry", async ({
     .getByRole("button", { name: "More actions for Team", exact: true })
     .click();
   await page.getByRole("menuitem", { name: "Filter", exact: true }).hover();
-  await page.getByRole("menuitemradio", { name: /Active in the last/ }).click();
+  await page
+    .getByRole("menuitemradio", { name: "Active", exact: true })
+    .click();
   try {
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     await requested;

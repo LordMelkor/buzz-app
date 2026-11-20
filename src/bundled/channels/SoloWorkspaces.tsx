@@ -28,7 +28,6 @@ import {
   useSidebarSectionDrag,
 } from "../../features/channel-navigation/ChannelSidebarDnd";
 import { WorkspaceSettings } from "../../features/solo/WorkspaceSettings";
-import { inactiveChat } from "./ArchiveInactiveChats";
 import {
   memo,
   cloneElement,
@@ -117,7 +116,6 @@ export function SoloWorkspaces({
   drafts?: readonly {
     id: string;
     projectId?: string | undefined;
-    selected: boolean;
     content: ReactNode;
   }[];
   onConverted?: ((id: string) => void) | undefined;
@@ -177,7 +175,6 @@ export function SoloWorkspaces({
         key === "solo" ? [""] : key.startsWith("group:") ? [key.slice(6)] : [],
       )
     : localCollapsed;
-  const toggleWorkspaceSection = workspaceComposition?.toggle;
   // Extra chats each workspace shows past the cap, remembered like collapse.
   const [expanded, setExpanded] = useState<Record<string, number>>(() => {
     const saved = readView<unknown>(scope, expandedKey, {});
@@ -235,13 +232,12 @@ export function SoloWorkspaces({
       )?.id ?? "";
     // Resolve against current visibility when focus is restored, including when
     // collapse was requested after the asynchronous save began.
-    const target =
-      collapsed.includes(project) && !rowHosts.current.get(project)?.unframed
-        ? `project-${project}`
-        : rowFocus;
+    const closed =
+      collapsed.includes(project) && !rowHosts.current.get(project)?.unframed;
+    const target = CSS.escape(closed ? `project-${project}` : rowFocus);
     document
       .querySelector<HTMLElement>(
-        `[data-solo-menu-id="${target}"]:not([inert] *) button`,
+        `[data-solo-menu-id="${target}"]:not([inert] *) ${closed ? "button[aria-expanded]:not([aria-haspopup])" : "button"}`,
       )
       ?.focus({ preventScroll: true });
     setRowFocus(undefined);
@@ -267,36 +263,6 @@ export function SoloWorkspaces({
     target?.focus({ preventScroll: true });
   }, [stepFocus]);
   const [creatingFor, setCreatingFor] = useState<ChatListItem>();
-  // The session runs bulk archives; it reads this when it checks each chat.
-  // The open chat stays: archiving it would pull it out from under the viewer.
-  const inactiveIn = (workspaceId: string, id: string) => {
-    const channel = session.channels
-      .list()
-      .channels.find((channel) => channel.id === id);
-    const item = chats.find((item) => item.id === id);
-    return (
-      !!channel &&
-      !!item &&
-      (ids.has(assignmentFor(item) ?? "") ? assignmentFor(item) : "") ===
-        workspaceId &&
-      !matchesConversation(
-        navigationController?.snapshot().entry.target,
-        scope,
-        id,
-      ) &&
-      inactiveChat(session, channel, Date.now() / 1000)
-    );
-  };
-  const inactiveInRef = handoff?.inactiveIn;
-  useLayoutEffect(() => {
-    if (!inactiveInRef) return;
-    const check = (workspaceId: string, id: string) =>
-      inactiveIn(workspaceId, id);
-    inactiveInRef.current = check;
-    return () => {
-      if (inactiveInRef.current === check) inactiveInRef.current = undefined;
-    };
-  });
   const [settingsFor, setSettingsFor] = useState<{
     id: string;
     name: string;
@@ -341,25 +307,6 @@ export function SoloWorkspaces({
   const assignmentFor = (item: ChatListItem) =>
     dormantAssignments?.has(item.id) ? undefined : assigned[item.id];
   const ids = new Set(groups.map((group) => group.id));
-  const activeDraft = drafts.find((draft) => draft.selected);
-  const draftProject = activeDraft
-    ? ids.has(activeDraft.projectId ?? "")
-      ? (activeDraft.projectId ?? "")
-      : ""
-    : undefined;
-  useEffect(() => {
-    if (draftProject === undefined) return;
-    if (toggleWorkspaceSection) {
-      toggleWorkspaceSection(workspaceSectionKey(draftProject), true);
-      return;
-    }
-    setCollapsed((current) => {
-      if (!current.includes(draftProject)) return current;
-      const next = current.filter((id) => id !== draftProject);
-      writeView(scope, collapsedKey, next);
-      return next;
-    });
-  }, [draftProject, scope, toggleWorkspaceSection]);
   const projects = [
     ...groups.map((group) => ({
       ...group,
@@ -388,7 +335,6 @@ export function SoloWorkspaces({
     }
     setProjectError("");
     const saving = preferences.assign(id, projectId);
-    toggle(projectId ?? "", true);
     hold([id]);
     setRowFocus(id);
     void saving.catch(() => {
@@ -665,30 +611,6 @@ export function SoloWorkspaces({
             <MenuItem onClick={() => setSettingsFor(project)}>
               Workspace settings
             </MenuItem>
-            {handoff && (
-              <MenuItem
-                disabled={
-                  !session.channelLifecycle.available ||
-                  !!handoff.inactiveRun ||
-                  handoff.inactiveRuns.length > 0 ||
-                  !!handoff.lifecycleDialog
-                }
-                onClick={() => {
-                  // Counted once activity loads; let the menu restore focus
-                  // before opening confirmation.
-                  const candidates = project.rows.map((item) => item.id);
-                  requestAnimationFrame(() =>
-                    handoff.archiveInactive({
-                      action: "archive",
-                      workspaceId: project.id,
-                      ids: candidates,
-                    }),
-                  );
-                }}
-              >
-                Archive inactive chats
-              </MenuItem>
-            )}
             <MenuItem
               tone="danger"
               data-delete-solo-project=""
@@ -1155,7 +1077,6 @@ export function SoloWorkspaces({
               throw new Error("Workspaces are unavailable. Try again.");
             return preferences.createAndAssign(creatingFor.id, section);
           }}
-          onCreated={(id) => toggle(id, true)}
         />
       )}
     </>
