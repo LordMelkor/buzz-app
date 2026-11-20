@@ -133,6 +133,7 @@ async function mount(
   messageId: string,
   fixture = thread,
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined,
+  subthreadId?: string,
 ) {
   const relay = openSession({
     world: createWorld(fixture.events),
@@ -155,6 +156,7 @@ async function mount(
       channelName="General"
       channelId={CHANNEL}
       messageId={messageId}
+      subthreadId={subthreadId}
       close={() => {}}
       active
       onOpenLink={() => false}
@@ -271,4 +273,17 @@ it("reads a thread it shows whole through to its last row", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Buzz order" }));
   expect(lastReading().catchUpMessageId).toBeUndefined();
+});
+
+it("leaves an invocation branch to the host's rows, with no bar", async () => {
+  const anchor = small.rows[0] as RelayEvent;
+  await mount(anchor.id, small, undefined, anchor.id);
+  await waitFor(() => {
+    expect(drawn()[0]).toBe(anchor.id);
+    expect(screen.getByLabelText("Thread messages")).toHaveAttribute(
+      "aria-busy",
+      "false",
+    );
+  });
+  expect(screen.queryByRole("toolbar", { name: "Arrange rows" })).toBeNull();
 });

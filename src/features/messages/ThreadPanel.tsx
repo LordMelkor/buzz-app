@@ -701,7 +701,7 @@ function ThreadMessages({
   const [arrangement, display] = useArrangement({
     session,
     channelId,
-    rootId: resolvedRoot,
+    rootId: subthreadId ? undefined : resolvedRoot,
     limits: THREAD_LIMITS,
   });
   const presented = !!display;
