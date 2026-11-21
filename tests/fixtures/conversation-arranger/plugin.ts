@@ -58,6 +58,33 @@ const auxTargets = (event: EventData) =>
   event.tags.flatMap(([name, id]) => (name === "e" && id ? [id] : []));
 const inOrder = (a: Cursor, b: Cursor) =>
   a.created_at - b.created_at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+const tagged = (event: EventData, name: string, value: string) =>
+  event.tags.some(([key, tag]) => key === name && tag === value);
+const invalidBounds = () => new Error("The relay sent invalid window bounds");
+const parsed = (content: string) => {
+  let body: unknown;
+  try {
+    body = JSON.parse(content);
+  } catch {
+    throw invalidBounds();
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body))
+    throw invalidBounds();
+  return body as Record<string, unknown>;
+};
+const cursorOrNull = (value: unknown) => {
+  if (value == null) return null;
+  const { created_at, id } = value as Partial<Cursor>;
+  if (
+    typeof created_at !== "number" ||
+    !Number.isSafeInteger(created_at) ||
+    created_at < 0 ||
+    typeof id !== "string" ||
+    !/^[0-9a-f]{64}$/.test(id)
+  )
+    throw invalidBounds();
+  return { created_at, id };
+};
 const score = (row: ChannelMessage) =>
   new Set(row.reactions.flatMap((r) => r.events.map((e) => e.authorId))).size;
 const pending = (row: ChannelMessage) =>
@@ -247,18 +274,38 @@ function createArranger(initial: ComposerAccessoryProps) {
         event.kind === kindOfBounds() &&
         event.pubkey === props.session.relayAuthor,
     );
+    const threadBoundsVerifiedByHost = Boolean(root);
+    const bounds = lanes.map(([lane, cursor]) => {
+      const at = cursor ? `${cursor.created_at}:${cursor.id}` : "head";
+      const d = `${props.channelId}:${lane === "newer" ? "newer:" : ""}${at}`;
+      const matching = stamped.flatMap((event) => {
+        if (
+          !threadBoundsVerifiedByHost &&
+          !(tagged(event, "h", props.channelId) && tagged(event, "d", d))
+        )
+          return [];
+        const body = parsed(event.content);
+        return (body.direction ?? "older") === lane ? [{ event, body }] : [];
+      });
+      const [bound] = matching;
+      if (
+        matching.length !== 1 ||
+        !bound ||
+        typeof bound.body.has_more !== "boolean"
+      )
+        throw invalidBounds();
+      const to = cursorOrNull(bound.body.next_cursor);
+      if (
+        bound.body.has_more !== (to !== null) ||
+        (to && cursor && inOrder(to, cursor) * (lane === "newer" ? 1 : -1) <= 0)
+      )
+        throw invalidBounds();
+      return { event: bound.event, to };
+    });
     walkStart = Math.min(
       walkStart ?? requested,
       requested,
-      ...stamped.map((event) => event.created_at),
-    );
-    const bodies = stamped.map(
-      (event) =>
-        JSON.parse(event.content) as {
-          direction?: Lane;
-          has_more: boolean;
-          next_cursor: Cursor | null;
-        },
+      ...bounds.map(({ event }) => event.created_at),
     );
     keep(answer);
     if (!closure) {
@@ -270,11 +317,7 @@ function createArranger(initial: ComposerAccessoryProps) {
       );
       closureRefused = root;
     }
-    return lanes.map(([lane]) => {
-      const body = bodies.find((b) => (b.direction ?? "older") === lane);
-      if (!body) throw new Error("The relay sent no window bounds");
-      return body.has_more ? body.next_cursor : null;
-    });
+    return bounds.map(({ to }) => to);
   }
   const rootRead = (signal: AbortSignal) => {
     const root = rootId();

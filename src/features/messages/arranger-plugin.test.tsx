@@ -26,6 +26,7 @@ import {
   prove,
   REACTION,
   T,
+  type Bound,
   type World,
 } from "../../../tests/fixtures/conversation-arranger/relay";
 import { ComposerAccessories } from "../conversation/ComposerAccessories";
@@ -39,6 +40,7 @@ import { PluginRuntime } from "../../plugins/runtime";
 import {
   hasEventProof,
   type EventData,
+  type ReadFilter,
   type RelayEvent,
 } from "../relay/events";
 import { CHANNEL_LIMITS } from "../relay/store";
@@ -162,6 +164,7 @@ type Mount = {
   windowRows?: number;
   namedOnly?: boolean;
   hold?: Parameters<typeof openSession>[0]["hold"];
+  bounds?: Parameters<typeof openSession>[0]["bounds"];
 };
 async function mount({
   fixture,
@@ -171,6 +174,7 @@ async function mount({
   windowRows,
   namedOnly,
   hold,
+  bounds,
 }: Mount) {
   const world = createWorld(fixture.events);
   const relay = openSession({
@@ -179,6 +183,7 @@ async function mount({
     ...(windowRows === undefined ? {} : { windowRows }),
     ...(namedOnly === undefined ? {} : { namedOnly }),
     ...(hold === undefined ? {} : { hold }),
+    ...(bounds === undefined ? {} : { bounds }),
   });
   const answers: (readonly RelayEvent[])[] = [];
   const read = relay.session.snapshotRead;
@@ -1204,3 +1209,79 @@ it("pages a channel's Top list past the reader's 2,400 rows", async () => {
   await statusIs(h, replies(4801, 5000, 5000, "Messages"));
   expect(h.shown()).toEqual(idsOf(want.top.slice(4800)));
 });
+
+const spent = { has_more: false, next_cursor: null };
+it.each<[string, boolean, (made: Bound, filter: ReadFilter) => Bound[]]>([
+  [
+    "another page's bound",
+    false,
+    (made, filter) =>
+      filter.until === undefined
+        ? [made]
+        : [
+            {
+              tags: [
+                ["h", CHANNEL],
+                ["d", `${CHANNEL}:head`],
+              ],
+              body: spent,
+            },
+          ],
+  ],
+  [
+    "a second bound for one page",
+    false,
+    (made) => [{ ...made, body: spent }, made],
+  ],
+  [
+    "has_more that contradicts its cursor",
+    false,
+    (made) => [{ ...made, body: { ...made.body, has_more: false } }],
+  ],
+  [
+    "a cursor that does not advance",
+    false,
+    (made, filter) =>
+      filter.until === undefined
+        ? [made]
+        : [
+            {
+              ...made,
+              body: {
+                ...made.body,
+                next_cursor: { created_at: filter.until, id: filter.before_id },
+              },
+            },
+          ],
+  ],
+  [
+    "a thread bound for another request",
+    true,
+    (made) => [
+      {
+        ...made,
+        tags: [
+          ["d", `tw:1:${"0".repeat(64)}`],
+          ...made.tags.filter(([name]) => name !== "d"),
+        ],
+      },
+    ],
+  ],
+])(
+  "fails the scan on %s, and leaves the host's rows",
+  async (_, inThread, bounds) => {
+    const h = await mount(
+      inThread
+        ? { fixture: thread, rootId: thread.root.id, bounds }
+        : { fixture: channel, bounds },
+    );
+    h.click("Top");
+    const reason = inThread
+      ? "Thread window bounds are invalid"
+      : "The relay sent invalid window bounds";
+    await waitFor(() => expect(h.status()).toBe(`Scan failed: ${reason}`), {
+      timeout: 30_000,
+    });
+    expect(h.arrangement.snapshot()).toBeUndefined();
+  },
+);

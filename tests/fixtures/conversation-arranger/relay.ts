@@ -169,6 +169,8 @@ function after(rows: readonly RelayEvent[], filter: ReadFilter) {
       );
 }
 
+export type Bound = { tags: string[][]; body: Record<string, unknown> };
+
 async function bound(
   relay: Key,
   kind: 39006 | 39007,
@@ -196,8 +198,16 @@ export function createRelay(options: {
   windowRows?: number;
   /** A channel that a read reaches only by naming it in `#h`. */
   namedOnly?: boolean;
+  /** The bounds a window answer carries in place of the true one, as a faulty relay sends. */
+  bounds?: (made: Bound, filter: ReadFilter) => Bound[];
 }) {
   const { world, viewer, relay } = options;
+  const bounds = (kind: 39006 | 39007, filter: ReadFilter, made: Bound) =>
+    Promise.all(
+      (options.bounds?.(made, filter) ?? [made]).map(({ tags, body }) =>
+        bound(relay, kind, tags, body),
+      ),
+    );
   const windowRows = options.windowRows ?? WINDOW_ROWS;
   const reads: ReadRecord[] = [];
   const members = roster(relay, CHANNEL, [viewer.pubkey], 1);
@@ -220,15 +230,13 @@ export function createRelay(options: {
         ...(filter.include_aux
           ? world.closure([roots, ...shown.map((e) => e.id)])
           : []),
-        await bound(
-          relay,
-          39007,
-          [
+        ...(await bounds(39007, filter, {
+          tags: [
             ["d", binding],
             ["h", CHANNEL],
             ["e", roots],
           ],
-          {
+          body: {
             version: 1,
             direction: newer ? "newer" : "older",
             has_more: more,
@@ -237,7 +245,7 @@ export function createRelay(options: {
                 ? { created_at: last.created_at, id: last.id }
                 : null,
           },
-        ),
+        })),
       ];
     }
     if (filter.top_level) {
@@ -257,14 +265,12 @@ export function createRelay(options: {
       return [
         ...shown,
         ...(filter.include_aux ? world.closure(shown.map((e) => e.id)) : []),
-        await bound(
-          relay,
-          39006,
-          [
+        ...(await bounds(39006, filter, {
+          tags: [
             ["h", CHANNEL],
             ["d", `${CHANNEL}:${lane}${cursor}`],
           ],
-          {
+          body: {
             has_more: more,
             next_cursor:
               more && last
@@ -272,7 +278,7 @@ export function createRelay(options: {
                 : null,
             ...(newer ? { direction: "newer" } : {}),
           },
-        ),
+        })),
       ];
     }
     if (
@@ -346,6 +352,7 @@ export function openSession(options: {
   hold?: (filters: readonly ReadFilter[]) => Promise<void> | undefined;
   windowRows?: number;
   namedOnly?: boolean;
+  bounds?: (made: Bound, filter: ReadFilter) => Bound[];
 }) {
   const viewer = options.viewer ?? keypair();
   const relay = options.relay ?? keypair();
