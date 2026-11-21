@@ -130,6 +130,7 @@ import {
 } from "../../features/agents/gateway/contract";
 import type { EligibleRoute } from "../../features/agents/gateway/route";
 import {
+  TURN_LIMIT,
   readLatestTurns,
   readSessionTitle,
   readTranscript,
@@ -969,19 +970,25 @@ export class ClaudeRuntime {
         0,
       ),
     );
-    const at = held.findIndex((turn) => turn.turnId === turns[0]?.turnId);
-    const kept = new Set(
-      held.slice(0, Math.max(at, 0)).map((t) => t.sessionId),
-    );
-    // Decorated as a full read is, since these replace the turns it showed.
-    return withNotices(
-      this.prompts(conversation.agent)
-        .shown(turns)
-        .map((turn, index) =>
-          kept.has(turn.sessionId) ? (turns[index] ?? turn) : turn,
-        ),
+    const overlap = held.findIndex((turn) => turn.turnId === turns[0]?.turnId);
+    const prefix = held.slice(0, Math.max(0, overlap));
+    const tail = withNotices(
+      turns,
       this.notices.get(conversation.agent) ?? new Map(),
     );
+    const merged = [...prefix, ...tail];
+    const cut = Math.max(0, merged.length - TURN_LIMIT);
+    const prompts = this.prompts(conversation.agent);
+    const seen = new Set<string>();
+    for (let i = cut; i < merged.length; i++) {
+      const turn = merged[i];
+      if (!turn?.sessionId || seen.has(turn.sessionId)) continue;
+      seen.add(turn.sessionId);
+      if (i < prefix.length && (turn.newSession || turn.continued)) continue;
+      merged[i] = prompts.shown([turn])[0] ?? turn;
+    }
+    const from = cut > 0 ? Math.min(cut, prefix.length) : prefix.length;
+    return merged.slice(from);
   }
   /** `sessions` with, for each a standalone turn started, the key it ran
    * under. */

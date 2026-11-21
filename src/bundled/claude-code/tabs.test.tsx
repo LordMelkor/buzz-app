@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
+import { sessionPrompts } from "../../features/agents/session-prompts";
 import { LIVE_READ_MS } from "../../features/agents/TranscriptPanel";
 import { readerInputs } from "../../features/profiles/target";
 import { AgentTabs } from "../agents/AgentTabs";
@@ -654,6 +655,51 @@ it("reads only the tail at both working changes and keeps earlier turns", async 
     new Set(["read-page"]),
   );
   for (const turn of [earlier, newest, during]) expect(turn).toBeVisible();
+});
+
+it("keeps the session divider and prompt when a working turn shifts the 50-turn window", async () => {
+  await sessionPrompts(localStore(), "claude-code", agent().key).save("kept", [
+    { label: "Instructions", text: "Saved session instructions" },
+  ]);
+  const { load, path, gap, fileReads, startCompaction, summary } =
+    await openLongTranscript();
+  const older = Array.from({ length: 50 }, (_, i) =>
+    sessionPrompt(`turn ${i}`),
+  );
+  writeFileSync(path, [...older, gap, sessionPrompt("newest")].join("\n"));
+  await userEvent.click(load);
+  await summary("turn 1");
+  const before = fileReads().length;
+  appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const finish = startCompaction();
+  try {
+    await summary("during");
+    appendFileSync(path, `\n${sessionPrompt("finished")}`);
+  } finally {
+    await act(finish);
+  }
+  await summary("finished");
+  const first = (await summary("turn 3")).closest("article");
+  expect(first?.previousElementSibling).toHaveTextContent(
+    "Session continued; earlier turns not shown",
+  );
+  expect(
+    screen
+      .getByText(/System prompt/, { selector: "summary span" })
+      .closest("article"),
+  ).toBe(first);
+  expect(new Set(fileReads().slice(before))).toEqual(new Set(["read-page"]));
+  const rows = () =>
+    Array.from(document.querySelectorAll("[data-entry]"), (row) =>
+      row.getAttribute("data-entry"),
+    );
+  const afterTurn = rows();
+  const region = first?.closest("[aria-busy]");
+  fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+  expect(region).toHaveAttribute("aria-busy", "true");
+  await waitFor(() => expect(region).toHaveAttribute("aria-busy", "false"));
+  expect(fileReads().at(-1)).toBe("read");
+  expect(rows()).toEqual(afterTurn);
 });
 
 it("finishes a pending full Refresh when work starts", async () => {
