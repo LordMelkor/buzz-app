@@ -604,7 +604,8 @@ async function rollout(
   const file = await rolloutStat(spawn, directory, path, signal);
   const { size } = file;
   const known = rollouts.get(path);
-  const tooLarge = () => new Error(`${path} is larger than 50 MB`);
+  const tooLarge = () =>
+    new Error(`The turns shown take more than 50 MB of ${path}`);
   let held: RecordedWindow | undefined;
   if (
     known?.oldest === oldest &&

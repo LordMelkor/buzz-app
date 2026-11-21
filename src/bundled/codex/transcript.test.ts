@@ -933,7 +933,7 @@ it("keeps the first script when the oldest turn starts twice", async () => {
   expect(view?.turns[0]?.items.map((i) => i.id)).toEqual(["first", "second"]);
 });
 
-it("restores a 50 MiB shown span and shows the existing warning one byte past it", async () => {
+it("restores scripts at 50 MiB and explains when the shown turns exceed the limit by one byte", async () => {
   const { file, read } = fileTranscript("span");
   const prefix = 1 << 20;
   writeFileSync(file, "");
@@ -954,7 +954,7 @@ it("restores a 50 MiB shown span and shows the existing warning one byte past it
     {
       id: "thread-1:recorded-tools-unavailable",
       type: "status",
-      text: "CodeMode scripts could not be loaded. Showing app-server history only. /sessions/span.jsonl is larger than 50 MB",
+      text: "CodeMode scripts could not be loaded. Showing app-server history only. The turns shown take more than 50 MB of /sessions/span.jsonl",
     },
   ]);
 });
@@ -975,7 +975,12 @@ it.each(["shrink", "replacement", "oldest turn"] as const)(
     const first = await read(true);
     const warning = first?.turns.at(-1)?.items;
     expect(warning).toMatchObject([
-      { type: "status", text: expect.stringContaining("larger than 50 MB") },
+      {
+        type: "status",
+        text: expect.stringContaining(
+          `The turns shown take more than 50 MB of /sessions/oversize-${change}.jsonl`,
+        ),
+      },
     ]);
     spawn.mockClear();
     appendFileSync(file, "\n");
