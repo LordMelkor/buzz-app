@@ -178,7 +178,7 @@ it("shows the recorded tool name, highlights tool calls, and keeps script text i
   expect(screen.queryByText("Raw details")).not.toBeInTheDocument();
 });
 
-it("shows a failed nested call on the collapsed script while preserving the script's status", () => {
+it("shows a failed nested call on the collapsed script while preserving the script's status", async () => {
   const turns = codexTurns(
     [
       {
@@ -224,6 +224,7 @@ it("shows a failed nested call on the collapsed script while preserving the scri
   const script = screen.getByText("exec", { exact: true }).closest("details");
   expect(script).not.toHaveAttribute("open");
   expect(script).toHaveAttribute("data-status", "completed");
+  await userEvent.click(screen.getByText("exec", { exact: true }));
   // The script and its nested call each carry their own time.
   expect(script?.querySelectorAll("time")).toHaveLength(2);
   expect(script?.parentElement?.querySelectorAll("time")).toHaveLength(2);
@@ -282,7 +283,7 @@ it("discloses tool arguments and results without raw details, including a posted
   expect(screen.queryByText("Raw details")).not.toBeInTheDocument();
 });
 
-it("renders thought formatting and keeps entry times available, except the prompt", () => {
+it("renders thought formatting and keeps entry times available, except the prompt", async () => {
   const at = Date.UTC(2026, 9, 20, 20, 1, 28);
   const { container } = render(
     <ActivityTranscript
@@ -311,6 +312,7 @@ it("renders thought formatting and keeps entry times available, except the promp
       state={() => "ended"}
     />,
   );
+  await userEvent.click(screen.getByText("Inspecting the bootstrap script"));
   expect(screen.getByText("formatting", { selector: "strong" }).tagName).toBe(
     "STRONG",
   );
@@ -379,7 +381,7 @@ it("updates mounted transcript clocks while keeping elapsed time and navigation"
   }
 });
 
-it("shows no time for an entry with a zero, non-finite or invalid time", () => {
+it("shows no time for an entry with a zero, non-finite or invalid time", async () => {
   const { container } = render(
     <ActivityTranscript
       transcript={{
@@ -414,6 +416,8 @@ it("shows no time for an entry with a zero, non-finite or invalid time", () => {
       state={() => "ended"}
     />,
   );
+  await userEvent.click(screen.getByText("exec", { exact: true }));
+  expect(screen.getByText("d", { selector: "summary span" })).toBeVisible();
   expect(container.querySelectorAll("time")).toHaveLength(0);
 });
 
@@ -550,6 +554,10 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
   const shown: string[] = [];
   const margins: string[] = [];
   Element.prototype.scrollIntoView = function (this: HTMLElement) {
+    if (this.dataset.entry === "item:m6")
+      expect(
+        this.querySelector("[data-arrival-surface][data-arrived]"),
+      ).not.toBeNull();
     shown.push(this.dataset.entry ?? "");
     margins.push(this.style.scrollMarginBlockStart);
   };
@@ -708,7 +716,7 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
   }
 });
 
-it("divides sessions, and shows each one's prompt once at its top", () => {
+it("divides sessions, and shows each one's prompt once at its top", async () => {
   const turn = (
     turnId: string,
     sessionId: string,
@@ -751,7 +759,8 @@ it("divides sessions, and shows each one's prompt once at its top", () => {
       .map((line) => line.textContent),
   ).toEqual(["Session continued; earlier turns not shown", "New session"]);
   expect(screen.getAllByText(/System prompt/)).toHaveLength(1);
-  expect(screen.getByText("Agent instructions")).toBeInTheDocument();
+  await userEvent.click(screen.getByText(/System prompt/));
+  expect(screen.getByText("Agent instructions")).toBeVisible();
 });
 
 it("keeps the conversation readable while disclosing work and showing the current step", async () => {
@@ -819,7 +828,7 @@ it("keeps the conversation readable while disclosing work and showing the curren
   expect(
     screen.queryByRole("button", { name: "2 activity steps" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByText("source")).not.toBeVisible();
+  expect(screen.queryByText("source")).not.toBeInTheDocument();
   await user.click(screen.getByText("renderer"));
   expect(screen.getByText("source")).toBeVisible();
   await user.click(screen.getByText("renderer"));
@@ -853,7 +862,7 @@ it("keeps thought details collapsed until requested and preserves them across up
       state={() => "working"}
     />,
   );
-  expect(screen.getByText("formatting")).not.toBeVisible();
+  expect(screen.queryByText("formatting")).not.toBeInTheDocument();
   const disclosure = screen
     .getByText("Checking the view", { selector: "summary span" })
     .closest("summary");

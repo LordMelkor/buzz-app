@@ -7,6 +7,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import remarkGfm from "remark-gfm";
@@ -69,7 +70,10 @@ const PeopleContext = createContext<{
   community?: string | undefined;
 }>({});
 
-const AgentAvatarSource = createContext<string | undefined>(undefined);
+const RowContext = createContext<{
+  picture?: string | undefined;
+  focused?: string | undefined;
+}>({});
 
 /** The Buzz events a profile was opened for, most wanted first, and the
  * reader's input count then. A transcript showing one of their turns shows it
@@ -277,6 +281,7 @@ function useShowFocused(
     });
     focus.done();
   }, [focus, entry, timeline, following]);
+  return entry;
 }
 
 /** Turn-by-turn transcript of the loaded activity, oldest first, opened at
@@ -307,7 +312,7 @@ export function ActivityTranscript({
   community?: string | undefined;
 }) {
   const { timeline, following } = useFollowLatest(transcript, follow);
-  useShowFocused(transcript, timeline, following);
+  const focused = useShowFocused(transcript, timeline, following);
   const agents = useContext(AgentsContext);
   const relay = useSyncExternalStore(
     agents?.subscribe ?? noSubscribe,
@@ -327,9 +332,13 @@ export function ActivityTranscript({
     community,
     "small",
   );
+  const rowContext = useMemo(
+    () => ({ picture: poster ?? picture, focused }),
+    [poster, picture, focused],
+  );
   return (
     <PeopleContext.Provider value={{ profiles, community }}>
-      <AgentAvatarSource.Provider value={poster ?? picture}>
+      <RowContext.Provider value={rowContext}>
         <div ref={timeline} className={`text-body ${styles.timeline}`}>
           {before}
           {!transcript.turns.length && (
@@ -357,7 +366,7 @@ export function ActivityTranscript({
             </Fragment>
           ))}
         </div>
-      </AgentAvatarSource.Provider>
+      </RowContext.Provider>
     </PeopleContext.Provider>
   );
 }
@@ -511,8 +520,14 @@ function Sections({
   title: string;
   sections: readonly PromptSection[];
 }) {
+  const [visited, setVisited] = useState(false);
   return (
-    <details className={styles.context}>
+    <details
+      className={styles.context}
+      onToggle={(event) => {
+        if (event.currentTarget.open) setVisited(true);
+      }}
+    >
       <summary className="text-body text-subtle">
         <FileTextIcon size="1rem" aria-hidden="true" />
         <span>
@@ -524,15 +539,18 @@ function Sections({
           aria-hidden="true"
         />
       </summary>
-      {sections.map((section, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: sections are a positional, immutable parse of one prompt.
-        <section key={index} className={styles.codePanel}>
-          <h3 className={`text-body text-secondary ${styles.codePanelHeading}`}>
-            {sectionTitle(section.tag)}
-          </h3>
-          <pre className={styles.pre}>{section.body}</pre>
-        </section>
-      ))}
+      {visited &&
+        sections.map((section, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: sections are a positional, immutable parse of one prompt.
+          <section key={index} className={styles.codePanel}>
+            <h3
+              className={`text-body text-secondary ${styles.codePanelHeading}`}
+            >
+              {sectionTitle(section.tag)}
+            </h3>
+            <pre className={styles.pre}>{section.body}</pre>
+          </section>
+        ))}
     </details>
   );
 }
@@ -555,9 +573,16 @@ function Disclosure({
   footer?: ReactNode;
   children: ReactNode;
 }) {
+  const focused = useContext(RowContext).focused === `item:${item.id}`;
+  const [visited, setVisited] = useState(focused);
+  // A focused arrival needs its body in the commit that marks and scrolls it.
+  if (focused && !visited) setVisited(true);
   return (
     <details
       className={styles.tool}
+      onToggle={(event) => {
+        if (event.currentTarget.open) setVisited(true);
+      }}
       data-status={item.type === "tool" ? item.status : undefined}
     >
       <summary className={styles.row}>
@@ -574,8 +599,8 @@ function Disclosure({
         />
         <Stamp item={item} />
       </summary>
-      {children && <div className={styles.toolBody}>{children}</div>}
-      {footer}
+      {visited && children && <div className={styles.toolBody}>{children}</div>}
+      {visited && footer}
     </details>
   );
 }
@@ -614,7 +639,7 @@ function Item({
   item: TranscriptItem;
   agentName: string;
 }) {
-  const avatarSource = useContext(AgentAvatarSource);
+  const { picture: avatarSource } = useContext(RowContext);
   switch (item.type) {
     case "system":
       return <Sections title="System prompt" sections={item.sections} />;
