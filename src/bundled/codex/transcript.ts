@@ -12,7 +12,7 @@ import {
 import type { AgentKey } from "../../features/agents/membership";
 import { sessionTag, sessionTitle } from "./prompt";
 import { AppServer, Oversized, type Spawn } from "./rpc";
-import { readFile } from "../../buzz-mcp/app-client";
+import { READ_LIMIT } from "../../buzz-mcp/app-client";
 import { recordedLines, restoreRecordedTools } from "./recorded-tools";
 
 /** The latest turns shown; earlier ones stay in Codex's own history. */
@@ -441,10 +441,29 @@ export async function withServer<T>(
 }
 
 /** Only complete records are cached. A live final line is read again on append. */
-type Rollout = { oldest: string; bytes: number; lines: Json[] };
+type Rollout = { oldest: string; from: number; bytes: number; lines: Json[] };
 const rollouts = new Map<string, Rollout>();
-const PAGE_BYTES = 1 << 20;
-const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+const TAIL_BYTES = 32 << 20;
+const CACHE_RECORDS = 8192;
+const MAX_SHOWN_BYTES = 256 << 20;
+
+async function fileExit(
+  child: Awaited<ReturnType<Spawn>>,
+  signal: AbortSignal,
+) {
+  const stop = () => void child.kill();
+  signal.addEventListener("abort", stop, { once: true });
+  if (signal.aborted) stop();
+  const timer = setTimeout(stop, 60_000);
+  try {
+    const code = await child.exited;
+    signal.throwIfAborted();
+    return code;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", stop);
+  }
+}
 
 async function rolloutSize(
   spawn: Spawn,
@@ -460,81 +479,62 @@ async function rolloutSize(
       output += s;
     },
   });
-  const stop = () => void child.kill();
-  signal.addEventListener("abort", stop, { once: true });
-  if (signal.aborted) stop();
-  const code = await child.exited.finally(() =>
-    signal.removeEventListener("abort", stop),
-  );
-  signal.throwIfAborted();
+  const code = await fileExit(child, signal);
   const size = Number.parseInt(output, 10);
   if (code !== 0 || !Number.isSafeInteger(size) || size < 0)
     throw new Error(`Could not read ${path}`);
   return size;
 }
 
-/** Read disjoint pages back to the oldest shown turn. A record (including a
- * UTF-8 character) can cross any number of pages. Older formats with no
- * task_started for the turn are scanned back to the start of the file. */
-async function rolloutTail(
+/** The host delivers complete UTF-8 characters. Keep split records until
+ * the next newline, including a partial last record that may grow on append. */
+async function readWindow(
   spawn: Spawn,
   cwd: string,
   path: string,
   signal: AbortSignal,
-  turns: readonly TranscriptTurn[],
+  from: number,
   size: number,
+  skip: boolean,
 ) {
-  const needed = new Set(turns.map((turn) => turn.turnId));
-  const batches: Json[][] = [];
-  const fragments: Uint8Array<ArrayBuffer>[] = [];
-  let bytes = 0;
-  let trailing: Json[] = [];
-  for (let page = Math.ceil(size / PAGE_BYTES) - 1; page >= 0; page--) {
-    const offset = page * PAGE_BYTES;
-    const count = Math.min(PAGE_BYTES, size - offset);
-    const chunk = (
-      await readFile(spawn, cwd, path, signal, undefined, "read-page", [
-        String(page),
-        "1",
-      ])
-    ).subarray(0, count);
-    if (chunk.length !== count) throw new Error(`${path} shrank`);
-    const first = page === 0 ? -1 : chunk.indexOf(10);
-    const last = chunk.lastIndexOf(10);
-    if (last < 0 && page > 0) {
-      fragments.push(chunk);
-      continue;
-    }
-    // Join the line crossing this page's right edge before decoding it.
-    fragments.push(chunk.subarray(last + 1));
-    const joined =
-      fragments.length === 1
-        ? decode(chunk.subarray(last + 1))
-        : await new Blob(fragments.reverse()).text();
-    fragments.length = 0;
-    const edge = recordedLines(joined);
-    const lines = recordedLines(
-      decode(chunk.subarray(first + 1, last < 0 ? 0 : last)),
-    );
-    if (bytes) lines.push(...edge);
-    else {
-      bytes = offset + last + 1;
-      trailing = edge;
-    }
-    batches.push(lines);
-    for (const record of lines) {
-      const payload = record.payload as Json;
-      if (record.type === "event_msg" && payload.type === "task_started")
-        needed.delete(str(payload.turn_id));
-    }
-    if (!needed.size) break;
-    if (first >= 0) fragments.push(chunk.subarray(0, first));
-  }
-  return { lines: batches.reverse().flat(), bytes, trailing };
+  const lines: Json[] = [];
+  const fragments: string[] = [];
+  let error = "";
+  const child = await spawn("read-window", {
+    cwd,
+    args: [path, String(from + 1), String(size - from)],
+    onStdout: (chunk) => {
+      if (skip) {
+        const start = chunk.indexOf("\n");
+        if (start < 0) return;
+        chunk = chunk.slice(start + 1);
+        skip = false;
+      }
+      const end = chunk.lastIndexOf("\n");
+      if (end < 0) {
+        fragments.push(chunk);
+        return;
+      }
+      fragments.push(chunk.slice(0, end));
+      for (const record of recordedLines(fragments.join("")))
+        lines.push(record);
+      fragments.length = 0;
+      fragments.push(chunk.slice(end + 1));
+    },
+    onStderr: (data) => {
+      error += data;
+    },
+  });
+  const code = await fileExit(child, signal);
+  if (code !== 0) throw new Error(error.trim() || `Could not read ${path}`);
+  const tail = fragments.join("");
+  // A read ending mid-character cannot give an exact byte offset for append.
+  const bytes = tail.includes("�")
+    ? undefined
+    : size - new TextEncoder().encode(tail).length;
+  return { lines, bytes, trailing: recordedLines(tail) };
 }
 
-/** Idle opens and changed turn windows start at the tail. A working thread
- * whose window is still held reads only the bytes appended since. */
 async function rollout(
   spawn: Spawn,
   directory: string,
@@ -545,40 +545,56 @@ async function rollout(
   const oldest = turns[0]?.turnId;
   if (!oldest) return [];
   const known = rollouts.get(path);
-  rollouts.delete(path);
   const size = await rolloutSize(spawn, directory, path, signal);
-  if (known?.oldest === oldest && size === known.bytes) {
-    rollouts.set(path, known);
-    return known.lines;
-  }
-  let result: { bytes: number; lines: Json[]; trailing: Json[] };
-  if (
+  const held =
     known?.oldest === oldest &&
     size >= known.bytes &&
-    size - known.bytes <= PAGE_BYTES
-  ) {
-    const added = await readFile(
+    size - known.from <= MAX_SHOWN_BYTES
+      ? known
+      : undefined;
+  if (held && size === held.bytes) return held.lines;
+  rollouts.delete(path);
+  let length = TAIL_BYTES;
+  for (;;) {
+    const from = held?.bytes ?? Math.max(0, size - length);
+    const read = await readWindow(
       spawn,
       directory,
       path,
       signal,
-      undefined,
-      "read-from",
-      [String(known.bytes + 1)],
+      !held && from > 0 ? from - 1 : from,
+      size,
+      !held && from > 0,
     );
-    const end = added.lastIndexOf(10) + 1;
-    result = {
-      lines: known.lines.concat(recordedLines(decode(added.subarray(0, end)))),
-      bytes: known.bytes + end,
-      trailing: recordedLines(decode(added.subarray(end))),
-    };
-  } else {
-    result = await rolloutTail(spawn, directory, path, signal, turns, size);
+    if (!held && from > 0) {
+      const needed = new Set(turns.map((turn) => turn.turnId));
+      for (const record of read.lines) {
+        const payload = record.payload as Json;
+        if (record.type === "event_msg" && payload.type === "task_started")
+          needed.delete(str(payload.turn_id));
+      }
+      if (needed.size) {
+        if (length === MAX_SHOWN_BYTES)
+          throw new Error(
+            `Shown turns require more than ${MAX_SHOWN_BYTES >> 20} MiB of session history.`,
+          );
+        length = Math.min(length * 2, MAX_SHOWN_BYTES);
+        continue;
+      }
+    }
+    const lines = held ? held.lines.concat(read.lines) : read.lines;
+    const start = held?.from ?? from;
+    if (
+      read.bytes !== undefined &&
+      size - start <= READ_LIMIT &&
+      lines.length <= CACHE_RECORDS
+    ) {
+      rollouts.set(path, { oldest, from: start, bytes: read.bytes, lines });
+      for (const old of rollouts.keys())
+        if (rollouts.size > 2) rollouts.delete(old);
+    }
+    return lines.concat(read.trailing);
   }
-  rollouts.set(path, { oldest, bytes: result.bytes, lines: result.lines });
-  for (const old of rollouts.keys())
-    if (rollouts.size > 2) rollouts.delete(old);
-  return result.lines.concat(result.trailing);
 }
 
 /** The latest turns of all the conversation's threads, oldest first, from a
@@ -589,6 +605,7 @@ export async function readTranscript(
   lookup: Lookup,
   signal: AbortSignal,
   name?: Names,
+  agentWorking = false,
 ): Promise<CodexTranscript | undefined> {
   return withServer(spawn, signal, async (rpc) => {
     // The saved thread is the conversation's; a found one by its name.
@@ -601,8 +618,8 @@ export async function readTranscript(
     let found = false;
     let more = false;
     let working = false;
-    // Any thread in progress keeps the rollouts' cache.
-    let active = false;
+    // A short-lived reader can report an unfinished turn as interrupted.
+    let active = agentWorking;
     const paths: string[] = [];
     for (const [threadId, legacy] of threads) {
       const read = await page(rpc, threadId, TURN_LIMIT, signal);

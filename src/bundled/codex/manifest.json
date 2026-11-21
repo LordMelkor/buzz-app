@@ -42,15 +42,6 @@
       },
       { "id": "size", "program": "wc", "args": ["-c"] },
       {
-        "id": "read-page",
-        "program": "bash",
-        "args": [
-          "-c",
-          "set -o pipefail; dd if=\"$1\" bs=1048576 skip=\"$2\" count=\"$3\" | base64",
-          "buzz-read-page"
-        ]
-      },
-      {
         "id": "read",
         "program": "base64",
         "args": ["-i"]

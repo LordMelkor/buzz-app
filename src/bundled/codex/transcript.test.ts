@@ -1,5 +1,11 @@
 import { spawn as spawnChild } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  truncateSync,
+  appendFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, onTestFinished, vi } from "vitest";
@@ -330,7 +336,7 @@ function server(
       exited,
     };
   });
-  return { spawn, sent };
+  return { spawn, sent, file: join(dir, "rollout.jsonl") };
 }
 
 /** A `thread/turns/list` answer without its turns' items, as Codex gives for
@@ -411,8 +417,14 @@ it("loads the recorded script through the declared file reader, and reports unav
     new AbortController().signal,
   );
   expect(spawn).toHaveBeenCalledWith(
-    "read-page",
-    expect.objectContaining({ args: ["/sessions/rollout.jsonl", "0", "1"] }),
+    "read-window",
+    expect.objectContaining({
+      args: [
+        "/sessions/rollout.jsonl",
+        "1",
+        String(Buffer.byteLength(rollout)),
+      ],
+    }),
   );
   expect(read?.turns[0]?.items).toMatchObject([
     { title: "exec", input: "text(42)", output: "42" },
@@ -459,13 +471,15 @@ it("reads only what a rollout appended since its last read, showing the same rec
   const path = "/sessions/appended.jsonl";
   // While its turn works, the rollout is remembered between reads.
   const working = () =>
-    paged([turn({ items: [], status: "inProgress", completedAt: null })]);
+    paged([turn({ items: [], status: "interrupted", completedAt: null })]);
   const { spawn } = server(working(), [], () => file, path);
   const lookupOne = { ...lookup, threadId: "thread-1" };
   const first = await readTranscript(
     spawn,
     lookupOne,
     new AbortController().signal,
+    undefined,
+    true,
   );
   expect(first?.turns[0]?.items).toMatchObject([
     { title: "exec", input: "text(42)" },
@@ -475,17 +489,23 @@ it("reads only what a rollout appended since its last read, showing the same rec
     spawn,
     lookupOne,
     new AbortController().signal,
+    undefined,
+    true,
   );
   // From the partial line on, not the whole file again.
   const whole = records.slice(0, 2).join("\n").length + 1;
   expect(spawn).toHaveBeenLastCalledWith(
-    "read-from",
-    expect.objectContaining({ args: [path, String(whole + 1)] }),
+    "read-window",
+    expect.objectContaining({
+      args: [path, String(whole + 1), String(Buffer.byteLength(file) - whole)],
+    }),
   );
   const fresh = await readTranscript(
     server(working(), [], file, "/sessions/fresh.jsonl").spawn,
     lookupOne,
     new AbortController().signal,
+    undefined,
+    true,
   );
   expect(second?.turns).toEqual(fresh?.turns);
   // A file that shrank is read whole again, not from the old text.
@@ -494,10 +514,15 @@ it("reads only what a rollout appended since its last read, showing the same rec
     spawn,
     lookupOne,
     new AbortController().signal,
+    undefined,
+    true,
   );
   expect(
     spawn.mock.calls.filter(
-      ([id, options]) => id === "read-page" && options?.args?.[0] === path,
+      ([id, options]) =>
+        id === "read-window" &&
+        options?.args?.[0] === path &&
+        options.args[1] === "1",
     ),
   ).toHaveLength(2);
   expect(shrunk?.turns).toEqual(
@@ -506,6 +531,8 @@ it("reads only what a rollout appended since its last read, showing the same rec
         server(working(), [], file, "/sessions/shrunk.jsonl").spawn,
         lookupOne,
         new AbortController().signal,
+        undefined,
+        true,
       )
     )?.turns,
   );
@@ -735,8 +762,7 @@ it("fails a transcript with an item over app-server's output frame", async () =>
   ).toEqual([50, 25, 13, 7, 4, 2, 1]);
 });
 
-it("restores the shown script across page boundaries in a rollout larger than 50 MiB", async () => {
-  const page = 1 << 20;
+it("restores the shown script from the tail of a rollout larger than 50 MiB", async () => {
   const start = JSON.stringify({
     type: "event_msg",
     payload: { type: "task_started", turn_id: "turn-1" },
@@ -760,13 +786,16 @@ it("restores the shown script across page boundaries in a rollout larger than 50
     },
   });
   const records = [start, script, output].join("\n");
-  const bytesBeforeEmoji = Buffer.byteLength(
-    records.slice(0, records.indexOf(expected)),
-  );
-  // Split a four-byte code point across two pages, inside the final record.
-  const file = `${" ".repeat(51 * page - bytesBeforeEmoji - 3)}\n${records}`;
   const path = "/sessions/large.jsonl";
-  const { spawn } = server(paged([turn({ items: [] })]), [], file, path);
+  const { spawn, file } = server(
+    paged([turn({ items: [] })]),
+    [],
+    undefined,
+    path,
+  );
+  writeFileSync(file, "");
+  truncateSync(file, 257 << 20);
+  appendFileSync(file, "\n" + records);
   const read = await readTranscript(
     spawn,
     { ...lookup, threadId: "thread-1" },
@@ -775,12 +804,67 @@ it("restores the shown script across page boundaries in a rollout larger than 50
   expect(read?.turns[0]?.items).toMatchObject([
     { title: "exec", input: "text(42)", output: expected },
   ]);
-  expect(
-    spawn.mock.calls
-      .filter(([id]) => id === "read-page")
-      .map(([, opts]) => opts?.args?.[1]),
-  ).toEqual(["51", "50"]);
+  // The same file exceeds the shown-span limit when the turn starts at its beginning.
+  writeFileSync(file, start + "\n");
+  truncateSync(file, 257 << 20);
+  appendFileSync(file, "\n" + script + "\n" + output);
+  const over = await readTranscript(
+    spawn,
+    { ...lookup, threadId: "thread-1" },
+    new AbortController().signal,
+  );
+  expect(over?.turns[0]?.items).toMatchObject([
+    {
+      type: "status",
+      text: expect.stringContaining("Shown turns require more than 256 MiB"),
+    },
+  ]);
 });
+
+it.each(["record count", "source bytes"] as const)(
+  "streams an oversized working rollout again after it exceeds the cache %s limit",
+  async (limit) => {
+    const pad =
+      limit === "record count"
+        ? '{"type":"turn_context","payload":{"turn_id":"turn-1"}}\n'.repeat(
+            8193,
+          )
+        : (
+            JSON.stringify({
+              type: "response_item",
+              payload: { type: "message", text: "x".repeat(8192) },
+            }) + "\n"
+          ).repeat(6400);
+    const file =
+      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}\n' +
+      pad +
+      '{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"one","name":"exec","input":"text(42)"}}\n';
+    const path = `/sessions/limit-${limit}.jsonl`;
+    const { spawn } = server(
+      paged([turn({ status: "interrupted", items: [] })]),
+      [],
+      file,
+      path,
+    );
+    for (let poll = 0; poll < 2; poll++) {
+      const view = await readTranscript(
+        spawn,
+        { ...lookup, threadId: "thread-1" },
+        new AbortController().signal,
+        undefined,
+        true,
+      );
+      expect(view?.turns[0]?.items).toMatchObject([
+        { title: "exec", input: "text(42)" },
+      ]);
+    }
+    expect(
+      spawn.mock.calls.filter(
+        ([id, opts]) => id === "read-window" && opts?.args?.[1] === "1",
+      ),
+    ).toHaveLength(2);
+  },
+);
 
 it("remembers a rollout while a thread found by name is in progress", async () => {
   const tag = sessionTag(agent.key, lookup);
@@ -795,7 +879,9 @@ it("remembers a rollout while a thread found by name is in progress", async () =
   expect(lookup).not.toHaveProperty("threadId");
   await readTranscript(spawn, lookup, signal);
   await readTranscript(spawn, lookup, signal);
-  expect(spawn.mock.calls.filter(([id]) => id === "read-page")).toHaveLength(1);
+  expect(spawn.mock.calls.filter(([id]) => id === "read-window")).toHaveLength(
+    1,
+  );
 });
 
 it("merges the threads other builds started, found by tag or by their earlier name", async () => {

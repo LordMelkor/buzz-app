@@ -268,6 +268,15 @@ login | review)
     printf '%s\n' "$workspace"
   fi
   ;;
+read-window)
+  # Copy the snapshot prefix even when a working thread has appended since.
+  tail -c "+$2" -- "$1" | head -c "$3"
+  codes=("${PIPESTATUS[@]}")
+  [ "${codes[1]}" -eq 0 ] || exit "${codes[1]}"
+  [ "${codes[0]}" -eq 0 ] || [ "${codes[0]}" -eq 141 ] || exit "${codes[0]}"
+  size=$(wc -c <"$1")
+  [ "$size" -ge "$(($2 - 1 + $3))" ] || { echo "$1 shrank" >&2; exit 3; }
+  ;;
 read-from)
   # A session file from byte "$2", counting from 1, in base64; it fails
   # saying so when the file is now shorter than what was read before.
