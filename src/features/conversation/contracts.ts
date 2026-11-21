@@ -453,9 +453,10 @@ export type ComposerCompletion = Readonly<{
   /** Set only by `registerCompletionSupplement`; `registerCompletion` refuses
    * it. Adds rows beside the provider that owns the caret when this one's match
    * has the same `start`; never owns it, so never opens alone. Its rows sit
-   * under a host-drawn `title`, sections in `order` then key. Publish on
-   * mount, even with no rows: until then the winner's exact match waits. Its
-   * `spaceId`, `spacePending`, `agent` and `group` are ignored. */
+   * under a host-drawn `title`, sections in `order` then key. A supplement
+   * that has published nothing holds nothing, so one whose source is still
+   * loading publishes `holdAutoSelect: true` in its mount effect, for every
+   * query. Its `spaceId`, `spacePending`, `agent` and `group` are ignored. */
   supplement?: true;
   /** Pure syntax matcher. Host prefers the closest trigger; order/key break ties. */
   match(

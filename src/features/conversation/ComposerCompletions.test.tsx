@@ -666,7 +666,7 @@ it("keeps the winner's rows when a supplement's preview throws", async () => {
   expect(listed()).toEqual(["Eng Bot"]);
   error.mockRestore();
 });
-it("lets Escape dismiss a supplement that holds beside an empty winner", () => {
+it("keeps Escape for a supplement that publishes a hold beside an empty winner, and not for a silent one", () => {
   const empty = people({ items: [], spaceId: undefined });
   expect(
     mountSources([empty, groups({ items: [], holdAutoSelect: true })]).press(
