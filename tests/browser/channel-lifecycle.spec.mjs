@@ -1,4 +1,5 @@
 import { openChannelDetails } from "./channel-details.mjs";
+import { animationsSettled } from "./animations.mjs";
 import { openPage, settlePanelMotion } from "./navigation.mjs";
 import { frames } from "./timeline.mjs";
 import { test, expect } from "./fixture.mjs";
@@ -59,7 +60,7 @@ test("archive confirmation returns focus on cancel and retains the conversation 
   await row.focus();
   await page.keyboard.press("Shift+F10");
   await expect(menu.getByRole("menuitem")).toHaveText([
-    "Move channel",
+    "Move to…",
     "Mute",
     "Mark as unread",
     "Copy link",
@@ -324,6 +325,29 @@ test("DM hide is per-viewer visibility, survives reload and never sends Leave or
     page.getByRole("textbox", { name: composerName, exact: true }),
   ).toBeVisible();
   await expect(row).toHaveCount(0);
+  // Someone else's message resurfaces it once the relay clears the hide, read
+  // from the relay's writer, while another conversation is open.
+  await sidebar.getByRole("button", { name: "Alpha", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
+  ).toBeVisible();
+  const readsBefore = app.report.queries.length;
+  app.append(
+    "primary",
+    "22222222-2222-4222-8222-222222222222",
+    "Still there?",
+    true,
+    false,
+  );
+  await expect(row).toBeVisible();
+  expect(
+    app.report.queries
+      .slice(readsBefore)
+      .some(
+        ({ filter }) =>
+          filter.kinds?.includes(30622) && filter.consistency === "strong",
+      ),
+  ).toBe(true);
   expect(app.report.lifecyclePublications.map((event) => event.kind)).toEqual([
     41012,
   ]);
@@ -524,6 +548,7 @@ test("pending toast in narrow navigation preserves visible recovery after uncert
   await expect(
     failure.getByRole("button", { name: "Archive channel", exact: true }),
   ).toHaveCount(0);
+  await failure.hover();
   await failure.getByRole("button", { name: "Dismiss notification" }).click();
   await expect(failure).toHaveCount(0);
   // Recovery must leave the page usable, not silently inert under a hidden modal.
@@ -833,6 +858,12 @@ test.describe("remote archive focus", () => {
             exact: true,
           });
           await expect(success).toBeVisible();
+          const successToast = page
+            .locator("[data-sonner-toast]")
+            .filter({ has: success });
+          await expect(successToast).toHaveAttribute("data-mounted", "true");
+          await animationsSettled(successToast, { subtree: true });
+          await success.hover();
           await success
             .getByRole("button", { name: "Dismiss notification", exact: true })
             .click();

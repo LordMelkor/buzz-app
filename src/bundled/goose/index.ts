@@ -1,4 +1,5 @@
 import { repositoriesContext } from "../../features/communities/repositories";
+import { usageOn } from "../../features/agents/standalone-sessions";
 // goose agents: an agent type whose agents are goose on this computer, all in
 // one `goose-acp` process. Each conversation an agent is in is one ACP session
 // in it; goose answers with the in-process Buzz tools, served to it over
@@ -6,6 +7,8 @@ import { repositoriesContext } from "../../features/communities/repositories";
 import { isTauri } from "@tauri-apps/api/core";
 import type { PluginModule } from "../../plugins/api";
 import { GooseLogoIcon } from "../../shared/design-system/icons";
+import { GatewayForwarding } from "../../features/agents/gateway/forwarding";
+import { upstreamFor } from "../../features/agents/gateway/route";
 import {
   type Config,
   config,
@@ -18,16 +21,18 @@ import {
   onRecommended,
   recommendedRun,
 } from "../../features/agents/recommended";
+import { REQUEST_TIMEOUT_MS } from "./goose";
 import { gooseRun } from "./run";
 import { readModelSettings } from "../../features/agents/model-settings";
-import { explainTurn, GooseSetup, REVIEW_REFUSED } from "./setup";
+import { explainTurn, GooseSetup, readNoProxy, REVIEW_REFUSED } from "./setup";
 import { createTabs } from "./tabs";
 import { GooseHistory } from "./transcript";
 import { readUsage } from "./usage";
 
 export const TYPE_ID = "goose";
-
-export const inject = ["agents", "host", "agentProtection"];
+/** The harness goose declares to the gateway, its descriptor upstream key. */
+export const HARNESS = "goose";
+export const inject = ["agents", "host", "agentProtection", "settingsCards"];
 export const apply: PluginModule["apply"] = (ctx) => {
   // Only the desktop app can start `goose-acp`; no unusable type elsewhere.
   if (!isTauri()) return;
@@ -45,7 +50,25 @@ export const apply: PluginModule["apply"] = (ctx) => {
     repositoriesContext,
     agents.storage,
     recommended,
+    // Without a goose upstream in this build, the runner sends every turn
+    // without the gateway, so nothing forwards.
+    ctx.pluginOwner && upstreamFor(HARNESS)
+      ? new GatewayForwarding(
+          ctx.pluginOwner,
+          { upstream: HARNESS, native: "goose" },
+          async () => {
+            // Without a host to read them, a forwarded goose could send its
+            // loopback requests to a proxy, so nothing opens.
+            if (!host.spawn)
+              throw new Error("No host to read proxy exceptions");
+            return readNoProxy(host.spawn.bind(host));
+          },
+        )
+      : undefined,
+    // Read at a forwarded turn, after `setup` exists.
+    async () => (await setup.providers()).defaults.provider,
   );
+  runtime.usageOn = usageOn(ctx.settingsCards);
   const desktop =
     host.spawn && host.resolveDirectory
       ? {
@@ -116,13 +139,20 @@ export const apply: PluginModule["apply"] = (ctx) => {
 
   agents.register<Config>({
     id: TYPE_ID,
+    // Declares its harness to the gateway, which forwards its agents' turns
+    // where their membership routes through it.
+    gateway: { harness: HARNESS },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
+    conversationFolders: true,
+    conversationSections: true,
+    notes: true,
     title: "Goose",
     icon: GooseLogoIcon,
     description:
       "goose on this computer, with any provider goose supports. Each thread it is mentioned in is one continuing session.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    settingsProposal: { compactAt: true, resolveRecommended: recommended.find },
     readModelSettings: (saved) =>
       readModelSettings(config(saved), {
         provider: true,
@@ -154,13 +184,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
+      scope: carry.sessionScope ?? saved.scope,
       workspace: carry.workspace ?? saved.workspace,
     }),
     carry: (saved) => {
-      const { instructions, workspace } = config(saved);
+      const { instructions, workspace, scope } = config(saved);
       return {
         ...(instructions.trim() && { instructions }),
         ...(workspace !== DEFAULT_CONFIG.workspace && { workspace }),
+        ...(scope !== DEFAULT_CONFIG.scope && { sessionScope: scope }),
       };
     },
     summary: (agent) => {
@@ -168,11 +200,21 @@ export const apply: PluginModule["apply"] = (ctx) => {
       return [provider, model].filter(Boolean).join(" · ") || "Goose";
     },
     sessions: {
-      list: (key) => {
-        const live = runtime.sessions(key);
+      ready: (agentKey) => runtime.listed(agentKey),
+      // The sessions `list` remembers are the latest 200 conversations; goose
+      // keeps the rest, and finds them by tag.
+      history: (agent, conversation) =>
+        history.started(
+          config(agent.config).workspace,
+          agent.key,
+          conversation,
+          AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        ),
+      list: (agentKey) => {
+        const live = runtime.sessions(agentKey);
         const busy = new Map(live.map((view) => [view.key, view.busy]));
         const used = new Map(
-          runtime.conversations(key).map(({ key, at }) => [key, at]),
+          runtime.conversations(agentKey).map(({ key, at }) => [key, at]),
         );
         // Open ones are listed even when saving them failed. A one-off turn
         // joins no conversation.
@@ -180,10 +222,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
         return [...used]
           .sort(([, a], [, b]) => b - a)
           .map(([key, at]) => {
-            const [channelId = key, root] = key.split("/");
+            const { channelId, root, community } = runtime.source(
+              agentKey,
+              key,
+            );
             const working = busy.get(key);
             return {
               channelId,
+              ...(community && { community }),
               ...(root && { root }),
               at,
               ...(working !== undefined && {
@@ -195,13 +241,17 @@ export const apply: PluginModule["apply"] = (ctx) => {
       subscribe: (listener) => runtime.subscribe(listener),
     },
     ...(desktop && {
-      usage: (agent, { since, signal }) =>
-        readUsage(
-          history,
+      usage: async (agent, { since, signal }) =>
+        runtime.withWakes(
           agent.key,
-          config(agent.config).workspace,
-          since,
-          signal,
+          await readUsage(
+            history,
+            agent.key,
+            config(agent.config).workspace,
+            since,
+            signal,
+            [...new Set(runtime.folders(agent.key).values())],
+          ),
         ),
     }),
     tabs: [

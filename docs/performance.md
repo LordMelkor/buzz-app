@@ -17,7 +17,7 @@ or the fixture server. `--browser webkit` runs the `thread-scroll` cases in WebK
 `--repeat` defaults to 5. Every sample gets fresh browser storage, signed
 histories and server state; a production frontend build is shared by the worker.
 One worker runs serially with no retries. Required CI runs every case once in
-**Browser measurements** without timing thresholds. Locally, use `pnpm perf`;
+**Perf suite smoke check**, on its own isolated runner, without timing thresholds. Locally, use `pnpm perf`;
 `pnpm test` / `just scan` do not run these cases.
 
 The existing browser fixture owns the production React/services/IndexedDB/Virtua
@@ -265,6 +265,12 @@ checks the channel draft, and reopen checks the saved thread draft. These are
 work-completion checks, not new timing counters. The workload covers populated
 thread mounting and panel reflow, not video playback, gallery interaction,
 expanding nested replies or live agent streaming.
+
+`thread-unread-open-60` and `thread-unread-open-200` open a strict-window thread
+of 60 or 200 replies that are all unread. The reader pages older to the first
+unread reply before it reveals the thread. The production broker answers each
+older page after a modeled 150ms round trip. They report `firstRowsMs` and
+`olderReads`.
 
 ## Thread scrolling
 

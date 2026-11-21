@@ -3,6 +3,26 @@ import { openPage } from "./navigation.mjs";
 
 test.use({ dmLabels: true, historyCounts: { alpha: 1, beta: 1 } });
 
+test.describe("touch headings", () => {
+  test.use({ hasTouch: true });
+
+  test("an ordinary heading opens its Actions menu on the first tap", async ({
+    page,
+    app,
+  }) => {
+    await page.goto(app.origin);
+    await openPage(page, "Messages");
+    const actions = page.getByRole("button", {
+      name: "More actions for Team",
+      exact: true,
+    });
+    await actions.tap();
+    await expect(
+      page.getByRole("menu", { name: "More actions for Team", exact: true }),
+    ).toBeVisible();
+  });
+});
+
 async function appearance(page, scale, mode = "light") {
   await page.evaluate(
     ({ scale, mode }) => {
@@ -33,7 +53,7 @@ test("sidebar headings keep readable space and compact disclosure targets at enl
   await openPage(page, "Messages");
   const sidebar = page.locator(".shell-sidebar");
   const resize = page.getByRole("separator", { name: "Resize sidebar" });
-  const summaries = ["Channels", "Direct messages"].map((title) =>
+  const summaries = ["Team", "Direct messages"].map((title) =>
     sidebar.locator("summary").filter({ hasText: title }),
   );
   for (const summary of summaries) await expect(summary).toBeVisible();
@@ -128,14 +148,14 @@ test("sidebar headings keep readable space and compact disclosure targets at enl
   await expect(channels.locator("..")).toHaveAttribute("open", "");
   await page.keyboard.press("Tab");
   const more = sidebar.getByRole("button", {
-    name: "More actions for Channels",
+    name: "More actions for Team",
     exact: true,
   });
   await expect(more).toBeFocused();
   await expect(more.locator("..")).toHaveCSS("opacity", "1");
   await more.press("Enter");
   await expect(
-    page.getByRole("menu", { name: "More actions for Channels", exact: true }),
+    page.getByRole("menu", { name: "More actions for Team", exact: true }),
   ).toBeVisible();
   await expect(channels.locator("..")).toHaveAttribute("open", "");
   await page.keyboard.press("Escape");

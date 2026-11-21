@@ -86,11 +86,11 @@ it("counts a DM's one session as the conversation it was opened from", async () 
   const { client } = setup({ conversation: { channelId: "dm" } });
   const here = await section("This channel");
   expect(
-    here.getByRole("button", { name: "View transcript: Sam" }),
+    await here.findByRole("button", { name: "View transcript: Sam" }),
   ).toBeVisible();
   const recent = await section("Recent conversations");
+  expect(await recent.findByText("alpha")).toBeVisible();
   expect(recent.queryByText("Sam")).toBeNull();
-  expect(recent.getByText("alpha")).toBeVisible();
   expect(client.sessions).not.toHaveBeenCalled();
 });
 
@@ -125,7 +125,7 @@ it("reads a transcript only when it opens, and links to its conversation", async
   const recent = await section("Recent conversations");
   expect(client.sessionMessages).not.toHaveBeenCalled();
   await user.click(
-    recent.getByRole("button", {
+    await recent.findByRole("button", {
       name: "View transcript: alpha · thread rrrrrrrr",
     }),
   );
@@ -149,7 +149,7 @@ it("says older conversations aren't shown when the list is cut", async () => {
   });
   const recent = await section("Recent conversations");
   expect(
-    recent.getAllByRole("button", { name: /View transcript/ }),
+    await recent.findAllByRole("button", { name: /View transcript/ }),
   ).toHaveLength(30);
   expect(recent.getByText("Older conversations aren't shown.")).toBeVisible();
 });
@@ -158,7 +158,9 @@ it("says older conversations exist when the first page has none", async () => {
   setup({ listed: [], more: true });
   const recent = await section("Recent conversations");
   expect(
-    recent.getByText("No recent conversations found. Older ones aren't shown."),
+    await recent.findByText(
+      "No recent conversations found. Older ones aren't shown.",
+    ),
   ).toBeVisible();
   expect(recent.queryByText("No other conversations stored yet.")).toBeNull();
   expect(recent.queryByText("Older conversations aren't shown.")).toBeNull();

@@ -8,6 +8,8 @@ import type {
 // draft without importing every Channels route and its dependencies.
 
 const personKey = /^[0-9a-f]{64}$/;
+const workspaceId = (value: unknown): value is string =>
+  typeof value === "string" && !!value.trim() && value.length <= 256;
 
 /** Choosing to message one person: who, and when it was chosen. */
 export type MessageIntent = Readonly<{ to: string; at: number }>;
@@ -16,15 +18,17 @@ export type MessageIntent = Readonly<{ to: string; at: number }>;
  * Nothing exists on the relay until its first send. */
 export function newMessage(
   params: JsonValue | undefined,
-): { intent?: MessageIntent } | undefined {
+): { intent?: MessageIntent; workspace?: string } | undefined {
   if (params === "new-message") return {};
   if (!params || typeof params !== "object" || Array.isArray(params)) return;
-  const { kind, to, at, ...rest } = params as {
+  const { kind, to, at, workspace, ...rest } = params as {
     readonly [key: string]: JsonValue;
   };
+  if (kind !== "new-message" || Object.keys(rest).length) return;
+  if (workspaceId(workspace) && to === undefined && at === undefined)
+    return { workspace };
   if (
-    kind === "new-message" &&
-    !Object.keys(rest).length &&
+    workspace === undefined &&
     typeof to === "string" &&
     personKey.test(to) &&
     typeof at === "number" &&
@@ -68,4 +72,16 @@ export const newMessageTarget = (
   pageId: "channels",
   scope,
   route: { version: 1, params: { kind: "new-message", to, at } },
+});
+
+export const workspaceMessageTarget = (
+  scope: NavigationScope,
+  workspace: string,
+): OpenTarget => ({
+  version: 1,
+  kind: "page",
+  pluginId: "buzz.channels",
+  pageId: "channels",
+  scope,
+  route: { version: 1, params: { kind: "new-message", workspace } },
 });

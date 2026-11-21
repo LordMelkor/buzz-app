@@ -1,5 +1,12 @@
 import { FadingLabel } from "./FadingLabel";
 import { activeChannelRows } from "../../features/channel-navigation/active-channel-rows";
+import {
+  captureSidebarDeparture,
+  recoverSidebarFocus,
+} from "../../features/channel-navigation/sidebar-focus-recovery";
+import { useSoloRowActivation } from "../../features/channel-navigation/useSoloRowActivation";
+import { useSpringLoaded } from "../../features/messages/spring-loaded-drag";
+import type { Navigation } from "../../features/navigation/controller";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { BellSlashIcon, XIcon } from "../../shared/design-system/icons/index";
@@ -10,6 +17,7 @@ import {
   useRef,
   type ReactElement,
   type ReactNode,
+  type RefObject,
 } from "react";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import styles from "./ChannelSidebarRow.module.css";
@@ -18,6 +26,7 @@ export function ChannelSidebarRow({
   channel,
   icon,
   nameAccessory,
+  title,
   badge,
   working = false,
   ordinary = false,
@@ -26,13 +35,21 @@ export function ChannelSidebarRow({
   wrapSelect,
   selected,
   presenceDescription,
+  sharedDescription,
+  sharedAction,
+  menuAction,
   onSelect,
+  navigation,
+  onRename,
+  pendingClick,
   onPrepare,
   onHideDm,
 }: {
   channel: ChannelSummary;
   icon: ReactNode;
   nameAccessory?: ReactNode;
+  /** Rendered in place of the channel name, which stays its text. */
+  title?: ReactNode;
   badge?: ReactNode;
   /** Agents are working here; the badge reserves its own trailing space. */
   working?: boolean;
@@ -43,7 +60,13 @@ export function ChannelSidebarRow({
   wrapSelect?: ((trigger: ReactElement) => ReactNode) | undefined;
   selected?: string | undefined;
   presenceDescription?: string | undefined;
+  sharedDescription?: string | undefined;
+  sharedAction?: ReactNode;
+  menuAction?: ReactNode;
   onSelect: (id: string) => void;
+  navigation?: Navigation | undefined;
+  onRename?: ((id: string) => boolean) | undefined;
+  pendingClick?: RefObject<ReturnType<typeof setTimeout> | undefined>;
   onPrepare: (id: string) => void;
   onHideDm?: (id: string) => void;
 }) {
@@ -54,7 +77,6 @@ export function ChannelSidebarRow({
     if (!button || !present) return;
     const document = button.ownerDocument;
     const section = button.closest("[data-sidebar-section]");
-    const sidebar = section?.closest("nav");
     return () => {
       if (document.activeElement !== button) return;
       const rows = [
@@ -68,7 +90,7 @@ export function ChannelSidebarRow({
       ].map((row) => row.dataset.channelId ?? "");
       // A plugin wrapper can remount this row and its neighbors. Resolve them
       // after the commit, excluding retained exits and focus moved elsewhere.
-      queueMicrotask(() => {
+      recoverSidebarFocus(captureSidebarDeparture(button), (sidebar) => {
         if (
           (document.activeElement !== document.body &&
             document.activeElement !== button) ||
@@ -78,41 +100,54 @@ export function ChannelSidebarRow({
           return;
         const liveRows = activeChannelRows(sidebar);
         const sectionRows = activeChannelRows(section);
-        const candidates = [
-          liveRows.find((row) => row.dataset.channelId === channel.id),
+        return [
+          liveRows.find(
+            (row) =>
+              row.dataset.channelId === channel.id &&
+              (channel.channelType !== "solo" ||
+                row.dataset.soloDestinationId === channel.id),
+          ),
           ...neighborIds.map((id) =>
             sectionRows.find((row) => row.dataset.channelId === id),
           ),
           section?.querySelector<HTMLElement>("details > summary"),
         ];
-        for (const candidate of candidates) {
-          if (!candidate?.isConnected || candidate.closest("[hidden], [inert]"))
-            continue;
-          candidate.focus();
-          if (document.activeElement === candidate) break;
-        }
       });
     };
-  }, [channel.id, present]);
+  }, [channel.id, channel.channelType, present]);
   const presenceId = useId();
+  const activate = () => onSelect(channel.id);
+  const soloActivation = useSoloRowActivation(
+    navigation,
+    pendingClick,
+    activate,
+    onRename ? () => onRename(channel.id) : undefined,
+  );
+  const springLoaded = useSpringLoaded(activate, selected === channel.id);
   const selectButton = (
     <NavigationItem
       ref={selectRef}
       type="button"
       data-channel-id={channel.id}
+      data-solo-destination-id={
+        channel.channelType === "solo" ? channel.id : undefined
+      }
       data-working={working || undefined}
       aria-current={selected === channel.id ? "page" : undefined}
-      aria-describedby={presenceDescription ? presenceId : undefined}
+      aria-describedby={presenceDescription ? presenceId : sharedDescription}
       onPointerEnter={() => onPrepare(channel.id)}
       onFocus={() => onPrepare(channel.id)}
-      onClick={() => onSelect(channel.id)}
+      {...(onRename ? soloActivation : { onClick: activate })}
+      {...springLoaded}
       selected={selected === channel.id}
       label={
         <span
           className={styles.nameContent}
           data-name-accessory={muted || nameAccessory ? "" : undefined}
         >
-          <FadingLabel className={styles.label}>{channel.name}</FadingLabel>
+          <FadingLabel className={styles.label}>
+            {title ?? channel.name}
+          </FadingLabel>
           {muted && (
             <span className={styles.muted} role="img" aria-label="Muted">
               <BellSlashIcon size={14} />
@@ -124,6 +159,7 @@ export function ChannelSidebarRow({
       icon={
         <span
           className={styles.iconSpace}
+          data-channel-row-icon=""
           data-dm-visual={dmVisualSpacing || undefined}
         >
           {icon}
@@ -153,6 +189,10 @@ export function ChannelSidebarRow({
           </span>
         )}
       </div>
+
+      {sharedAction}
+
+      {menuAction}
       {channel.channelType === "dm" && onHideDm && (
         <span className={`${styles.more} ${styles.remove}`}>
           <IconButton

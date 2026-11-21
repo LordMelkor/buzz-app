@@ -1,3 +1,4 @@
+import { useChannelActivitySubscription } from "../../features/agents/use-channel-agent-activity";
 import { activityTranscript } from "../../features/agents/activity-transcript";
 import { useRecordedActivityAgents } from "../../features/conversation/typing-presentation";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
@@ -72,6 +73,15 @@ const noSubscribe = () => () => {};
 export type ActivityAgents = WorkStopAgents;
 type ActivityProps = ComposerAccessoryProps & { agents?: ActivityAgents };
 const noWork: RequestWork[] = [];
+/** A settled request that stays under its message: an error, a stop, or a
+ * finished or superseded turn with a notice about how it ran. */
+const settledOutcome = ({
+  state,
+  notice,
+}: Pick<RequestWork, "state" | "notice">) =>
+  state === "error" ||
+  state === "stopped" ||
+  ((state === "done" || state === "superseded") && !!notice);
 /** Activity belongs to the exact triggering message, not the composer. Once an
  * agent has publicly replied, its outcome follows that reply instead. */
 export function ActivityAccessory(props: ActivityProps) {
@@ -113,18 +123,21 @@ function MessageActivity(
   const recorded = useRecordedActivityAgents(session, channelId, messageId);
   // Every row mounts this; only rows with work subscribe to each activity
   // step, profile and choice change. Others read once and wait for work.
-  const hasWork = useSyncExternalStore(session.agentActivity.subscribe, () => {
+  const subscribe = useChannelActivitySubscription(
+    session.agentActivity,
+    channelId,
+  );
+  const hasWork = useSyncExternalStore(subscribe, () => {
     if (!messageId) return false;
     const work = messageWork(
-      session.agentActivity.snapshot(),
+      session.agentActivity.snapshot(channelId),
       channelId,
       messageId,
     );
     return work.live.length > 0 || work.stopped.length > 0;
   });
-  const snapshot = useSyncExternalStore(
-    hasWork ? session.agentActivity.subscribe : noSubscribe,
-    session.agentActivity.snapshot,
+  const snapshot = useSyncExternalStore(hasWork ? subscribe : noSubscribe, () =>
+    session.agentActivity.snapshot(channelId),
   );
   const work = useMemo(
     () =>
@@ -134,7 +147,7 @@ function MessageActivity(
     [snapshot, channelId, messageId, hasWork],
   );
   const entries = [...work.live, ...work.stopped].filter((entry) => {
-    const outcome = entry.state === "error" || entry.state === "stopped";
+    const outcome = settledOutcome(entry);
     return stoppedAgent
       ? outcome && entry.agent === stoppedAgent
       : !outcome || !props.repliedAgents?.includes(entry.agent);
@@ -237,6 +250,7 @@ function MessageActivity(
         ...(entry.step ? { step: entry.step } : {}),
         ...(entry.stoppable ? { stoppable: true } : {}),
         ...(entry.retryable ? { retryable: true } : {}),
+        ...(entry.notice ? { notice: entry.notice } : {}),
         lifecycle: entry.lifecycle,
         records: entry.selected.records,
         turns: entry.turns,
@@ -292,9 +306,7 @@ function MessageActivity(
   if (!bubble.length) return null;
   const primary = bubble[0];
   if (!primary) return null;
-  const compact = bubble.every((entry) =>
-    ["error", "stopped"].includes(entry.state),
-  );
+  const compact = bubble.every(settledOutcome);
   return (
     <section
       ref={section}
@@ -357,6 +369,7 @@ type Entry = {
   step?: WorkStep;
   stoppable?: boolean;
   retryable?: boolean;
+  notice?: string;
   lifecycle: boolean;
   records: ReturnType<typeof activityRecords>;
   turns: readonly ActivityTurn[];
@@ -506,6 +519,7 @@ function ActivityBubble({
                 : entry.state,
           ...(entry.reason ? { error: entry.reason } : {}),
           ...(entry.step ? { step: entry.step } : {}),
+          ...(entry.notice ? { notice: entry.notice } : {}),
         })
       : entry.state === "error"
         ? "failed"
@@ -556,12 +570,13 @@ function ActivityBubble({
             />
           )}
           {entries
-            .filter((entry) => entry.state === "stopped")
+            .filter((entry) => entry.state !== "error" && settledOutcome(entry))
             .map((entry) => (
               <ActivityOutcome
                 key={entry.agent}
-                state="stopped"
+                state={entry.state}
                 name={entries.length > 1 ? entry.name : undefined}
+                notice={entry.notice}
               />
             ))}
         </span>
@@ -635,7 +650,15 @@ function ActivityBubble({
           <div key={entry.agent} className={styles.previews}>
             {compact && (
               <p className="text-body-sm">
-                {activityOutcomeReason(entry.state, entry.reason)}
+                {/* A notice says how the turn ran, kept beside its outcome. */}
+                {[
+                  entry.state === "done" || entry.state === "superseded"
+                    ? undefined
+                    : activityOutcomeReason(entry.state, entry.reason),
+                  entry.notice,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </p>
             )}
             <NavigationCard>
@@ -829,10 +852,11 @@ function ActivityBubble({
  * main's existing presentation rather than disappearing without a bubble. */
 export function ActivityTypingReplacement(props: ComposerAccessoryProps) {
   // Subscribe to which agents are replaced, not every observer frame.
-  const agents = useSyncExternalStore(
-    props.session.agentActivity.subscribe,
-    () => replacedAgents(props),
+  const subscribe = useChannelActivitySubscription(
+    props.session.agentActivity,
+    props.channelId,
   );
+  const agents = useSyncExternalStore(subscribe, () => replacedAgents(props));
   return (
     <>
       {agents
@@ -845,7 +869,7 @@ export function ActivityTypingReplacement(props: ComposerAccessoryProps) {
   );
 }
 function replacedAgents(props: ComposerAccessoryProps) {
-  const activity = props.session.agentActivity.snapshot();
+  const activity = props.session.agentActivity.snapshot(props.channelId);
   const ids = [
     ...(props.threadRootId ? [props.threadRootId] : []),
     ...(activity.local ?? [])

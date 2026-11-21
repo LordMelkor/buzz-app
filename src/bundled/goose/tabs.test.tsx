@@ -535,6 +535,59 @@ it("offers Create agent a Thinking row with goose's levels for the chosen model"
   );
 });
 
+it("reads Thinking levels for a chosen model when goose's config names a provider but no model", async () => {
+  const fake = fakeSpawn({
+    providers: PROVIDERS,
+    defaults: { providerId: "databricks" },
+    thinking: { "plain-model": { current: "low", levels: ["low", "high"] } },
+  });
+  // A setup each, so neither reads the levels the other cached.
+  const { CreateThinking } = createTabs({
+    setup: new GooseSetup(fake),
+    ...unused,
+  });
+  const { SettingsTab } = createTabs({
+    setup: new GooseSetup(fake),
+    ...unused,
+  });
+  if (!CreateThinking) throw new Error("no Thinking field");
+  const config = { ...DEFAULT_CONFIG, model: "plain-model" };
+  const { unmount } = render(
+    <CreateThinking config={config} disabled={false} onChange={() => {}} />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("combobox", { name: "Thinking" }),
+    ).toHaveTextContent("Low · Default"),
+  );
+  unmount();
+  render(
+    <SettingsTab
+      agent={
+        {
+          key: "c".repeat(64),
+          pubkey: "c".repeat(64),
+          name: "Gander",
+          type: "buzz.goose/goose",
+          owner: "a".repeat(64),
+          config,
+        } as Agent<Config>
+      }
+      save={async () => undefined}
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("combobox", { name: "Thinking" }),
+    ).toHaveTextContent(/^Low$/),
+  );
+  expect(screen.queryByText(/Could not read goose's levels/)).toBeNull();
+  const opened = fake.geese.flatMap((goose) => goose.opened);
+  expect(opened.length).toBeGreaterThanOrEqual(2);
+  for (const params of opened)
+    expect(params._meta).toMatchObject({ provider: "databricks" });
+});
+
 it("says when Create agent's Thinking cannot read goose's levels, and tries again", async () => {
   let fail = true;
   const fake = fakeSpawn({
@@ -642,7 +695,7 @@ it("splits Settings as the profile does: choices under Identity, the rest apart"
   expect(screen.getByRole("combobox", { name: "Thinking" })).toBeVisible();
   expect(screen.getByLabelText("Instructions")).toBeVisible();
   expect(screen.queryByLabelText("Workspace")).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "Sessions" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Session scope" })).toBeNull();
   expect(screen.queryByLabelText("API key")).toBeNull();
   expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
   // Save shows only once there is something to save.
@@ -652,7 +705,7 @@ it("splits Settings as the profile does: choices under Identity, the rest apart"
   expect(await screen.findByLabelText("API key")).toBeVisible();
   expect(screen.getByRole("button", { name: "Test connection" })).toBeVisible();
   expect(screen.getByLabelText("Workspace")).toBeVisible();
-  expect(screen.getByRole("combobox", { name: "Sessions" })).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "Session scope" })).toBeVisible();
   expect(screen.queryByRole("combobox", { name: "Provider" })).toBeNull();
   expect(screen.queryByLabelText("Instructions")).toBeNull();
 });
@@ -925,8 +978,14 @@ function activity(
     },
     sessions: () => live,
     conversations: () => world.saved,
+    source: (_agent: string, key: string) => {
+      const [channelId = key, root] = key.split("/");
+      return { channelId, ...(root ? { root } : {}) };
+    },
+    folders: () => new Map<string, string>(),
     channelLabel: (_: string, id: string) =>
       world.names?.[id] ? { name: world.names[id], kind: "stream" } : undefined,
+    notices: () => new Map(),
     prompts: () => ({
       shown: (turns: unknown) => turns,
       sessions: () =>
@@ -1036,6 +1095,35 @@ it("cancels reading goose's history when Activity is left", async () => {
   expect(signal?.aborted).toBe(false);
   unmount();
   expect(signal?.aborted).toBe(true);
+});
+
+it("reads a transcript with the agent's fallback notices", async () => {
+  const fake = gooseHistory();
+  const history = new GooseHistory(fake);
+  const transcript = vi.spyOn(history, "transcript");
+  const notices = new Map([["turn", "Ran without the agent gateway."]]);
+  activity(
+    fake,
+    {
+      saved: [{ key: `chan/${ROOT}`, at: 1, sessions: ["s1"] }],
+      runtime: { notices: () => notices },
+    },
+    history,
+  );
+  await userEvent.setup().click(
+    screen.getByRole("button", {
+      name: "View transcript: chan · thread 11111111",
+    }),
+  );
+  await waitFor(() =>
+    expect(transcript).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(Function),
+      expect.any(Boolean),
+      notices,
+    ),
+  );
 });
 
 it("lists conversations by channel name, with running and standalone sessions, one row each", async () => {
@@ -2020,4 +2108,86 @@ describe("Recommended", () => {
       screen.getByRole("combobox", { name: "Provider" }),
     ).toBeInTheDocument();
   });
+});
+
+it("keeps an old community transcript out of ordinary Activity selection", async () => {
+  const fake = gooseHistory();
+  activity(
+    fake,
+    {
+      saved: [
+        { key: "@community", at: 2, sessions: ["community"] },
+        { key: "chan", at: 1, sessions: ["s1"] },
+      ],
+      runtime: {
+        source: (_agent: string, key: string) =>
+          key === "@community"
+            ? { channelId: "chan", community: true }
+            : { channelId: key },
+      },
+    },
+    undefined,
+    {
+      conversation: { channelId: "chan", rootId: ROOT },
+      initialTranscript: { opening: 1, done: vi.fn() },
+    },
+  );
+  expect(
+    await screen.findByText("Hi from goose", { selector: "summary span" }),
+  ).toBeInTheDocument();
+});
+
+it("blocks an unsupported proposal effort and lets the owner clear it", async () => {
+  const model = "claude-opus-5-5";
+  const { SettingsTab } = createTabs({
+    setup: new GooseSetup(
+      fakeSpawn({
+        providers: PROVIDERS,
+        defaults: { providerId: "anthropic", modelId: model },
+        saved: new Map([["anthropic", new Set(["ANTHROPIC_API_KEY"])]]),
+        thinking: {
+          [model]: { current: "medium", levels: ["low", "medium", "high"] },
+        },
+      }),
+    ),
+    ...unused,
+  });
+  const save = vi.fn(async () => {});
+  const user = userEvent.setup();
+  render(
+    <SettingsTab
+      agent={
+        {
+          key: "c".repeat(64),
+          pubkey: "c".repeat(64),
+          name: "Gander",
+          type: "buzz.goose/goose",
+          owner: "a".repeat(64),
+          config: {
+            ...DEFAULT_CONFIG,
+            provider: "anthropic",
+            model,
+            effort: "max",
+          },
+        } as Agent<Config>
+      }
+      save={save}
+      settingsHost={{ proposedModelOrEffort: true, pendingSave: save }}
+    />,
+  );
+  const submit = screen.getByRole("button", { name: "Save" });
+  await user.click(submit);
+  expect(
+    await screen.findByText(
+      /Choose a thinking level this Goose model supports/,
+    ),
+  ).toBeVisible();
+  expect(save).not.toHaveBeenCalled();
+  await user.click(
+    screen.getByRole("button", { name: "Clear model and thinking overrides" }),
+  );
+  await user.click(submit);
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({ model: "", effort: "" }),
+  );
 });

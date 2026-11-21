@@ -13,6 +13,7 @@ import {
   type RefObject,
 } from "react";
 import { CONVERSATION_LIST_LABEL, UNREAD_MARKERS } from "./conversation-rows";
+import { sidebarScrollAnchor } from "./sidebar-scroll-anchor";
 import styles from "./Channels.module.css";
 
 export type UnreadDmPreview = {
@@ -44,8 +45,7 @@ function unreadEdges(list: HTMLElement): Edges {
   for (const row of rows) {
     const channelId = row.getAttribute("data-channel-id");
     if (!channelId) continue;
-    // A collapsed section represents its hidden rows at the summary. Clicking
-    // an edge cue expands that section before revealing the actual channel.
+    // A collapsed section represents its hidden rows at the summary.
     const closed = row
       .closest("[data-sidebar-section]")
       ?.querySelector("details:not([open])");
@@ -80,20 +80,36 @@ function unreadEdges(list: HTMLElement): Edges {
 export function SidebarUnread({
   children,
   listRef,
+  adjustScrollAnchor,
+  captureScrollAnchor,
   dmPreviews,
+  floatingAction,
 }: {
   children: ReactNode;
   listRef?: RefObject<HTMLElement | null>;
+  adjustScrollAnchor?: (top: number) => void;
+  captureScrollAnchor?: RefObject<(() => void) | undefined>;
   dmPreviews?: ReadonlyMap<string, UnreadDmPreview>;
+  floatingAction?: RefObject<HTMLDivElement | null> | undefined;
 }) {
   const ownList = useRef<HTMLElement>(null);
   const list = listRef ?? ownList;
   const content = useRef<HTMLDivElement>(null);
+  const upperCue = useRef<HTMLDivElement>(null);
+  const lowerCue = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState<Edges>({ above: [], below: [] });
   useEffect(() => {
     const viewport = list.current;
     const rows = content.current;
     if (!viewport || !rows) return;
+    const anchor = adjustScrollAnchor
+      ? sidebarScrollAnchor(viewport, adjustScrollAnchor)
+      : undefined;
+    if (anchor) {
+      viewport.style.overflowAnchor = "none";
+      anchor.capture();
+      if (captureScrollAnchor) captureScrollAnchor.current = anchor.capture;
+    }
     let frame = 0;
     const measure = () => {
       frame = 0;
@@ -116,16 +132,119 @@ export function SidebarUnread({
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(measure);
     };
-    const resize = new ResizeObserver(schedule);
+    const cue = lowerCue.current;
+    const upper = upperCue.current;
+    const action = floatingAction?.current;
+    let positionFrame = 0;
+    const schedulePosition = () => {
+      if (!cue || !upper || !action || positionFrame) return;
+      // The adjustments below change an observed width. Do them outside the
+      // ResizeObserver delivery so each pass settles before another runs.
+      positionFrame = requestAnimationFrame(() => {
+        positionFrame = 0;
+        upper.removeAttribute("data-beside-action");
+        upper.removeAttribute("data-share-action-row");
+        cue.removeAttribute("data-beside-action");
+        cue.removeAttribute("data-share-action-row");
+        const cueRect = cue.getBoundingClientRect();
+        const actionRect = action.getBoundingClientRect();
+        const center = cueRect.left + cueRect.width / 2;
+        // The floating row uses the same gap around New as below it.
+        const gap =
+          Number.parseFloat(getComputedStyle(action).insetBlockEnd) || 0;
+        const available =
+          2 * Math.max(center - actionRect.right, actionRect.left - center) -
+          2 * gap;
+        cue.removeAttribute("data-preview-limit");
+        if (actionRect.width > 0 && cue.offsetWidth > available) {
+          // Try the widest option first and drop the farthest avatars first.
+          const previews = cue.querySelectorAll("[data-unread-dm]").length;
+          for (
+            let limit = previews - 1;
+            limit >= 0 && cue.offsetWidth > available;
+            limit--
+          ) {
+            cue.dataset.previewLimit = String(limit);
+          }
+        }
+        const lifted = actionRect.width > 0 && cue.offsetWidth > available;
+        cue.toggleAttribute("data-lifted", lifted);
+
+        // Measure in the list frame so the entrance animation cannot change fit.
+        const upperVisible = upper.dataset.visible === "true";
+        const lowerVisible = cue.dataset.visible === "true";
+        const upperEnd = upperVisible
+          ? upper.offsetTop + upper.offsetHeight + gap
+          : 0;
+        if (lifted && cue.offsetTop < upperEnd) {
+          cue.dataset.besideAction = "";
+        }
+        const actionTop = actionRect.top - viewport.getBoundingClientRect().top;
+        if (
+          upperVisible &&
+          actionRect.width > 0 &&
+          (upperEnd > actionTop || (lowerVisible && upperEnd > cue.offsetTop))
+        ) {
+          upper.dataset.besideAction = "";
+          if (lowerVisible) {
+            cue.dataset.besideAction = "";
+            cue.dataset.shareActionRow = "split";
+            upper.dataset.shareActionRow = "split";
+            const clippedCount = [cue, upper].some((edge) => {
+              const label = edge.querySelector(`.${styles.unreadEdgeLabel}`);
+              return label && label.scrollWidth > label.clientWidth;
+            });
+            if (clippedCount) {
+              cue.dataset.shareActionRow = "stacked";
+              upper.dataset.shareActionRow = "stacked";
+            }
+          }
+        }
+      });
+    };
+    const resize = new ResizeObserver(() => {
+      anchor?.refresh();
+      schedulePosition();
+      schedule();
+    });
     resize.observe(viewport);
     resize.observe(rows);
-    const mutations = new MutationObserver(schedule);
+    if (cue && upper && action) {
+      resize.observe(cue);
+      resize.observe(upper);
+      resize.observe(action);
+      schedulePosition();
+    }
+    const mutations = new MutationObserver((records) => {
+      if (
+        records.some(
+          ({ target }) => cue?.contains(target) || upper?.contains(target),
+        )
+      )
+        schedulePosition();
+      if (records.some(({ target }) => rows.contains(target))) {
+        anchor?.refresh(
+          records.some(
+            ({ attributeName, target }) =>
+              attributeName === "data-moving" &&
+              target instanceof Element &&
+              !target.hasAttribute("data-moving"),
+          ),
+        );
+        schedule();
+      }
+    });
     mutations.observe(rows, {
       subtree: true,
       childList: true,
+      characterData: true,
       attributes: true,
       attributeFilter: [
         "open",
+        "hidden",
+        "inert",
+        "style",
+        "class",
         "data-channel-unread",
         "data-channel-muted",
         "data-channel-activity",
@@ -135,15 +254,41 @@ export function SidebarUnread({
         "data-moving",
       ],
     });
-    viewport.addEventListener("scroll", schedule, { passive: true });
+    if (cue && upper && action) {
+      for (const edge of [cue, upper]) {
+        mutations.observe(edge, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributeFilter: ["data-visible"],
+        });
+      }
+    }
+    const scrolled = () => {
+      anchor?.scrolled();
+      schedule();
+    };
+    viewport.addEventListener("scroll", scrolled, { passive: true });
     schedule();
     return () => {
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(positionFrame);
       resize.disconnect();
       mutations.disconnect();
-      viewport.removeEventListener("scroll", schedule);
+      viewport.removeEventListener("scroll", scrolled);
+      if (anchor) {
+        anchor.dispose();
+        if (captureScrollAnchor) captureScrollAnchor.current = undefined;
+        viewport.style.removeProperty("overflow-anchor");
+      }
+      for (const edge of [cue, upper]) {
+        edge?.removeAttribute("data-beside-action");
+        edge?.removeAttribute("data-share-action-row");
+      }
+      cue?.removeAttribute("data-lifted");
+      cue?.removeAttribute("data-preview-limit");
     };
-  }, [list]);
+  }, [list, floatingAction, adjustScrollAnchor, captureScrollAnchor]);
   const reveal = (edge: keyof Edges) => {
     const viewport = list.current;
     if (!viewport) return;
@@ -151,13 +296,14 @@ export function SidebarUnread({
     const targets = unreadEdges(viewport)[edge];
     const target = edge === "above" ? targets.at(-1) : targets[0];
     if (!target) return;
-    const { row } = target;
+    let row: HTMLElement = target.row;
     const section = row.closest("[data-sidebar-section]");
     const disclosure = section?.querySelector("details");
     if (disclosure && !disclosure.open) {
-      // Use the section's controlled toggle path so React removes `inert`
-      // before focus enters the newly expanded content.
-      disclosure.querySelector<HTMLElement>("summary")?.click();
+      const heading = disclosure.querySelector<HTMLElement>("summary");
+      if (heading && row.hasAttribute("data-solo-destination-id"))
+        row = heading;
+      else heading?.click();
     }
     requestAnimationFrame(() => {
       const rect = row.getBoundingClientRect();
@@ -165,6 +311,7 @@ export function SidebarUnread({
         rect.top -
         viewport.getBoundingClientRect().top -
         (viewport.clientHeight - rect.height) / 2;
+      captureScrollAnchor?.current?.();
       // Continue keyboard navigation at the revealed row, not the start of the
       // roster. Its existing focus preparation still applies; focus is not selection.
       row.focus({ preventScroll: true });
@@ -186,6 +333,7 @@ export function SidebarUnread({
     const attention = edges[edge].some((target) => target.attention);
     return (
       <div
+        ref={edge === "below" ? lowerCue : upperCue}
         className={styles.unreadEdge}
         data-edge={edge}
         key={edge}
@@ -228,7 +376,10 @@ export function SidebarUnread({
               <span>·</span>
             </span>
           )}
-          <span className={styles.unreadEdgeLabel}>{count} unread</span>
+          <span className={styles.unreadEdgeLabel}>
+            {count}
+            <span className={styles.unreadEdgeSuffix}> unread</span>
+          </span>
         </Button>
       </div>
     );

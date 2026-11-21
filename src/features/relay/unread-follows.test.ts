@@ -118,7 +118,20 @@ async function setup(
         ).toBeUndefined();
     });
   };
-  return { owner, unread, reader, settled, journal: () => journal };
+  /** Settles the membership lookup for a thread. Broadcasts never report
+   * `pending`, so this waits for the relay read itself. */
+  const lookedUp = async (root: RelayEvent) => {
+    // A channel snapshot queues the lookups its unread replies need.
+    unread.snapshot({ kind: "channel", channelId: root.tags[0]?.[1] ?? "" });
+    const call = () =>
+      reader.read.mock.calls.findIndex(([filters]) =>
+        (filters[0] as { "#e"?: readonly string[] })["#e"]?.includes(root.id),
+      );
+    await vi.waitFor(() => expect(call()).toBeGreaterThanOrEqual(0));
+    await reader.read.mock.results[call()]?.value;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return { owner, unread, reader, settled, lookedUp, journal: () => journal };
 }
 
 it("follows a thread without replying, including nested replies under its root", async () => {
@@ -204,6 +217,122 @@ it("unfollows a participated thread until the viewer explicitly follows it again
   expect(unread.attention("c0", peerLater.id)).toMatchObject({
     category: "thread",
     unread: true,
+  });
+});
+
+it("a reply also sent to the channel earns attention only in the viewer's threads, and an explicit unfollow wins", async () => {
+  const { owner, unread, lookedUp } = await setup();
+  const broadcast = (time: number, root: RelayEvent, extra: string[][] = []) =>
+    reply(peer, time, root, root, [["broadcast", "1"], ...extra]);
+  const authored = event(viewer, 10, []);
+  const repliedIn = event(peer, 11, []);
+  const mine = reply(viewer, 12, repliedIn);
+  const followed = event(peer, 13, []);
+  const stranger = event(peer, 14, []);
+  const unfollowed = event(viewer, 15, []);
+  owner.accept([authored, repliedIn, mine, followed, stranger, unfollowed]);
+  unread.follow("c0", followed.id, true);
+  unread.follow("c0", unfollowed.id, false);
+  const inAuthored = broadcast(20, authored);
+  const inRepliedIn = broadcast(21, repliedIn);
+  const inFollowed = broadcast(22, followed);
+  const inStranger = broadcast(23, stranger);
+  const inUnfollowed = broadcast(24, unfollowed);
+  const mention = broadcast(25, stranger, [["p", viewer]]);
+  owner.accept([
+    inAuthored,
+    inRepliedIn,
+    inFollowed,
+    inStranger,
+    inUnfollowed,
+    mention,
+  ]);
+  await lookedUp(stranger);
+
+  for (const item of [inAuthored, inRepliedIn, inFollowed])
+    expect(unread.attention("c0", item.id)).toMatchObject({
+      status: "eligible",
+      category: "thread",
+      unread: true,
+    });
+  expect(unread.attention("c0", mention.id)).toMatchObject({
+    category: "mention",
+    unread: true,
+  });
+  // Outside the viewer's threads: still unread, so the row is bold, but no
+  // attention category, so no dot and no alert.
+  for (const item of [inStranger, inUnfollowed]) {
+    const attention = unread.attention("c0", item.id);
+    expect(attention).toMatchObject({ status: "ineligible", unread: true });
+    expect(attention.category).toBeUndefined();
+  }
+  expect(
+    unread
+      .activity("c0")
+      .items?.map((item) => item.rootId)
+      .sort(),
+  ).toEqual([authored.id, repliedIn.id, followed.id, stranger.id].sort());
+  // Stranger's thread is listed only for the mention, not the broadcast.
+  expect(
+    unread.activity("c0").items?.find((item) => item.rootId === stranger.id),
+  ).toMatchObject({ latestMessageId: mention.id, unreadCount: 1 });
+});
+
+it("fetches the missing root of an unread broadcast in an unfollowed thread, so its thread read mark still reads it after restart", async () => {
+  const follows = memoryThreadFollows();
+  const first = await setup(follows);
+  const root = event(viewer, 10, []);
+  const broadcast = reply(peer, 20, root, root, [["broadcast", "1"]]);
+  const later = event(peer, 30, []);
+  first.unread.follow("c0", root.id, false);
+  first.owner.dispose();
+  const prior = first.journal() ?? newReadJournal();
+  const second = await setup(follows, {
+    ...prior,
+    state: {
+      ...prior.state,
+      frontiers: { [`thread:${root.id}`]: 20 },
+    },
+  });
+  // The root is outside the retained window: the relay has it only by ID.
+  second.reader.read.mockImplementation(relayOf(root));
+  second.owner.accept([broadcast, later]);
+  const channel = { kind: "channel", channelId: "c0" } as const;
+  await vi.waitFor(() =>
+    expect(second.unread.snapshot(channel)).toMatchObject({
+      observedCount: 1,
+      attentionCount: 0,
+    }),
+  );
+  expect(second.unread.attention("c0", broadcast.id)).toMatchObject({
+    status: "ineligible",
+    rootId: root.id,
+    unread: false,
+  });
+});
+
+it("keeps a broadcast's fetched root when the viewer's replies cannot be read", async () => {
+  const { owner, unread, reader } = await setup();
+  const root = event(peer, 10, []);
+  const broadcast = reply(peer, 20, root, root, [["broadcast", "1"]]);
+  // The relay answers reads by ID but fails the viewer's-replies read.
+  reader.read.mockImplementation(async (filters) => {
+    const ids = filters[0]?.ids;
+    if (!ids) throw new Error("unavailable");
+    return ids.includes(root.id) ? [root] : [];
+  });
+  owner.accept([broadcast]);
+  const channel = { kind: "channel", channelId: "c0" } as const;
+  unread.snapshot(channel);
+  await vi.waitFor(() =>
+    expect(unread.attention("c0", broadcast.id)).toMatchObject({
+      rootId: root.id,
+      unread: true,
+    }),
+  );
+  expect(unread.snapshot(channel)).toMatchObject({
+    observedCount: 1,
+    attentionCount: 0,
   });
 });
 
@@ -420,8 +549,12 @@ it("keys choices by channel and canonical root and keeps them across reload", as
   });
   // A decided choice needs no conversation lookup.
   expect(second.reader.read).not.toHaveBeenCalled();
-  expect(() => second.unread.follow("missing", root.id, true)).toThrow();
-  expect(() => second.unread.follow("c0", "not-an-event", true)).toThrow();
+  await expect(
+    second.unread.follow("missing", root.id, true),
+  ).rejects.toThrow();
+  await expect(
+    second.unread.follow("c0", "not-an-event", true),
+  ).rejects.toThrow();
 });
 
 it("leaves the saved choice and every projection unchanged when saving fails", async () => {
@@ -439,7 +572,9 @@ it("leaves the saved choice and every projection unchanged when saving fails", a
   await settled(answer);
   const woken = vi.fn();
   const stop = unread.subscribeSync(woken);
-  expect(() => unread.follow("c0", root.id, true)).toThrow("Quota exceeded");
+  await expect(unread.follow("c0", root.id, true)).rejects.toThrow(
+    "Quota exceeded",
+  );
   expect(woken).not.toHaveBeenCalled();
   expect(unread.following("c0", root.id)).toBe(false);
   expect(unread.attention("c0", answer.id).category).toBeUndefined();
@@ -548,4 +683,69 @@ it("invalidates the evicted channel and Activity at the shared choice limit", as
   expect(activityNotified).toHaveBeenCalled();
   stopActivity();
   stop();
+});
+
+it("shows a follow publication error that happens after the tap, and retries it", async () => {
+  const saved = memoryThreadFollows();
+  let health: { status: string; error?: string } = { status: "synchronized" };
+  const listeners = new Set<() => void>();
+  const retry = vi.fn(async () => {});
+  const follows: ThreadFollowStorage = {
+    ...saved,
+    syncHealth: () => health,
+    retry,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const { unread } = await setup(follows);
+  const woken = vi.fn();
+  const stop = unread.subscribeSync(woken);
+  expect(unread.sync().status).not.toBe("error");
+  health = { status: "failed", error: "Relay refused the follow choices" };
+  for (const listener of listeners) listener();
+  expect(woken).toHaveBeenCalled();
+  expect(unread.sync()).toMatchObject({
+    status: "error",
+    error: "Relay refused the follow choices",
+  });
+  expect(unread.sync()).toBe(unread.sync());
+  await unread.retrySync();
+  expect(retry).toHaveBeenCalledOnce();
+  stop();
+});
+
+it("startup gate: a refused Inbox follow changes nothing while mark unread still works", async () => {
+  const saved = memoryThreadFollows();
+  const follows: ThreadFollowStorage = {
+    ...saved,
+    async set() {
+      throw new Error("Follow choices are not ready. Connect and try again.");
+    },
+  };
+  const { owner, unread, settled } = await setup(follows);
+  const root = event(peer, 10, []);
+  const answer = reply(peer, 20, root);
+  owner.accept([root, answer]);
+  await settled(answer);
+  await expect(unread.follow("c0", root.id, true)).rejects.toThrow("not ready");
+  expect(unread.following("c0", root.id)).toBe(false);
+  await unread.markUnreadLocal({
+    kind: "message",
+    channelId: "c0",
+    messageId: answer.id,
+  });
+  await unread.markUnreadLocal({ kind: "channel", channelId: "c1" });
+});
+
+it("warns when a peer's follow choices can't be read, without failing read sync", async () => {
+  const saved = memoryThreadFollows();
+  const follows: ThreadFollowStorage = {
+    ...saved,
+    syncHealth: () => ({ status: "synchronized", complete: false }),
+  };
+  const { unread } = await setup(follows);
+  expect(unread.sync().status).not.toBe("error");
+  expect(unread.sync().error).toMatch("can't be read here");
 });

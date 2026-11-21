@@ -93,7 +93,10 @@ function fixture({
   member = false,
   emptyHistory = false,
   restored = false,
+  muted,
 }: {
+  /** Channels the viewer muted; enables sidebar mute writes when given. */
+  muted?: readonly string[];
   sidebarRows?: readonly RegisteredSidebarRows[];
   /** Observed unread messages in this chat; fakes the read state when given. */
   unread?: number;
@@ -280,6 +283,14 @@ function fixture({
     status: "reconciled" as const,
     completeness: "snapshot" as const,
   };
+  const preferences = muted
+    ? { ...projects, data: { ...projects.data, muted } }
+    : projects;
+  const setMute = vi.fn(async (channel: string, mute: boolean) =>
+    mute
+      ? [...(muted ?? []), channel]
+      : (muted ?? []).filter((m) => m !== channel),
+  );
   const session = {
     ...owner.session,
     profiles: {
@@ -353,15 +364,16 @@ function fixture({
           ? removal.preview
           : owner.session.channels.get?.(channelId),
     },
-    soloPreferences: {
-      ...owner.session.soloPreferences,
-      snapshot: () => projects,
+    sidebarPreferences: {
+      ...owner.session.sidebarPreferences,
+      snapshot: () => preferences,
       subscribe: (listener: () => void) => {
         listeners.add(listener);
         return () => {
           listeners.delete(listener);
         };
       },
+      ...(muted ? { muteWritable: true, ensure: async () => {}, setMute } : {}),
     },
     messages: { ...owner.session.messages, send },
     unread:
@@ -482,6 +494,10 @@ function fixture({
       <ChannelsPage
         relay={relay}
         panels={{
+          ui: {
+            Workspace: () => null,
+            useSplit: vi.fn(),
+          },
           ...contribution,
           register() {},
           resolve: () => undefined,
@@ -685,6 +701,64 @@ it("turns /leave into the existing channel confirmation without posting it", asy
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(editor).toHaveFocus());
   expect(f.run).not.toHaveBeenCalled();
+});
+
+it.each([
+  { muted: [] as string[], next: true, toast: "Muted Planning" },
+  { muted: [id], next: false, toast: "Unmuted Planning" },
+])(
+  "toggles the channel mute with /mute without posting it (muted: $next)",
+  async ({ muted, next, toast }) => {
+    const f = fixture({ type: "stream", muted });
+    f.mountWithToasts();
+    const editor = await screen.findByRole("textbox", {
+      name: "Message Planning",
+    });
+    const user = userEvent.setup();
+    await user.type(editor, "/mute{Enter}");
+    expect(await screen.findByText(toast)).toBeInTheDocument();
+    expect(
+      f.session.sidebarPreferences.setMute,
+    ).toHaveBeenCalledExactlyOnceWith(id, next);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(editor).toHaveValue("");
+  },
+);
+
+it("offers Retry when a mute from /mute cannot be saved", async () => {
+  const f = fixture({ type: "stream", muted: [] });
+  vi.mocked(f.session.sidebarPreferences.setMute).mockRejectedValueOnce(
+    new Error("refused"),
+  );
+  f.mountWithToasts();
+  const editor = await screen.findByRole("textbox", {
+    name: "Message Planning",
+  });
+  const user = userEvent.setup();
+  await user.type(editor, "/mute{Enter}");
+  const failure = await screen.findByRole("dialog", {
+    name: "Couldn’t mute Planning",
+  });
+  expect(
+    within(failure).getByRole("button", { name: "Retry" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Muted Planning")).not.toBeInTheDocument();
+  expect(f.send).not.toHaveBeenCalled();
+});
+
+it("keeps /mute in the composer where mutes are unavailable", async () => {
+  const f = fixture({ type: "stream" });
+  f.mountWithToasts();
+  const editor = await screen.findByRole("textbox", {
+    name: "Message Planning",
+  });
+  const user = userEvent.setup();
+  await user.type(editor, "/mute{Enter}");
+  expect(
+    await screen.findByText("You can’t mute this conversation here."),
+  ).toBeInTheDocument();
+  expect(f.send).not.toHaveBeenCalled();
+  expect(editor).toHaveValue("/mute");
 });
 
 it("retires the Archive shortcut once the chat is archived", async () => {
@@ -1676,7 +1750,7 @@ it("offers the header's chat actions from the sidebar row, plus inline Rename", 
 it("runs the header's own chat actions and returns focus to Chat actions", async () => {
   const f = fixture();
   const assign = vi.fn(async () => {});
-  Object.assign(f.session.soloPreferences, { writable: true, assign });
+  Object.assign(f.session.sidebarPreferences, { writable: true, assign });
   f.mount();
   const user = userEvent.setup();
   const trigger = await screen.findByRole("button", { name: "Chat actions" });
@@ -1698,8 +1772,8 @@ it("runs the header's own chat actions and returns focus to Chat actions", async
 
 it("reports a failed header move beside the header and retries it", async () => {
   const f = fixture();
-  const base = f.session.soloPreferences.snapshot();
-  let current: ReturnType<typeof f.session.soloPreferences.snapshot> = base;
+  const base = f.session.sidebarPreferences.snapshot();
+  let current: ReturnType<typeof f.session.sidebarPreferences.snapshot> = base;
   const listeners = new Set<() => void>();
   const publish = (next: typeof current) => {
     current = next;
@@ -1718,7 +1792,7 @@ it("reports a failed header move beside the header and retries it", async () => 
     ],
   } as unknown as typeof current;
   const retryMove = vi.fn(async () => {});
-  Object.assign(f.session.soloPreferences, {
+  Object.assign(f.session.sidebarPreferences, {
     writable: true,
     snapshot: () => current,
     subscribe: (listener: () => void) => {

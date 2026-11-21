@@ -13,6 +13,7 @@ import { expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render as renderDom,
   screen,
@@ -22,6 +23,10 @@ import {
 import userEvent from "@testing-library/user-event";
 import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
 import { messageCopyText } from "./message-copy";
+import {
+  SPRING_LOAD_DELAY_MS,
+  SPRING_LOAD_GRACE_MS,
+} from "./spring-loaded-drag";
 import { useShowingDraft } from "./draft-places";
 import { clearView, writeView } from "../../shared/view-state";
 import {
@@ -48,6 +53,7 @@ import { MessageRow } from "./MessageRow";
 import { MessageContextMenus } from "./MessageActionBar";
 import { ReplySummary } from "./ReplySummary";
 import { setClockPreference } from "../../shared/clock-preference";
+import { formatFullTimestamp } from "../../shared/datetime";
 import { MessageManagement } from "./MessageManagement";
 import type { ChannelMessage, Profile } from "../relay/contracts";
 import type { AttachmentRendererProps } from "../conversation/contracts";
@@ -1030,7 +1036,11 @@ it.each([undefined, { width: 640, height: 400 }])(
         });
       else expect(unavailable).not.toHaveAttribute("style");
       expect(view.container.querySelector("img, canvas, a[href]")).toBeNull();
-      expect(media).toHaveBeenCalledWith("https://image.test/unavailable.png");
+      expect(media).toHaveBeenCalledWith(
+        "https://image.test/unavailable.png",
+        undefined,
+        "channel",
+      );
     } finally {
       view.unmount();
     }
@@ -1058,7 +1068,11 @@ it("does not bypass the session media resolver to paint an inaccessible attachme
       retry={undefined}
     />,
   );
-  expect(media).toHaveBeenCalledWith("https://image.test/original.png");
+  expect(media).toHaveBeenCalledWith(
+    "https://image.test/original.png",
+    undefined,
+    "channel",
+  );
   expect(html).toContain("Image unavailable");
   expect(html).not.toContain("<canvas");
   expect(html).not.toContain("<img");
@@ -1083,7 +1097,12 @@ it("requests a small profile image without downsizing message attachments", () =
   );
 
   expect(media).toHaveBeenCalledWith("https://image.test/avatar.png", "small");
-  expect(media).toHaveBeenCalledWith("https://image.test/attachment.png");
+  // A message's image is saved with its channel; the avatar with none.
+  expect(media).toHaveBeenCalledWith(
+    "https://image.test/attachment.png",
+    undefined,
+    "channel",
+  );
 });
 
 it("renders proxy audio attachments with an inline player", () => {
@@ -1597,7 +1616,7 @@ it.each(["peer", "own"] as const)(
       ).toEqual(
         author === "own"
           ? [
-              "Mark unread",
+              "Mark as unread",
               "Copy message",
               "Send to channel",
               "Copy link",
@@ -1606,7 +1625,7 @@ it.each(["peer", "own"] as const)(
               "Report",
             ]
           : [
-              "Mark unread",
+              "Mark as unread",
               "Copy message",
               "Copy link",
               "Follow thread",
@@ -1992,8 +2011,8 @@ it("rejects attachment URLs outside the shared safe-link policy", () => {
       name: "Open image attachment",
     });
     expect(media.mock.calls).toEqual([
-      ["https://safe.test/a.png"],
-      ["https://safe.test/a.png", "small"],
+      ["https://safe.test/a.png", undefined, "channel"],
+      ["https://safe.test/a.png", "small", "channel"],
     ]);
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute("href", "https://safe.test/a.png");
@@ -2223,11 +2242,12 @@ it("bounds reply participants and projects artwork with fallback initials", () =
     const trigger = screen.getByRole("button", {
       name: "View thread: 23 replies",
     });
+    // The newest replier (first) renders last, on top of the stack.
     expect(
       [...trigger.querySelectorAll("[title]")].map((e) =>
         e.getAttribute("title"),
       ),
-    ).toEqual(["Alice", "Brain", "p3"]);
+    ).toEqual(["p3", "Brain", "Alice"]);
     expect(trigger.querySelector("img")).toHaveAttribute(
       "src",
       "https://proxy/avatar",
@@ -3360,10 +3380,11 @@ it.each([true, false])(
   },
 );
 
-it.each(["", "Please review this.\n\n"])(
-  "places session cards outside the caption bubble and keeps message interactions (caption=%s)",
+it.each(["", "Please review "])(
+  "keeps chat links in their authored bubble with normal message interactions (caption=%s)",
   async (caption) => {
-    const content = `${caption}[Session: PR 45 fixes](buzz://channel/session-id)`;
+    const suffix = caption ? " before merge." : "";
+    const content = `${caption}[Session: PR 45 fixes](buzz://channel/session-id)${suffix}`;
     const reply = vi.fn(),
       thread = vi.fn(),
       open = vi.fn(() => true),
@@ -3388,23 +3409,16 @@ it.each(["", "Please review this.\n\n"])(
         />,
       );
       const card = screen.getByRole("link", {
-        name: "Open Chat: PR 45 fixes",
+        name: "Session: PR 45 fixes",
       });
       const bubble = container.querySelector("[class*=messageBubble]");
-      expect(card.closest("[data-solo-cards]")).not.toBeNull();
-      expect(card.closest("[class*=messageBubble]")).toBeNull();
-      if (caption) {
-        if (!bubble) throw new Error("Caption bubble missing");
-        expect(bubble).toHaveTextContent("Please review this.");
-        expect(
-          card.compareDocumentPosition(bubble) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
-      } else {
-        expect(bubble).toBeNull();
-        expect(container.querySelector("[data-bubble]")).toBeNull();
-        expect(container.querySelector("[data-own]")).toBeNull();
-      }
+      expect(card.closest("[data-solo-cards]")).toBeNull();
+      expect(card.closest("[class*=messageBubble]")).toBe(bubble);
+      expect(bubble).toHaveTextContent(
+        `${caption}Session: PR 45 fixes${suffix}`,
+      );
+      expect(container.querySelector("[data-bubble]")).not.toBeNull();
+      expect(container.querySelector("[data-own]")).not.toBeNull();
       expect(container.querySelectorAll("[data-message-id=root]")).toHaveLength(
         1,
       );
@@ -3428,7 +3442,7 @@ it.each(["", "Please review this.\n\n"])(
   },
 );
 
-it("keeps the timestamp seek action beside a detached session card", () => {
+it("keeps the timestamp seek action beside an inline chat link", () => {
   const seek = vi.fn();
   try {
     renderDom(
@@ -3449,9 +3463,9 @@ it("keeps the timestamp seek action beside a detached session card", () => {
     expect(seek).toHaveBeenCalledWith(42);
     expect(
       screen
-        .getByRole("link", { name: "Open Chat: Fix" })
+        .getByRole("link", { name: "Session: Fix" })
         .closest("[class*=messageBubble]"),
-    ).toBeNull();
+    ).not.toBeNull();
   } finally {
     cleanup();
   }
@@ -4355,8 +4369,8 @@ it.each([
   {
     claim: "shot",
     fails: false,
-    card: false,
-    listed: ["notes.txt", "shot.png"],
+    card: true,
+    listed: ["notes.txt"],
     content: "[Session: PR 45 fixes](buzz://channel/session-id)",
   },
 ])(
@@ -5501,3 +5515,248 @@ it.each([true, false])(
     }
   },
 );
+
+it("opens the thread when a file drag rests on its summary, unless already open", () => {
+  vi.useFakeTimers();
+  try {
+    const onOpenThread = vi.fn();
+    // jsdom drag events carry no pointer position, and each drag here comes
+    // in at its own point.
+    let clientX = 1;
+    const drag = (
+      kind: "dragEnter" | "dragOver" | "dragLeave",
+      target: HTMLElement,
+    ) => {
+      const event = createEvent[kind](target, {
+        dataTransfer: { types: ["Files"] },
+      });
+      Object.defineProperty(event, "clientX", { value: clientX });
+      fireEvent(target, event);
+    };
+    // The delay ends, and the target opens on the drag's next dragover.
+    const rest = (summary: HTMLElement) => {
+      vi.advanceTimersByTime(SPRING_LOAD_DELAY_MS);
+      drag("dragOver", summary);
+    };
+    const props = {
+      row,
+      profile: undefined,
+      media: () => undefined,
+      onOpenLink: () => false,
+      day: false,
+      retry: undefined,
+      onOpenThread,
+    };
+    const view = renderDom(<MessageRow {...props} />);
+    const summary = screen.getByRole("button", {
+      name: "View thread: 23 replies",
+    });
+    drag("dragEnter", summary);
+    vi.advanceTimersByTime(SPRING_LOAD_GRACE_MS);
+    expect(summary).toHaveAttribute("data-spring-loaded", "on");
+    rest(summary);
+    expect(onOpenThread).toHaveBeenCalledExactlyOnceWith("root", "root");
+    drag("dragLeave", summary);
+    clientX = 2;
+    view.rerender(<MessageRow {...props} threadOpen />);
+    const opened = screen.getByRole("button", {
+      name: "View thread: 23 replies",
+    });
+    drag("dragEnter", opened);
+    expect(opened).not.toHaveAttribute("data-spring-loaded");
+    rest(opened);
+    expect(onOpenThread).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    vi.useRealTimers();
+  }
+});
+
+it("renames a mounted relayed line's date when the time zone changes", async () => {
+  const NativeFormat = Intl.DateTimeFormat;
+  let timeZone = "Europe/London";
+  function dateTimeFormat(
+    locale?: Intl.LocalesArgument,
+    options?: Intl.DateTimeFormatOptions,
+  ) {
+    return new NativeFormat(locale ?? "en-US", { timeZone, ...options });
+  }
+  vi.spyOn(Intl, "DateTimeFormat").mockImplementation(dateTimeFormat);
+  const subscribe = () => () => {};
+  const profiles = new Map([["zerk", { name: "Zerk", isAgent: true }]]);
+  const session = {
+    viewer: "owner",
+    channels: {
+      list: () => ({ status: "ready", channels: [] }),
+      subscribeList: subscribe,
+    },
+    messages: {},
+    profiles: { snapshot: () => profiles, subscribe },
+  } as unknown as RelaySession;
+  try {
+    renderDom(
+      <MessageRow
+        row={{
+          ...row,
+          authorId: "owner",
+          replyCount: 0,
+          content: "Rebase on main",
+          relayedFrom: { agent: "zerk", verified: true },
+        }}
+        profile={{ name: "Gil" }}
+        session={session}
+        viewer="owner"
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+      />,
+    );
+    const name = () =>
+      screen
+        .getByRole("button", { name: /^Zerk: Rebase on main/ })
+        .getAttribute("aria-label");
+    expect(name()).toMatch(/GMT|BST/);
+    await Promise.resolve();
+    timeZone = "America/Los_Angeles";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(name()).toMatch(/PDT|PST/);
+  } finally {
+    cleanup();
+    vi.restoreAllMocks();
+  }
+});
+
+it("draws a verified relayed message as its agent's quiet line, never the signer's", () => {
+  const subscribe = () => () => {};
+  const profiles = new Map([
+    ["zerk", { name: "Zerk", isAgent: true }],
+    ["juno", { name: "Juno", isAgent: true }],
+  ]);
+  const session = {
+    viewer: "owner",
+    channels: {
+      list: () => ({
+        status: "ready",
+        channels: [{ id: "source", name: "rebase", channelType: "stream" }],
+      }),
+      subscribeList: subscribe,
+    },
+    messages: {},
+    profiles: { snapshot: () => profiles, subscribe },
+  } as unknown as RelaySession;
+  const relayed = (verified: boolean, channelId?: string) => ({
+    ...row,
+    authorId: "owner",
+    replyCount: 0,
+    reactions: [{ content: "👍", events: [{ id: "r1", authorId: "juno" }] }],
+    mentions: ["juno"],
+    content: "@Juno Relayed for Zerk\n\nRebase on main",
+    relayedFrom: {
+      agent: "zerk",
+      notice: "@Juno Relayed for Zerk",
+      verified,
+      ...(channelId ? { channelId } : {}),
+    },
+  });
+  const props = {
+    profile: { name: "Gil" },
+    session,
+    viewer: "owner",
+    media: () => undefined,
+    onOpenLink: () => false,
+    day: false,
+    retry: undefined,
+  };
+  const when = formatFullTimestamp(row.createdAt);
+  try {
+    const view = renderDom(
+      <MessageRow {...props} row={relayed(true, "source")} />,
+    );
+    const trigger = screen.getByRole("button", {
+      name: `Zerk from #rebase: Rebase on main, ${when}`,
+    });
+    expect(screen.queryByText(/Relayed for/)).toBeNull();
+    // The source chat stays a link on the line, above its button.
+    expect(screen.getByRole("link", { name: /rebase/ })).toBeVisible();
+    expect(view.container.querySelector("[data-viewer-message]")).toBeNull();
+    fireEvent.click(trigger);
+    expect(screen.getByText("Sent as you · to Juno")).toBeVisible();
+    expect(screen.getByText("Rebase on main")).toBeVisible();
+    expect(screen.queryByText(/Relayed for/)).toBeNull();
+    // The line carries no reactions row.
+    expect(view.container.querySelector("[data-message-reactions]")).toBeNull();
+    // A thread on the line stays in view while it is collapsed.
+    fireEvent.click(trigger);
+    view.rerender(
+      <MessageRow
+        {...props}
+        row={{ ...relayed(true, "source"), replyCount: 2 }}
+      />,
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Zerk from #rebase: Rebase on main, 2 replies, ${when}`,
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("2 replies")).toBeVisible();
+    // A chat the reader is not in stays unnamed.
+    view.rerender(<MessageRow {...props} row={relayed(true, "elsewhere")} />);
+    expect(
+      screen.getByRole("button", { name: `Zerk: Rebase on main, ${when}` }),
+    ).toBeVisible();
+    // Unverified, it is the signer's ordinary message with its notice.
+    view.rerender(<MessageRow {...props} row={relayed(false, "source")} />);
+    expect(screen.getByText(/Relayed for Zerk/)).toBeVisible();
+    expect(
+      view.container.querySelector("[data-message-reactions]"),
+    ).not.toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
+it("reads a relayed line's date when Message timestamps hides its clock", () => {
+  setClockPreference({ messageTimestamps: "hide" });
+  const subscribe = () => () => {};
+  const profiles = new Map([["zerk", { name: "Zerk", isAgent: true }]]);
+  const list = { status: "ready", channels: [] };
+  const session = {
+    viewer: "owner",
+    channels: { list: () => list, subscribeList: subscribe },
+    messages: {},
+    profiles: { snapshot: () => profiles, subscribe },
+  } as unknown as RelaySession;
+  const view = renderDom(
+    <MessageRow
+      row={{
+        ...row,
+        authorId: "owner",
+        replyCount: 0,
+        content: "Rebase on main",
+        relayedFrom: { agent: "zerk", verified: true },
+      }}
+      profile={{ name: "Gil" }}
+      session={session}
+      viewer="owner"
+      media={() => undefined}
+      onOpenLink={() => false}
+      day={false}
+      retry={undefined}
+    />,
+  );
+  try {
+    expect(
+      screen.getByRole("button", {
+        name: `Zerk: Rebase on main, ${formatFullTimestamp(row.createdAt)}`,
+      }),
+    ).toBeVisible();
+    // No clock shows on the line.
+    expect(view.container.querySelector("time [aria-hidden]")).toBeNull();
+  } finally {
+    cleanup();
+    setClockPreference({ messageTimestamps: "show" });
+  }
+});

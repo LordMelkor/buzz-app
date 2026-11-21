@@ -172,6 +172,20 @@ for (const target of ["alpha", "profiles"]) {
         await expect(warning).toHaveCount(0);
       }
     }
+    if (target === "alpha") {
+      const header = page.locator(".shell-header");
+      await header.evaluate((node) => node.classList.add("shell-header-mac"));
+      await expect
+        .poll(() =>
+          page
+            .locator(".buzz-toast")
+            .evaluate((node) => node.getBoundingClientRect().top),
+        )
+        .toBe(12);
+      await header.evaluate((node) =>
+        node.classList.remove("shell-header-mac"),
+      );
+    }
     // The notice keeps showing while the retried REQ waits for EOSE, and it
     // floats above the composer without covering Send.
     for (const width of [390, 800, 1440]) {

@@ -12,15 +12,15 @@ test.use({
 });
 
 // Browser-only contract: :has() projects real unread markers through hidden
-// section content into computed heading paint, including nested scope headings.
+// section content into computed paint for workspaces and built-in headings.
 test("collapsed headings follow unread, confirmed mute and read changes", async ({
   page,
   app,
 }, info) => {
-  // Mark as read cuts at click time; keep the signed fixture arrival newer.
-  await page.clock.setFixedTime(
-    new Date(app.histories.get("primary/beta").at(-1).created_at * 1000),
-  );
+  // The broker signs against wall time. Put the later fixture arrival just
+  // beyond the click cutoff while keeping publication time valid.
+  const now = Math.floor(Date.now() / 1000);
+  await page.clock.setFixedTime(new Date(now * 1000));
   await holdReadingFocus(page);
   await open(page, app);
   const section = page.locator('[data-sidebar-section="group:work"]');
@@ -109,21 +109,41 @@ test("collapsed headings follow unread, confirmed mute and read changes", async 
   await expect(title).toHaveCSS("color", await ink("text-metadata"));
   // New evidence must update the heading without reopening its hidden rows.
   await expect.poll(() => app.relay.hasRoute("primary", "beta")).toBe(true);
-  app.append("primary", "beta", "Unread while collapsed", true, false);
+  app.append(
+    "primary",
+    "beta",
+    "Unread while collapsed",
+    true,
+    false,
+    undefined,
+    undefined,
+    [],
+    now + 1,
+  );
   await expect(badge).toHaveCount(1);
   await expect(title).toHaveCSS("color", await ink("text-navigation-unread"));
   await expect(beta).toBeHidden();
-  // The aggregate Team heading also represents nested collapsed sections.
-  const team = page.locator(
-    '[data-sidebar-section="scope:team"] > .navigation-section-heading .navigation-section-heading-label > details > summary',
-  );
-  await team.click();
-  await expect(team.getByText("Team", { exact: true })).toHaveCSS(
+  // A built-in heading owns unread paint when a conversation moves home.
+  await summary.press("Enter");
+  await beta.click({ button: "right" });
+  const move = menu.getByRole("menuitem", { name: "Move to…", exact: true });
+  await move.focus();
+  await move.press("ArrowRight");
+  await page
+    .getByRole("menu", { name: "Move Beta to workspace", exact: true })
+    .getByRole("menuitemradio", { name: "Team", exact: true })
+    .click();
+  const team = page.locator('[data-sidebar-section="channels"]');
+  const unfiled = team.locator('button[data-channel-id="beta"]');
+  await expect(unfiled).toBeVisible();
+  const teamSummary = team.locator("summary");
+  await teamSummary.click();
+  await expect(teamSummary.getByText("Team", { exact: true })).toHaveCSS(
     "color",
     await ink("text-navigation-unread"),
   );
-  await team.press("Enter");
-  await expect(summary).toBeVisible();
+  await teamSummary.press("Enter");
+  await expect(unfiled).toBeVisible();
 });
 
 test.describe("thread activity", () => {
@@ -144,7 +164,10 @@ test.describe("thread activity", () => {
     // followed thread lights it again.
     await page.locator('button[data-channel-id="beta"]').first().click();
     await expect(alpha.locator("[data-channel-activity]")).toHaveCount(0);
-    const root = app.histories.get("primary/alpha").at(-2);
+    // The viewer's own thread: a broadcast in a peer's thread is only bold.
+    const root = app.histories
+      .get("primary/alpha")
+      .find((event) => event.content === "Thread root 0");
     app.relay.publish(
       "primary",
       finalizeEvent(
@@ -189,5 +212,45 @@ test.describe("thread activity", () => {
     ).toBeVisible();
     await summary.click();
     await expect(title).toHaveCSS("font-weight", "500");
+  });
+
+  test("a broadcast reply in a peer's thread bolds the row without a dot", async ({
+    page,
+    app,
+  }) => {
+    await holdReadingFocus(page);
+    await open(page, app);
+    const alpha = page
+      .locator('[data-sidebar-section="starred"]')
+      .locator('button[data-channel-id="alpha"]');
+    await page.locator('button[data-channel-id="beta"]').first().click();
+    const root = app.histories
+      .get("primary/alpha")
+      .find((event) => event.content === "Thread root 1");
+    app.relay.publish(
+      "primary",
+      finalizeEvent(
+        {
+          kind: 9,
+          created_at: Math.floor(Date.now() / 1000),
+          content: "Broadcast in a peer's thread",
+          tags: [
+            ["h", "alpha"],
+            ["e", root.id, "", "reply"],
+            ["broadcast", "1"],
+          ],
+        },
+        generateSecretKey(),
+      ),
+    );
+    // Bold, like a new top-level post.
+    await expect(alpha.getByText("Alpha", { exact: true })).toHaveCSS(
+      "font-weight",
+      "600",
+    );
+    await expect(alpha.locator("[data-channel-activity]")).toHaveCount(0);
+    await expect(
+      alpha.locator('[data-channel-unread][data-priority="true"]'),
+    ).toHaveCount(0);
   });
 });

@@ -52,17 +52,21 @@ export function usePanelSplit(
   // Follow newer saves from another frame or window sharing this page's width.
   useLayoutEffect(() => {
     if (!scope) return;
-    return subscribeView(scope, () => {
-      const revision = viewRevision(scope, key);
-      setView((current) =>
-        revision === undefined ||
-        (current.scope === scope &&
-          current.key === key &&
-          current.revision === revision)
-          ? current
-          : loadSplit(scope, key),
-      );
-    });
+    return subscribeView(
+      scope,
+      () => {
+        const revision = viewRevision(scope, key);
+        setView((current) =>
+          revision === undefined ||
+          (current.scope === scope &&
+            current.key === key &&
+            current.revision === revision)
+            ? current
+            : loadSplit(scope, key),
+        );
+      },
+      key,
+    );
   }, [scope, key]);
   const setPreferred = (width: number | undefined) => {
     if (scope && width !== undefined) writeView(scope, key, width);
@@ -147,3 +151,13 @@ function PanelSplitHandle({
     />
   );
 }
+
+/** Attach ref to the layout container and render handle beside the secondary pane. */
+export type PanelSplit = ReturnType<typeof usePanelSplit>;
+
+/** Plugin layouts never share persistence keys with built-in page layouts. */
+export const usePluginPanelSplit: typeof usePanelSplit = (
+  scope,
+  name,
+  ...options
+) => usePanelSplit(scope, `plugin:${name}`, ...options);

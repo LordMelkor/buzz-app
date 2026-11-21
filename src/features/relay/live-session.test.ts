@@ -8,6 +8,7 @@ import { headRecovering } from "./live-recovery";
 import { EMOJI_SET } from "./emoji";
 import type { SidebarPreferences } from "./sidebar-preferences";
 import { readJournal, type ReadJournal } from "./read-state-storage";
+import { USER_STATUS_KIND } from "./user-status-policy";
 // The real host codec, as read-state.test.ts uses it.
 import {
   decodeReadState,
@@ -466,12 +467,14 @@ function reconnectHarness(
     wire.pending.filter(
       (entry) => !entry.signal?.aborted && entry.filters[0]?.top_level === true,
     );
-  /** The one outstanding window read, after answering profile reads empty.
-   * A head's notice read, sent beside it, stays pending. */
+  /** The one outstanding window read, after answering byline profile and
+   * status reads empty. A head's notice read, sent beside it, stays pending. */
   const read = (channelId = "c") => {
     for (const entry of wire.pending.splice(0)) {
       if (entry.signal?.aborted) continue;
-      if (entry.filters[0]?.kinds?.includes(0)) entry.respond([]);
+      const kinds = entry.filters[0]?.kinds;
+      if (kinds?.includes(0) || kinds?.includes(USER_STATUS_KIND))
+        entry.respond([]);
       else wire.pending.push(entry);
     }
     const reads = wire.pending.filter((entry) => !isNoticeRead(entry.filters));
@@ -2646,4 +2649,96 @@ it("retries transient sidebar hint failures through existing preference recovery
   } finally {
     owner.dispose();
   }
+});
+
+describe("session recovery and the live reconnect wait", () => {
+  /** The full roster scan, as session-read-retry.test.ts matches it. */
+  const fullRoster = (filters: readonly ReadFilter[]) =>
+    !!filters[0]?.kinds?.includes(39002) &&
+    !!filters[0]["#p"] &&
+    !filters[0]["#t"] &&
+    !filters[0]["#d"];
+  const setup = () => {
+    const viewer = keypair(),
+      relay = keypair();
+    const query = vi.fn(
+      async (_filters: readonly ReadFilter[], _signal?: AbortSignal) =>
+        [] as RelayEvent[],
+    );
+    let live!: LiveCallbacks;
+    const retry = vi.fn();
+    const owner = createRelaySession({
+      viewer: viewer.pubkey,
+      relayAuthor: relay.pubkey,
+      query,
+      media: () => undefined,
+      subscribe(callbacks) {
+        live = callbacks;
+        return { update() {}, retry, dispose() {} };
+      },
+    });
+    live.state({ status: "connected", routes: [] });
+    return { owner, query, retry, live };
+  };
+  afterEach(() => vi.useRealTimers());
+
+  it("the background timer retries a failed roster read but keeps the scheduled reconnect", async () => {
+    vi.useFakeTimers();
+    const { owner, query, retry, live } = setup();
+    try {
+      query.mockImplementationOnce(async (filters) => {
+        if (fullRoster(filters))
+          throw new ReadError("unavailable", "offline", 503);
+        return [];
+      });
+      owner.session.channels.refreshList?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.session.live.snapshot().roster).toMatchObject({
+        state: "error",
+        transient: true,
+      });
+      live.state({ status: "retrying", routes: [] });
+      // Recovery ticks land 1s, 3s and 7s after the failure.
+      await vi.advanceTimersByTimeAsync(8_999);
+      expect(owner.session.live.snapshot().roster.state).toBe("verified");
+      expect(
+        query.mock.calls.filter(([filters]) => fullRoster(filters)).length,
+      ).toBeGreaterThan(1);
+      expect(retry).not.toHaveBeenCalled();
+    } finally {
+      owner.dispose();
+    }
+  });
+
+  it("a signal still skips the live reconnect wait", async () => {
+    vi.useFakeTimers();
+    const { owner, retry, live } = setup();
+    try {
+      live.state({ status: "retrying", routes: [] });
+      await vi.advanceTimersByTimeAsync(2_000);
+      owner.session.recovery?.retryNow();
+      expect(retry).toHaveBeenCalledTimes(1);
+      live.state({ status: "connected", routes: [] });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(retry).toHaveBeenCalledTimes(1);
+    } finally {
+      owner.dispose();
+    }
+  });
+
+  it("Retry and credential changes skip the live reconnect wait", async () => {
+    vi.useFakeTimers();
+    const { owner, retry, live } = setup();
+    try {
+      live.state({ status: "retrying", routes: [] });
+      await vi.advanceTimersByTimeAsync(2_000);
+      owner.session.recovery?.retryAll();
+      expect(retry).toHaveBeenCalledTimes(1);
+      live.state({ status: "connected", routes: [] });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(retry).toHaveBeenCalledTimes(1);
+    } finally {
+      owner.dispose();
+    }
+  });
 });

@@ -119,8 +119,8 @@ test("joined header seams, drag feedback, and pointer-only overlay motion", asyn
   expect(railCenter).toBeCloseTo(
     (sidebarBounds.x + sidebarBounds.width + mainBounds.x) / 2,
   );
-  // The scrollbar remains 2px inside the borderless joined pane's edge.
-  expect(railCenter - (scrollBounds.x + scrollBounds.width)).toBeCloseTo(2);
+  // The scrollport extends through the trailing inset to the resize seam.
+  expect(railCenter - (scrollBounds.x + scrollBounds.width)).toBeCloseTo(0);
   const capsuleCenter = await resize.evaluate(
     (el) =>
       el.getBoundingClientRect().left +

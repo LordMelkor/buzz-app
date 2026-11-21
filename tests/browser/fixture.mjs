@@ -40,6 +40,10 @@ export const test = base.extend({
   /** The production broker's live setup deadline. It runs in Node, so the
    * page clock cannot hold it; a test that keeps EOSE pending sets it longer. */
   liveSetupTimeoutMs: [undefined, { option: true }],
+  // The production broker's reconnect draw (live.ts `random`). Pinned so a
+  // dropped socket returns at once; a journey can set a nonzero draw to
+  // test the spread.
+  liveDraw: [0, { option: true }],
   actionProfile: [false, { option: true }],
   agentMessageDeletion: [false, { option: true }],
   profilePicture: ["", { option: true }],
@@ -68,6 +72,7 @@ export const test = base.extend({
   sortingSidebar: [false, { option: true }],
   initialSidebarSort: [{}, { option: true }],
   channelLifecycle: [false, { option: true }],
+  memberRoleChanges: [false, { option: true }],
   leaveRosterBeforeAck: [false, { option: true }],
   guestPermalinks: [false, { option: true }],
   lifecycleRole: ["owner", { option: true }],
@@ -114,6 +119,8 @@ export const test = base.extend({
   historyCounts: [{ alpha: 1, beta: 1 }, { option: true }],
   // Rows sharing each history second; above the page size, pages split seconds.
   historyRowsPerSecond: [1, { option: true }],
+  // Fixed signing keys repeat event IDs, and so where pages split a second.
+  fixedKeys: [false, { option: true }],
   channelIds: [channels, { option: true }],
   developmentReact: [false, { option: true, scope: "worker" }],
   builderlabLogin: [false, { option: true, scope: "worker" }],
@@ -139,6 +146,7 @@ export const test = base.extend({
       enabledPlugins,
       builderlab,
       liveSetupTimeoutMs,
+      liveDraw,
       actionProfile,
       agentMessageDeletion,
       profilePicture,
@@ -164,6 +172,7 @@ export const test = base.extend({
       sortingSidebar,
       initialSidebarSort,
       channelLifecycle,
+      memberRoleChanges,
       leaveRosterBeforeAck,
       guestPermalinks,
       lifecycleRole,
@@ -195,6 +204,7 @@ export const test = base.extend({
       launchAnimation,
       historyCounts,
       historyRowsPerSecond,
+      fixedKeys,
       channelIds,
       pluginFixtures,
       developmentReact,
@@ -205,7 +215,7 @@ export const test = base.extend({
   ) => {
     const channels = firstSeenHistory ? [...channelIds, "busy"] : channelIds;
     const key = (seed) =>
-      actionProfile
+      actionProfile || fixedKeys
         ? Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? seed : 0))
         : generateSecretKey();
     const relayKey = key(1);
@@ -279,6 +289,8 @@ export const test = base.extend({
     );
     // Kind 0 by author for keys a test creates; served on later profile reads.
     const servedProfiles = new Map();
+    // NIP-38 general statuses by author, served on later status reads.
+    const servedStatuses = new Map();
     const soloAgentKeys = [];
     const soloAgents = [...soloAgentNames, ...soloOutsideAgentNames].map(
       (name) => {
@@ -314,7 +326,7 @@ export const test = base.extend({
       },
     );
     const ownerAgentKey =
-      lifecycleOwnerAgent || agentMessageDeletion
+      lifecycleOwnerAgent || agentMessageDeletion || memberRoleChanges
         ? generateSecretKey()
         : undefined;
     const ownerAgent = ownerAgentKey ? getPublicKey(ownerAgentKey) : undefined;
@@ -417,6 +429,7 @@ export const test = base.extend({
                   order: 0,
                   ...(sidebarIcons ? { icon: ":stamp:" } : {}),
                 },
+                ...(Array.isArray(savedSidebar) ? savedSidebar : []),
                 ...(sidebarIcons
                   ? [
                       {
@@ -1459,7 +1472,9 @@ export const test = base.extend({
         });
         expect(filter.authors.length).toBeGreaterThan(0);
         expect(filter.authors.length).toBeLessThanOrEqual(100);
-        return [];
+        return [...servedStatuses.values()].filter((event) =>
+          filter.authors.includes(event.pubkey),
+        );
       }
       if (filter.kinds?.includes(30178)) {
         expect(filter).toEqual({
@@ -2167,6 +2182,9 @@ export const test = base.extend({
           "channel-stars",
           "channel-sort",
           "channel-filter",
+          "channel-workspaces",
+          "channel-workspace-sort",
+          "channel-workspace-filter",
         ].includes(sidebarCoordinate) ||
         (ownSoloChannels.length > 0 &&
           sidebarCoordinate?.startsWith("buzz-me-kit-v1:"))
@@ -2193,7 +2211,23 @@ export const test = base.extend({
         });
         return;
       }
-      expect(event.tags).toContainEqual(["t", "read-state"]);
+      // Thread follow choices sync through their own slots.
+      if (event.tags.some(([k, v]) => k === "t" && v === "thread-follows")) {
+        report.followPublications ??= [];
+        report.followPublications.push({ community, event });
+        // Stored beside read state: the same snapshot reads both back.
+        readEvents
+          .get(community)
+          .set(event.tags.find(([key]) => key === "d")?.[1], event);
+        return;
+      }
+      // Read positions, or the version-2 unread record: each prefix with its tag.
+      const namespace = event.tags
+        .find(([key]) => key === "d")?.[1]
+        ?.startsWith("read-state-unread-v2:")
+        ? "read-state-unread-v2"
+        : "read-state";
+      expect(event.tags).toContainEqual(["t", namespace]);
       const blob = JSON.parse(
         nip44.v2.decrypt(
           event.content,
@@ -2201,7 +2235,8 @@ export const test = base.extend({
         ),
       );
       const coordinate = event.tags.find(([key]) => key === "d")?.[1];
-      expect(coordinate).toMatch(/^read-state:[0-9a-f]{32}$/);
+      expect(coordinate).toMatch(/^read-state(-unread-v2)?:[0-9a-f]{32}$/);
+      expect(blob.v).toBe(namespace === "read-state" ? 1 : 2);
       const previous = readEvents.get(community).get(coordinate);
       if (
         !previous ||
@@ -2219,16 +2254,21 @@ export const test = base.extend({
           searchProfiles,
           report,
           pending,
+          olderPageDelayMs,
           // The production broker advertises read-state writes for every session,
           // not only tests opting into complete snapshot reads.
           acceptPublication: acceptReadPublication,
-          ...(actionProfile || channelLifecycle
+          ...(actionProfile || channelLifecycle || memberRoleChanges
             ? {
                 latencyMs: 40,
                 holdOlder: false,
                 acceptPublication: (community, event) => {
                   expect(verifyEvent(event)).toBe(true);
                   expect(event.pubkey).toBe(viewer);
+                  if (memberRoleChanges && event.kind === 9050) {
+                    report.publications.push({ community, event });
+                    return;
+                  }
                   if (
                     channelLifecycle &&
                     [9002, 9008, 9021, 9022, 41012].includes(event.kind)
@@ -2277,8 +2317,13 @@ export const test = base.extend({
             self: getPublicKey(relayKey),
             ...(openingAdminSetup ? { supported_nips: [29] } : {}),
             // Solo details publications below retain label changes as well as names.
-            ...(ownSoloChannels.length
-              ? { supported_extensions: ["nip-cl"] }
+            ...(ownSoloChannels.length || memberRoleChanges
+              ? {
+                  supported_extensions: [
+                    ...(ownSoloChannels.length ? ["nip-cl"] : []),
+                    ...(memberRoleChanges ? ["buzz-solo-member-role"] : []),
+                  ],
+                }
               : {}),
             ...(readState
               ? {
@@ -2608,7 +2653,7 @@ export const test = base.extend({
                   communityAliases: fixtureAliases,
                   identity: () => userKey.slice(),
                   agentLibrary: () => ({ definitions: [], identities: [] }),
-                  ...(readState || channelLifecycle
+                  ...(readState || channelLifecycle || memberRoleChanges
                     ? {}
                     : {
                         authority: async () => ({
@@ -2621,6 +2666,9 @@ export const test = base.extend({
                   upstreamFetch: relay.fetch,
                   socketFactory: relay.socket,
                   liveSetupTimeoutMs,
+                  ...(liveDraw === undefined
+                    ? {}
+                    : { liveRandom: () => liveDraw }),
                 });
                 await broker.configureServer(server);
               } else server.middlewares.use(middleware);
@@ -2780,6 +2828,7 @@ export const test = base.extend({
           return event;
         },
         signRelay: (template) => finalizeEvent(template, relayKey),
+        ownerAgent,
         membershipSnapshot(role) {
           expect(["owner", "admin", "member"]).toContain(role);
           return sign(13534, [["member", viewer, role]], "", relayKey);
@@ -2930,6 +2979,20 @@ export const test = base.extend({
         serveProfile(key, body) {
           const event = sign(0, [], JSON.stringify(body), key);
           servedProfiles.set(event.pubkey, event);
+          return event;
+        },
+        // Answer later status reads for this key, like serveProfile.
+        serveStatus(key, emoji, text) {
+          const event = sign(
+            30315,
+            [
+              ["d", "general"],
+              ["emoji", emoji],
+            ],
+            text,
+            key,
+          );
+          servedStatuses.set(event.pubkey, event);
           return event;
         },
         // A real, newer NIP-OA head; the client still admits it through a read.
@@ -3147,6 +3210,8 @@ export const test = base.extend({
             createdAt ?? (history.at(-1)?.created_at ?? 1700000900) + 1,
           );
           history.push(event);
+          // Like the relay, someone else's message unhides the viewer's DM.
+          if (!own && hiddenDmIds.delete(channel)) lifecycleTime++;
           if (relay && deliver) relay.publish(community, event);
           else if (relay) return event;
           else {

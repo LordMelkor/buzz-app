@@ -10,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import {
   WorkspaceCompositionContext,
   RegionWorkspace,
@@ -101,9 +102,8 @@ function fixture(projectName = "Work") {
       write,
       writeStar: async () => [],
       removeSection: remove,
+      writeSort: async () => ({}),
       writeOrder: order,
-      // Groups-only chats have no Messages sort coordinate.
-      groupsOnly: true,
     });
   const order = vi.fn(async (ids: readonly string[]) => {
     saved = {
@@ -140,7 +140,7 @@ function fixture(projectName = "Work") {
         {
           ...owner.session,
           channelDetails: details,
-          soloPreferences: preferences,
+          sidebarPreferences: preferences,
           unread,
           canvas: { available: false },
           channels: { list: () => channels, subscribeList: () => () => {} },
@@ -237,6 +237,45 @@ it("moves workspaces with the section menu, keeps collapse and filing, and retri
   first.dispose();
 });
 
+it("returns focus to the workspace title after a failed order save", async () => {
+  const h = fixture();
+  h.setSaved({
+    ...h.saved(),
+    sections: [
+      { id: "work", name: "Work", order: 0 },
+      { id: "home", name: "Home", order: 1 },
+    ],
+  });
+  const store = h.store();
+  const user = userEvent.setup();
+  await store.queries.ensure();
+  h.order.mockRejectedValueOnce(new Error("Order was refused"));
+  render(
+    h.view(store.queries, undefined, undefined, undefined, (parts) => (
+      <WorkspaceCompositionContext value={parts}>
+        <RegionWorkspace id="work" />
+        <RegionWorkspace
+          id="home"
+          headerLeading={{
+            icon: "H",
+            label: "Open Home summary",
+            onActivate() {},
+          }}
+        />
+      </WorkspaceCompositionContext>
+    )),
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Actions for Home" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Move up" }));
+    const error = await screen.findByRole("alert");
+    await user.click(within(error).getByRole("button", { name: "Dismiss" }));
+    expect(screen.getByRole("button", { name: /^Home$/ })).toHaveFocus();
+  } finally {
+    store.dispose();
+  }
+});
+
 it("creates and moves through the relay service, then restores in a fresh store", async () => {
   const h = fixture();
   const first = h.store();
@@ -258,10 +297,7 @@ it("creates and moves through the relay service, then restores in a fresh store"
   await user.click(
     await screen.findByRole("menuitem", { name: "New workspace" }),
   );
-  await user.type(
-    screen.getByRole("textbox", { name: "Workspace name" }),
-    "Projects",
-  );
+  await user.type(screen.getByRole("textbox", { name: "Name" }), "Projects");
   await user.click(screen.getByRole("button", { name: "Create and move" }));
   await waitFor(() =>
     expect(h.write).toHaveBeenCalledWith(
@@ -475,11 +511,16 @@ it("shares a workspace frame while keeping selection, disclosure and chat creati
           <RegionWorkspace
             id="work"
             selected={selected}
+            {...(selected ? { reveal: "chat" } : {})}
             onSelect={() => {
               onSelect();
               select(true);
             }}
             onNewTask={onTask}
+            headerAccessory={createPortal(
+              <button type="button">Accessory popup action</button>,
+              document.body,
+            )}
           >
             <button type="button">Workspace task</button>
           </RegionWorkspace>
@@ -518,9 +559,20 @@ it("shares a workspace frame while keeping selection, disclosure and chat creati
     );
     await user.click(screen.getByRole("button", { name: "New task in Work" }));
     expect(onTask).toHaveBeenCalledOnce();
+    const popupAction = screen.getByRole("button", {
+      name: "Accessory popup action",
+    });
+    popupAction.focus();
+    expect(popupAction).toHaveFocus();
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    expect(screen.queryByRole("menu", { name: "Actions for Work" })).toBeNull();
+    fireEvent.contextMenu(popupAction);
+    expect(screen.queryByRole("menu", { name: "Actions for Work" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Actions for Work" }));
-    expect(screen.queryByRole("menuitem", { name: "New task" })).toBeNull();
-    await user.keyboard("{Escape}");
+    await user.click(
+      await screen.findByRole("menuitem", { name: /^New task$/ }),
+    );
+    expect(onTask).toHaveBeenCalledTimes(2);
     expect(onSelect).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "New chat in Work" }),
@@ -978,49 +1030,63 @@ it("keeps a chat listed after it loses its pin until the workspace folds", async
   ).toHaveFocus();
 });
 
-it("lists and focuses a chat moved into a full workspace", async () => {
-  const h = fixture();
-  const owner = h.store();
-  const user = userEvent.setup();
-  const chats = [
-    ...Array.from({ length: SOLO_CHAT_CAP }, (_, index) => ({
-      id: `c${index}`,
-      title: `Chat ${index}`,
-    })),
-    { id: "chat", title: "Planning" },
-  ];
-  await owner.queries.ensure();
-  for (const chat of chats.slice(0, SOLO_CHAT_CAP))
-    await owner.queries.assign(chat.id, "work");
-  const view = render(h.view(owner.queries, undefined, undefined, chats));
-  // A leaving presence copy can precede the active destination in DOM order.
-  const leaving = document.createElement("div");
-  leaving.setAttribute("inert", "");
-  leaving.setAttribute("aria-hidden", "true");
-  const old = view.container.querySelector('[data-solo-menu-id="chat"]');
-  if (!old) throw new Error("Missing source chat row");
-  leaving.append(old.cloneNode(true));
-  view.container.prepend(leaving);
-  await waitFor(() =>
-    expect(
+it.each([false, true])(
+  "focuses a move into a full workspace (collapsed=%s)",
+  async (collapsed) => {
+    const h = fixture();
+    const owner = h.store();
+    const user = userEvent.setup();
+    const chats = [
+      ...Array.from({ length: SOLO_CHAT_CAP }, (_, index) => ({
+        id: `c${index}`,
+        title: `Chat ${index}`,
+      })),
+      { id: "chat", title: "Planning" },
+    ];
+    await owner.queries.ensure();
+    for (const chat of chats.slice(0, SOLO_CHAT_CAP))
+      await owner.queries.assign(chat.id, "work");
+    const view = render(h.view(owner.queries, undefined, undefined, chats));
+    const heading = screen.getByRole("button", { name: "Work" });
+    if (collapsed) await user.click(heading);
+    // A leaving presence copy can precede the active destination in DOM order.
+    const leaving = document.createElement("div");
+    leaving.setAttribute("inert", "");
+    leaving.setAttribute("aria-hidden", "true");
+    const old = view.container.querySelector('[data-solo-menu-id="chat"]');
+    if (!old) throw new Error("Missing source chat row");
+    leaving.append(old.cloneNode(true));
+    view.container.prepend(leaving);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Actions for Planning" }),
+      ).toBeEnabled(),
+    );
+    await user.click(
       screen.getByRole("button", { name: "Actions for Planning" }),
-    ).toBeEnabled(),
-  );
-  await user.click(
-    screen.getByRole("button", { name: "Actions for Planning" }),
-  );
-  (await screen.findByRole("menuitem", { name: "Move to" })).focus();
-  await user.keyboard("{ArrowRight}");
-  await user.click(await screen.findByRole("menuitem", { name: "Work" }));
-  await waitFor(() => expect(h.saved().assignments.chat).toBe("work"));
-  const work = projectOf(screen.getByRole("button", { name: "Work" }));
-  await waitFor(() =>
-    expect(
-      within(work).getByRole("button", { name: "Planning" }),
-    ).toHaveFocus(),
-  );
-  owner.dispose();
-});
+    );
+    (await screen.findByRole("menuitem", { name: "Move to" })).focus();
+    await user.keyboard("{ArrowRight}");
+    await user.click(await screen.findByRole("menuitem", { name: "Work" }));
+    await waitFor(() => expect(h.saved().assignments.chat).toBe("work"));
+    if (collapsed) {
+      expect(heading).toHaveAttribute("aria-expanded", "false");
+      expect(heading).toHaveFocus();
+      await user.click(heading);
+    }
+    const work = projectOf(heading);
+    await waitFor(() =>
+      expect(
+        within(work).getByRole("button", { name: "Planning" }),
+      ).toBeVisible(),
+    );
+    if (!collapsed)
+      expect(
+        within(work).getByRole("button", { name: "Planning" }),
+      ).toHaveFocus();
+    owner.dispose();
+  },
+);
 
 it("keeps a pinned chat past the expanded limit held after a partial fold", async () => {
   const h = fixture();
@@ -1089,12 +1155,12 @@ it("rejects a late personal move through the same owner used by menu selections 
       muted: [],
     }),
     available: true,
-    groupsOnly: true,
+    writeStar: async () => [],
     write,
   });
   try {
     await preferences.queries.ensure();
-    Object.assign(h.session, { soloPreferences: preferences.queries });
+    Object.assign(h.session, { sidebarPreferences: preferences.queries });
     const channel = h.session.channels
       .list()
       .channels.find((item) => item.id === "owned");

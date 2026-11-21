@@ -143,8 +143,12 @@ or imply confirmed delivery. There is no durable invisible policy on the relay.
   An owner may request an earlier read that keeps current evidence and still
   waits for the start gate; input-activity changes do, and no agent surface does
   now.
-  Empty demand makes no request; removed authors lose their evidence. Hidden views,
-  disconnect, access/cache invalidation and disposal invalidate observations.
+  Empty demand makes no request. A removed author other than the viewer keeps
+  unexpired evidence (up to 1,024 authors), unread and unobserved, so a remount
+  within the lease shows it at once, even if it changed meanwhile, until the next
+  snapshot; a remount past the 256-author limit shows none. Hidden views, disconnect,
+  access/cache invalidation and disposal invalidate observations and retained
+  evidence.
 - One demand-scoped kind:20001 live-only route shares the authenticated socket.
   Its author set updates at the existing coalesced snapshot/start gate, not on
   every mounted row. Replacement keeps the old wire until the new EOSE; removed

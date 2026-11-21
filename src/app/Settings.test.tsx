@@ -16,6 +16,7 @@ import { ToastProvider } from "../shared/design-system/ui/Toast";
 import { Context } from "@deepseek-ai/cordis";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { createCommunityMembership } from "../bundled/moderation/membership";
+import performanceDiagnosticsManifest from "../bundled/performance-diagnostics/manifest.json";
 import {
   SettingsCardsService,
   type SettingsCard,
@@ -124,7 +125,7 @@ for (const [path, name] of [
   ["../features/updates/UpdateSettings", "UpdateSettings"],
 ] as const)
   vi.doMock(path, () => ({ [name]: () => null }));
-const { Settings } = await import("./Settings");
+const { Settings, sectionPlugins } = await import("./Settings");
 const { SettingsSidebar } = await import("./SettingsSidebar");
 const pluginState = {
   configuration: { status: "loading" },
@@ -331,6 +332,15 @@ it.each([false, true])("groups plugins (Essentials=%s)", async (essentials) => {
       discovery: { category: "communication" },
     },
   });
+  ready.configuration.catalog.plugins.push({
+    manifest: performanceDiagnosticsManifest,
+    source: "bundled",
+    enabled: essentials,
+    revision: "bundled",
+    previous: null,
+    reloadable: false,
+    error: null,
+  });
   render(
     <Settings
       {...host}
@@ -488,7 +498,9 @@ it.each([false, true])("groups plugins (Essentials=%s)", async (essentials) => {
   await waitFor(() =>
     expect(within(content).getByText("Invoices")).toBeVisible(),
   );
-  fireEvent.change(search, { target: { value: "no-match" } });
+  fireEvent.change(search, {
+    target: { value: "buzz.performance-diagnostics" },
+  });
   expect(within(content).queryAllByRole("article")).toHaveLength(0);
   expect(within(content).getByText("No plugins match")).toBeVisible();
   const clearFilters = within(content).getByRole("button", {
@@ -2241,6 +2253,41 @@ it("starts a section a link opens at its top, even with a kept place", async () 
   rerender(inPort("buzz.github/authors"));
   expect(port.scrollTop).toBe(0);
   expect(document.getElementById("settings-content")).toHaveFocus();
+});
+
+it("names the plugins that are on, not paused, and declare a base instruction section", () => {
+  const plugin = (name: string, enabled: boolean, section?: string) => ({
+    manifest: {
+      id: `example.${name.toLowerCase()}`,
+      name,
+      apiVersion: 1 as const,
+      ...(section ? { host: { agentPromptSections: [section] } } : {}),
+    },
+    source: "external" as const,
+    enabled,
+    revision: "one",
+    previous: null,
+    reloadable: false,
+    error: null,
+  });
+  const plugins = [
+    plugin("Tasks", true, "working-location"),
+    plugin("Notes", false, "working-location"),
+    plugin("Plans", true, "routing"),
+    plugin("Lists", true),
+  ];
+  expect(sectionPlugins(plugins, "working-location")).toEqual(["Tasks"]);
+  expect(sectionPlugins(plugins, "routing")).toEqual(["Plans"]);
+  expect(sectionPlugins(plugins, "progress")).toEqual([]);
+  // Safe mode pauses external plugins.
+  expect(sectionPlugins(plugins, "working-location", true)).toEqual([]);
+  expect(
+    sectionPlugins(
+      [{ ...plugin("Tasks", true, "working-location"), source: "bundled" }],
+      "working-location",
+      true,
+    ),
+  ).toEqual(["Tasks"]);
 });
 
 it("links a decision provider's details to Decisions API", async () => {

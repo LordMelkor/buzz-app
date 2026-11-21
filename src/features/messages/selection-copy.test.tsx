@@ -16,6 +16,7 @@ import { MessageMarkdown } from "./MessageMarkdown";
 import { MessageRow } from "./MessageRow";
 import {
   type CopyFormat,
+  containMessageSelection,
   copyDocument,
   serializeNode,
   serializeSelection,
@@ -378,12 +379,17 @@ describe("serializeNode", () => {
     });
     const text = (text: string, marks?: object[]) =>
       marks ? { type: "text", text, marks } : { type: "text", text };
-    const item = (...content: object[]) => ({ type: "list_item", content });
+    const item = (...content: object[]) => ({
+      type: "list_item",
+      attrs: { spread: false },
+      content,
+    });
     expect(copyDocument(query("[data-message-id]", body)).toJSON()).toEqual({
       type: "doc",
       content: [
         {
           type: "bullet_list",
+          attrs: { spread: false },
           content: [
             item(paragraph(text("one"))),
             item(paragraph(text("two "), text("b", [{ type: "bold" }]))),
@@ -391,10 +397,11 @@ describe("serializeNode", () => {
         },
         {
           type: "ordered_list",
-          attrs: { order: 3 },
+          attrs: { order: 3, spread: false },
           content: [
             item(paragraph(text("first")), {
               type: "bullet_list",
+              attrs: { spread: false },
               content: [item(paragraph(text("sub")))],
             }),
           ],
@@ -738,6 +745,49 @@ describe("serializeNode", () => {
     }
   });
 
+  it("copies an unselectable reaction row as its stated counts", () => {
+    const body = mount(
+      row(
+        '<p>hello</p><div role="group" aria-label="Reactions" data-copy-text="👍 2, :party: 1"><button>👍<span>2</span></button></div>',
+      ) + row("<p>next</p>", "m2"),
+    );
+    const { range } = select(
+      query("p", body).firstChild as Text,
+      0,
+      lastText(query('[data-message-id="m2"] p', body)),
+      4,
+    );
+    expect(each(body, range)).toEqual({
+      text: "hello\n👍 2, :party: 1\nnext",
+      markdown: "hello\n👍 2, :party: 1\nnext",
+      html: "<p>hello</p><p>👍 2, :party: 1</p><p>next</p>",
+    });
+    // A selection that ends before the row leaves it out.
+    const before = select(
+      query("p", body).firstChild as Text,
+      0,
+      query("p", body).firstChild as Text,
+      5,
+    ).range;
+    expect(serializeNode(body, "text", before)).toBe("hello");
+  });
+
+  it("spaces a byline's name and time, which only a flex gap separates", () => {
+    const body = mount(
+      row(
+        '<div style="display: flex; column-gap: 8px"><strong>Morgan</strong><time>2:31 PM</time></div><p>hello</p>',
+      ),
+    );
+    expect(each(body)).toEqual({
+      text: "Morgan 2:31 PM\nhello",
+      markdown: "**Morgan** 2:31 PM\nhello",
+      html: "<p><strong>Morgan</strong> 2:31 PM</p><p>hello</p>",
+    });
+    // Without a gap, flex items abut as they render.
+    query("div[style]", body).setAttribute("style", "display: flex");
+    expect(serializeNode(body, "text")).toBe("Morgan2:31 PM\nhello");
+  });
+
   it("numbers a list from its first item a selection holds, keeping a whole empty item", () => {
     const body = mount(
       row('<ol start="3">\n<li>one</li>\n<li></li>\n<li>three</li>\n</ol>'),
@@ -820,6 +870,71 @@ describe("serializeNode", () => {
       markdown: "x plain example.com #bad Spoof Agent",
       html: "<p>x plain example.com #bad Spoof Agent</p>",
     });
+  });
+});
+
+describe("containMessageSelection", () => {
+  function layout() {
+    return mount(
+      `<nav><p>Sidebar</p></nav><section data-message-scroller><p>first</p><p>last</p></section><section data-message-scroller><p>thread</p></section><div contenteditable="true"><p>draft</p></div>`,
+    );
+  }
+  function extend(
+    anchor: Node,
+    anchorOffset: number,
+    focus: Node,
+    offset: number,
+  ) {
+    const selection = document.getSelection();
+    if (!selection) throw new Error("No selection");
+    selection.setBaseAndExtent(anchor, anchorOffset, focus, offset);
+    containMessageSelection();
+    return selection;
+  }
+
+  it("stops a drag from a message history at that history's edges", () => {
+    const body = layout();
+    const timeline = query("[data-message-scroller]", body);
+    const thread = query(
+      "[data-message-scroller] + [data-message-scroller]",
+      body,
+    );
+    const last = lastText(query("p:last-child", timeline));
+    const up = extend(last, 2, lastText(query("nav p", body)), 3);
+    expect([
+      up.anchorNode,
+      up.anchorOffset,
+      up.focusNode,
+      up.focusOffset,
+    ]).toEqual([last, 2, timeline, 0]);
+    expect(up.toString()).toBe("firstla");
+    const first = lastText(query("p", timeline));
+    const across = extend(first, 1, lastText(query("p", thread)), 2);
+    expect([across.focusNode, across.focusOffset]).toEqual([
+      timeline,
+      timeline.childNodes.length,
+    ]);
+    expect(across.toString()).toBe("irstlast");
+  });
+
+  it("leaves selections inside one history, outside histories and in editors alone", () => {
+    const body = layout();
+    const timeline = query("[data-message-scroller]", body);
+    const first = lastText(query("p", timeline));
+    const last = lastText(query("p:last-child", timeline));
+    const sidebar = lastText(query("nav p", body));
+    const draft = lastText(query("[contenteditable] p", body));
+    for (const [anchor, focus] of [
+      [first, last],
+      [sidebar, last],
+      [draft, sidebar],
+    ] satisfies [Text, Text][]) {
+      const selection = extend(anchor, 1, focus, 2);
+      expect([selection.anchorNode, selection.focusNode]).toEqual([
+        anchor,
+        focus,
+      ]);
+    }
   });
 });
 
@@ -906,6 +1021,48 @@ describe("useMessageSelectionCopy", () => {
     expect(copy(draft, draft, 0, draft, 1)).toEqual({
       prevented: false,
       data: [],
+    });
+  });
+
+  it("copies a scheme-less host as authored, in both flavors", () => {
+    const view = render(
+      <StrictMode>
+        <Surface />
+        <div data-message-id="m1">
+          <MessageMarkdown
+            row={{
+              id: "m1",
+              channelId: "general",
+              authorId: mic,
+              content: "see example.com/a & bun.sh now",
+              createdAt: 1,
+              mentions: [],
+              participants: [],
+              attachments: [],
+              reactions: [],
+              replyCount: 0,
+            }}
+            media={() => undefined}
+            onOpenLink={() => false}
+          />
+        </div>
+      </StrictMode>,
+    );
+    expect(
+      view.getByRole("link", { name: "example.com/a" }).getAttribute("href"),
+    ).toBe("https://example.com/a");
+    const paragraph = query("[data-message-id] p", view.container);
+    expect(
+      copy(paragraph, paragraph, 0, paragraph, paragraph.childNodes.length),
+    ).toEqual({
+      prevented: true,
+      data: [
+        ["text/plain", "see example.com/a & bun.sh now"],
+        [
+          "text/html",
+          '<div data-buzz-copy="timeline"><p>see example.com/a &amp; bun.sh now</p></div>',
+        ],
+      ],
     });
   });
 

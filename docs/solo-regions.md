@@ -25,7 +25,7 @@ recovery actions while the host renders its channels.
 
 A ready snapshot with `hidden: true` keeps the region out of the sidebar: the
 host draws no heading, rows, header actions, or "In" chip for it, and it neither
-names the Solo tab nor composes its workspaces. The region stays in the shared
+names a sidebar section or composes ordinary chats. The region stays in the shared
 projection, so its labeled chats stay out of the Solo list, its filing guard and
 workspace still apply, and its drafts still start; the chats remain reachable by
 links, notifications, and search, and the source presents them in its own UI. If the
@@ -53,7 +53,7 @@ workspaces.
 
 A source can open a channel that also appears in Team with
 `ctx.navigation.open(target, { sidebar: "preserve" })`. This opening keeps the
-sidebar scope, scroll, and disclosure state. It does not select or reveal the
+sidebar scroll and disclosure state. It does not select or reveal the
 Team row. The source supplies its own selected row. Check
 `ctx.navigation.snapshot().attempt.sidebar` along with the target to select it
 only for this opening. Retry retains the option. Later opens and Back/Forward
@@ -61,10 +61,10 @@ use the normal destination rules. The option does not change access or focus.
 
 `data-solo-destination-id` is a supported behavior hook. A primary
 `Conversation.Link` carries its channel ID; secondary links omit the marker.
-Recovery destinations use the same marker. Nexus uses it to identify dragged
-tasks and restore focus after a move. Plugins must scope queries to their own
-region. Changes to the marker or its meaning require coordinated updates to the
-host and consuming plugins.
+Recovery destinations use the same marker. Plugins can use it to identify
+dragged destinations and restore focus after a move. Plugins must scope queries
+to their own region. Changes to the marker or its meaning require coordinated
+updates to the host and consuming plugins.
 
 The host retains one JSON state value per scope, viewer, and source key across
 unmount, disposal, and registration. It accepts at most 16 KiB. A failed or stale
@@ -144,9 +144,14 @@ manual scroll through the scroll owner's `revealAgain`; ordinary retries never
 re-arm viewport ownership. Missing plugins use generic recovery copy, and catalog
 loading does not imply that a plugin is uninstalled.
 
-Reveal requests expand the host frame and let the source open the path. After
-commit, the host uses the existing sidebar reveal retry. Recovery rows use the
-same destination marker. Removing a focused row restores focus to a remaining row,
+Navigation and the header chip keep manually collapsed Solo regions and
+workspaces closed. The header chip scrolls to and focuses the current row within
+its Solo region. A disclosure heading represents a hidden row. If the source
+omits the row, the chip focuses the region heading. The host also sends the
+source an explicit chip request. The source should preserve manual collapse.
+The legacy workspace
+`reveal` prop no longer changes disclosure. Recovery rows use the same
+destination marker. Removing a focused row restores focus to a remaining row,
 then the region heading; removing the region restores focus to the Solo heading.
 
 Focused tests live beside `solo-navigation.ts` and `SoloRegions.tsx`. Browser and
@@ -158,7 +163,7 @@ focus, hidden sections, and relay signing. DOM checks do not establish those fac
 Check `ui.ChannelGroup` before using it. Older hosts omit this optional component.
 It frames a joined stream or forum channel with its current name, icon, native
 channel menu, and details entry. Sources supply selection, disclosure state and
-label, and their task content. The title calls `onSelect`; only the caret calls
+label, and their task content. The title calls `onSelect` and the caret calls
 `onToggle`. `controls` identifies the body, which stays mounted while collapsed.
 Missing channels and channels without the viewer's membership render nothing.
 
@@ -169,33 +174,96 @@ and mutation owners. Groups reuse the local roster and closed menus start no
 relay reads. The component does not discover channels, file tasks, or change their
 audience. Keep the previous presentation as a fallback when the component is absent.
 
+### Showing a group with its Team row
+
+Check `handle.teamRowChannelGroups === true` before relying on
+`placement: "team-row"`; older hosts ignore the prop and render the group in the
+region. With it, the channel's own Team sidebar row is the heading and keeps its
+selection, unread state, menus, dragging and focus, so `selected` and `onSelect`
+are unused. The host adds the disclosure and the New task action beside that row
+and the group's content beneath it, under the same access rules. Content stays
+mounted while collapsed. The row has no group header, so `headerLeading`,
+`headerAccessory` and `headerMetadata` are not shown there; offer those controls
+in the content when the group uses this placement.
+
+The group shows only with that Team row. A collapsed Team section hides the
+group with its row and keeps the content mounted. Without a mounted row, as in
+a restricted sidebar, under a section filter that omits the channel or behind a
+`sidebarRows` contribution that hides it, nothing renders and the content
+unmounts. Row contributions receive the row and its
+group as one `Default` element. Channels that fail the checks above still render
+nothing, so keep the source's own presentation for them. When several groups ask
+for one channel, the first mounted takes the row and the others render in the
+region until it leaves.
+
+Content keeps the region's React context and event bubbling, but its DOM sits
+in the Team section: styles and DOM queries scoped to the region do not reach it.
+Adding or removing the placement remounts the Team row, which can reset its
+focus or an open menu.
+
 ## Personal workspaces
 
 A source with `composeWorkspaces: true` receives optional `ui.Workspace`,
 `ui.Chats`, and `ui.ChatList` components. `ui.Chats` shows unfiled ordinary
-chats. Passing `all` includes named workspaces with their headers and frames.
-`ui.ChatList` includes the same ordinary chats without workspace headers or
-frames, even when their saved workspace is collapsed. It keeps workspace order
-and each workspace's Show more / Show less controls. It does not change saved
-assignments or collapse preferences. Region-owned chats remain with the source.
+chats. Passing `all` includes chat-only workspaces with their headers and
+frames. Mixed workspaces and Starred keep their placement in the unified
+sidebar. A composed workspace shares the sidebar’s collapse preference and
+accepts drags to and from other workspaces.
+`ui.ChatList` shows the same chats without the composed frames, even when
+their saved workspace is collapsed. It keeps workspace order and each
+workspace's Show more / Show less controls. Region-owned chats stay with
+their source. If the plugin is disabled, those chats appear in Solo and their
+saved workspace placements become dormant.
 
 The host retains row identity, menus, rename editors, and pending saves when a
 source switches between these presentations. Render each ordinary inventory
-once: use `ui.ChatList` alone, `ui.Chats` with `all`, or `ui.Workspace` for each
-named workspace plus `ui.Chats` for unfiled chats.
+once using `ui.ChatList` alone, `ui.Chats` with `all`, or `ui.Workspace` for each
+composable workspace plus `ui.Chats` for unfiled chats.
 
 Feature-detect `ui.ChatList` before use. On older hosts, fall back to `ui.Chats`
-with `all: true` to keep named-workspace chats reachable. That fallback retains
-workspace chrome. Existing `ui.Chats` behavior is unchanged.
+with `all: true` to keep named-workspace chats reachable with their headings
+and actions.
 
-`ctx.soloNavigation.workspaces` exposes the bound user's Solo workspace catalog.
+`ctx.soloNavigation.workspaces` exposes the bound user's workspace catalog.
 Pass the current region binding to `snapshot`, `subscribe`, `refresh`, and
 `create({id, name})`. The snapshot contains IDs, names, status, creation
 availability, and any read error. Ordinary chat assignments remain host-owned.
 Refresh before retrying uncertain creation and keep the same ID and name.
-Ended bindings cannot read or write a new community. The existing Solo writer
-enforces authorization, record capacity, and revision checks.
+Ended bindings cannot read or write a new community. The shared workspace writer
+enforces authorization and record capacity.
 
 Regions own their task filing; they do not add an ordinary Solo assignment for
 each task. Workspace selection in a task draft is personal metadata and is
 never part of the signed message.
+
+## Header accessories
+
+`ui.Workspace` and `ui.ChannelGroup` accept an optional
+`headerAccessory: ReactNode` beside their native controls. The accessory
+stays in place when native actions appear or the body collapses.
+It can supply a compact, accessible
+control with its own activation, independent of selection, disclosure and
+native actions. The region supplies its accessible name and behavior.
+Hosts that predate this prop ignore it.
+
+Both headers also accept optional `headerMetadata: ReactNode` for compact,
+non-interactive content such as a relative activity time. The host displays
+it at the trailing edge. Hovering that slot or focusing its controls reveals
+the native Actions button and, when available, the New task pencil. They
+overlay the metadata and can cover an adjacent accessory without shifting the
+header. Without an accessory, the slot fits both actions clear of the title.
+Touch shows the controls directly. New task also remains available in the menu.
+
+Both headers accept optional `headerLeading` with a non-interactive `icon`, an
+action `label`, and an `onActivate` callback. This moves the caret before the
+title and adds a workspace glyph to workspace titles. With a fine pointer, the icon and
+native caret share a slot. Hover reveals the caret, and keyboard focus reveals
+the focused button. Touch shows both buttons. The Actions menu also offers the
+leading action with the same label and callback. The title continues to select
+the workspace or channel.
+
+`headerLeading.wrapControls(controls)` can attach a hover anchor around the
+shared slot. Render the supplied controls once inside a non-interactive
+inline-flex wrapper that keeps their width. The host controls keep their own
+focus and activation. Providing the wrapper suppresses the host's disclosure
+tooltip. Render any popup outside the controls.

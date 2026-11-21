@@ -1,4 +1,5 @@
 import { workflowLabel } from "../../features/relay/workflow-attribution";
+import { useChannelActivitySubscription } from "../../features/agents/use-channel-agent-activity";
 import { useIsPresent } from "motion/react";
 import { LightningIcon } from "../../shared/design-system/icons";
 import { useChannelIdentityNames } from "../../features/identity-names/react";
@@ -116,59 +117,69 @@ function ActivityRow({
       setPending(false);
     }
   };
+  // The error sits outside the row, so Mark as read stays centered on the dot.
   return (
-    <div
-      className={`${activityStyles.activityItem} ${activityStyles.activityItemWithAction}`}
-    >
-      <NavigationItem
-        type="button"
-        aria-label={`Open unread ${noun} from ${name}: ${preview}`}
-        onClick={onOpen}
-        icon={
-          item.workflowOwnerId ? (
-            <WorkflowAvatar
-              alt="Workflow"
-              fallback="Workflow"
-              fallbackContent={<LightningIcon size={20} />}
-              shape="squircle"
-            />
-          ) : (
-            <Avatar
-              name={name}
-              src={avatarMedia(profile?.picture, session.media)}
-              shape={isAgent ? "squircle" : "circle"}
-              className={activityStyles.activityAvatar ?? ""}
-            />
-          )
-        }
-        label={
-          <span className={activityStyles.activityItemBody}>
-            <span className={activityStyles.activityItemHeading}>
-              <strong>{name}</strong>
-              <span className={activityStyles.activityTimestamp}>
-                {elapsed(item.createdAt)}
+    <>
+      <div
+        className={`${activityStyles.activityItem} ${activityStyles.activityItemUnread}`}
+      >
+        <NavigationItem
+          type="button"
+          aria-label={`Open unread ${noun} from ${name}: ${preview}`}
+          onClick={onOpen}
+          icon={
+            item.workflowOwnerId ? (
+              <WorkflowAvatar
+                alt="Workflow"
+                fallback="Workflow"
+                fallbackContent={<LightningIcon size={20} />}
+                shape="squircle"
+              />
+            ) : (
+              <Avatar
+                name={name}
+                src={avatarMedia(profile?.picture, session.media)}
+                shape={isAgent ? "squircle" : "circle"}
+                className={activityStyles.activityAvatar ?? ""}
+              />
+            )
+          }
+          label={
+            <span className={activityStyles.activityItemBody}>
+              <span className={activityStyles.activityItemHeading}>
+                <strong>{name}</strong>
+                <span className={activityStyles.activityTimestamp}>
+                  {elapsed(item.createdAt)}
+                </span>
               </span>
+              <span className={styles.activityItemPreview}>{preview}</span>
             </span>
-            <span className={styles.activityItemPreview}>{preview}</span>
-          </span>
-        }
-      />
-      <span className={activityStyles.activityItemAction}>
-        <IconButton
-          size="toolbar"
-          icon={<EnvelopeOpenIcon />}
-          aria-label={`Mark ${noun} from ${name} as read`}
-          title="Mark as read"
-          loading={pending}
-          onClick={() => void markRead()}
+          }
+          trailing={
+            <span
+              className={activityStyles.activityUnreadDot}
+              aria-hidden="true"
+              data-activity-unread=""
+            />
+          }
         />
-      </span>
+        <span className={activityStyles.activityItemAction}>
+          <IconButton
+            size="toolbar"
+            icon={<EnvelopeOpenIcon />}
+            aria-label={`Mark ${noun} from ${name} as read`}
+            title="Mark as read"
+            loading={pending}
+            onClick={() => void markRead()}
+          />
+        </span>
+      </div>
       {error && (
         <p className={styles.activityReadError} role="alert">
           Could not mark this {noun} as read. Try again.
         </p>
       )}
-    </div>
+    </>
   );
 }
 
@@ -239,9 +250,13 @@ export function ChannelActivityPopover({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [open, activeAgents.length]);
+  const subscribeWork = useChannelActivitySubscription(
+    session.agentActivity,
+    channelId,
+  );
   const getTargets = useCallback(() => {
     if (!agentIds) return "[]";
-    const activity = session.agentActivity.snapshot();
+    const activity = session.agentActivity.snapshot(channelId);
     return JSON.stringify(
       agentIds
         .split(",")
@@ -252,9 +267,7 @@ export function ChannelActivityPopover({
   }, [session, channelId, agentIds]);
   const details = JSON.parse(
     useSyncExternalStore(
-      open && activeAgents.length
-        ? session.agentActivity.subscribe
-        : noSubscribe,
+      open && activeAgents.length ? subscribeWork : noSubscribe,
       getTargets,
       getTargets,
     ),

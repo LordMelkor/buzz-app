@@ -4,14 +4,16 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
-import { entityDecoderAlias } from "./scripts/entity-decoder-alias.mjs";
+import { diffHighlighterAliases } from "./scripts/diff-highlighter-aliases.mjs";
 import { worktreePort } from "./scripts/worktree-port.mjs";
+import { captureBuildIdentity } from "./scripts/build-identity.mjs";
 import {
   parseCommunityAliases,
   relayOrigin,
 } from "./src/features/communities/destination.ts";
 import { parseFirstRunAccountSeed } from "./src/features/identity/first-run-seed.ts";
 import { isBuiltInBuilderlab } from "./src/features/federated-identity/community-hosts.ts";
+import { selectGatewayDescriptor } from "./src/features/agents/gateway/descriptor.ts";
 import { parseRecommended } from "./src/features/agents/recommended.ts";
 
 /** A value native builds also read: process first, then repository-root
@@ -92,6 +94,12 @@ function federatedBuilderlabUrl(legacy: string | undefined, live: boolean) {
 
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, ".", "BUZZ_");
+  const frontendIdentity = captureBuildIdentity(
+    fileURLToPath(new URL(".", import.meta.url)),
+    {
+      mutable: command === "serve",
+    },
+  );
   // Native builds consume only process values and repository-root .env.local.
   // Keep this frontend value on the same source so Vite mode files cannot
   // select a different same-origin deployment path.
@@ -163,6 +171,19 @@ export default defineConfig(async ({ command, mode }) => {
   const firstRunAccount =
     command === "serve" ? (env.BUZZ_DEV_FIRST_RUN_ACCOUNT ?? "") : "";
   parseFirstRunAccountSeed(firstRunAccount);
+  // The agent gateway deployment descriptor: an explicit BUZZ_AGENT_GATEWAY,
+  // else the packaged org-gateways.json entry for BUZZ_DEFAULT_COMMUNITY_URL.
+  // Both read from the process only, as native reads them for the Agents
+  // plugin's gateway grant, so the two can't disagree; neither set (the
+  // release default) leaves routing off.
+  const gateway = selectGatewayDescriptor(
+    process.env.BUZZ_AGENT_GATEWAY ?? "",
+    readFileSync(
+      fileURLToPath(new URL("src/bundled/org-gateways.json", import.meta.url)),
+      "utf8",
+    ),
+    process.env.BUZZ_DEFAULT_COMMUNITY_URL ?? "",
+  );
   const plugins: PluginOption[] = [react()];
   if (command === "serve")
     plugins.push(
@@ -200,9 +221,18 @@ export default defineConfig(async ({ command, mode }) => {
     });
   return {
     plugins,
-    resolve: { alias: [entityDecoderAlias] },
+    resolve: { alias: diffHighlighterAliases },
     define: {
+      "import.meta.env.VITE_BUZZ_FRONTEND_SOURCE_REVISION": JSON.stringify(
+        frontendIdentity.revision ?? "",
+      ),
+      "import.meta.env.VITE_BUZZ_FRONTEND_SOURCE_STATE": JSON.stringify(
+        frontendIdentity.state,
+      ),
       "import.meta.env.VITE_BUZZ_LIVE": JSON.stringify(live ? "1" : "0"),
+      "import.meta.env.VITE_BUZZ_AGENT_GATEWAY": JSON.stringify(
+        gateway ? JSON.stringify(gateway) : "",
+      ),
       "import.meta.env.VITE_BUZZ_NOTIFICATIONS_PAUSED": JSON.stringify(
         command === "serve" && env.BUZZ_DEV_NOTIFICATIONS === "0" ? "1" : "0",
       ),

@@ -1,24 +1,27 @@
 import { piHookOutput } from "../hook-output";
+import { usageOn } from "../../features/agents/standalone-sessions";
 // Pi agents: an agent type whose agents run on Pi durable on this computer,
 // with any provider Pi supports. One Pi host runs them all, each with its own
 // storage; each conversation the agent is in is one continuing, durable Pi
 // conversation. Pi answers with the in-process Buzz tools.
 import { isTauri } from "@tauri-apps/api/core";
 import { pubkeyOf } from "../../features/agents/membership";
-import { ownerReads } from "../../features/agents/reads";
+import { ownerReads, readyOwnerReads } from "../../features/agents/reads";
 import { repositoriesContext } from "../../features/communities/repositories";
 import type { PluginModule } from "../../plugins/api";
 import { PiLogoIcon } from "../../shared/design-system/icons";
 import { type Config, config, DEFAULT_CONFIG, PiRuntime } from "./runtime";
 import { createTabs } from "./tabs";
+import { upstreamFor } from "../../features/agents/gateway/route";
 import { readModelSettings } from "../../features/agents/model-settings";
+import { GATEWAY_SEAM, HARNESS } from "./gateway";
 
 export const TYPE_ID = "pi";
 /** A turn's run returns once Pi has it, so this bounds only the hand-over,
  * which includes the first install of Pi's packages. */
 const HANDOVER_MS = 2 * 60_000;
 
-export const inject = ["agents", "host", "agentProtection"];
+export const inject = ["agents", "host", "agentProtection", "settingsCards"];
 export const apply: PluginModule["apply"] = (ctx) => {
   // Only the desktop app can start the Pi host; no unusable type elsewhere.
   if (!isTauri()) return;
@@ -49,7 +52,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
     },
     (key, listener) => agents.relay(key)?.subscribe(listener) ?? (() => {}),
     agents.storage,
+    // Without a Pi upstream in this build, every agent keeps its own
+    // providers, as the runner sends every turn without the gateway.
+    upstreamFor(HARNESS) ? GATEWAY_SEAM : undefined,
+    (agent, signal, channelId, what) =>
+      readyOwnerReads(agents.relay(agent.key), agent, signal, channelId, what),
+    (key) => agents.relay(key)?.snapshot().scope,
   );
+  runtime.usageOn = usageOn(ctx.settingsCards);
   ctx.agentProtection.registerModels({
     label: "Pi",
     models: async () => {
@@ -94,11 +104,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
     hooks: { events: ["beforeTool", "afterTool"] },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
+    conversationFolders: true,
+    conversationSections: true,
+    notes: true,
     title: "Pi",
     icon: PiLogoIcon,
     description:
       "Pi on this computer, with any provider Pi supports. Each thread it is mentioned in is one continuing conversation.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    settingsProposal: { compactAt: true },
     readModelSettings: (saved) =>
       readModelSettings(config(saved), { provider: true }),
     Create,
@@ -119,13 +133,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
+      scope: carry.sessionScope ?? saved.scope,
       workspace: carry.workspace ?? saved.workspace,
     }),
     carry: (saved) => {
-      const { instructions, workspace } = config(saved);
+      const { instructions, workspace, scope } = config(saved);
       return {
         ...(instructions.trim() && { instructions }),
         ...(workspace !== DEFAULT_CONFIG.workspace && { workspace }),
+        ...(scope !== DEFAULT_CONFIG.scope && { sessionScope: scope }),
       };
     },
     summary: (agent) => {
@@ -138,6 +154,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     }),
     sessions: {
       list: (key) => runtime.sessions(key),
+      ready: (key, conversation) => runtime.listed(key, conversation),
       subscribe: (listener) => runtime.subscribe(listener),
     },
     tabs: [
@@ -170,5 +187,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
       return runtime.workspaceFile(agent, path);
     },
     timeoutMs: HANDOVER_MS,
+    // Memberships whose gateway enables Pi route through it; none do while
+    // this build has no gateway descriptor.
+    gateway: { harness: HARNESS },
   });
 };

@@ -1476,3 +1476,132 @@ it("a filled page keeps the follower at the bottom; a later page is anchored", (
     h.dispose();
   }
 });
+
+it("opens a relayed run around a linked message that joins it after the reveal", () => {
+  const { owner, updates, content } = activityFixture();
+  try {
+    const rows = updates(3).map(({ audience: _audience, ...row }) => ({
+      ...row,
+      authorId: "owner",
+      content: `Notice\n\nRelayed ${row.id}`,
+    }));
+    const visit = {
+      messageId: "activity-1",
+      signal: new AbortController().signal,
+    };
+    // The link lands while the owner's verification is still pending.
+    const view = render(
+      content(
+        rows.map((row) => ({
+          ...row,
+          relayedFrom: { agent: "zerk", verified: false },
+        })),
+        visit,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Retain activity-1" }),
+    ).toBeVisible();
+    // Verification folds the run; the same visit opens it around the target.
+    view.rerender(
+      content(
+        rows.map((row) => ({
+          ...row,
+          relayedFrom: { agent: "zerk", verified: true },
+        })),
+        visit,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: /^Collapse 3 messages by zerk\./ }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "Retain activity-1" }),
+    ).toBeVisible();
+    // Closed by the reader, it stays closed when the group is reshaped.
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Collapse 3 messages by zerk\./ }),
+    );
+    view.rerender(
+      content(
+        rows.slice(1).map((row) => ({
+          ...row,
+          relayedFrom: { agent: "zerk", verified: true },
+        })),
+        visit,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: /^Show 2 messages by zerk\./ }),
+    ).toHaveAttribute("aria-expanded", "false");
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("keeps the day divider above a relayed run that starts a day, open or closed", () => {
+  const { owner, updates, content } = activityFixture();
+  const later = 100 + 2 * 86_400;
+  try {
+    const [first, ...rest] = updates(3).map(
+      ({ audience: _audience, ...row }) => row,
+    );
+    if (!first) throw new Error("expected a first row");
+    const relayed = rest.map((row) => ({
+      ...row,
+      authorId: "owner",
+      createdAt: later,
+      content: `Notice\n\nRelayed ${row.id}`,
+      relayedFrom: { agent: "zerk", verified: true },
+    }));
+    const view = render(content([first, ...relayed]));
+    const dividers = () =>
+      [...view.container.querySelectorAll("[data-day]")].map((item) =>
+        item.getAttribute("data-day"),
+      );
+    // The page's first message draws no divider, so this one is the run's.
+    const closed = dividers();
+    expect(closed).toHaveLength(1);
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Show 2 messages by zerk\./ }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Retain activity-1" }),
+    ).toBeVisible();
+    expect(dividers()).toEqual(closed);
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("folds a run of relayed messages into one line that opens to each message", () => {
+  const { owner, updates, content } = activityFixture();
+  try {
+    const relayed = updates(3).map(({ audience: _audience, ...row }) => ({
+      ...row,
+      authorId: "owner",
+      content: `Notice\n\nRelayed ${row.id}`,
+      relayedFrom: { agent: "zerk", verified: true },
+    }));
+    render(content(relayed));
+    expect(
+      screen.queryByRole("button", { name: "Retain activity-0" }),
+    ).toBeNull();
+    const toggle = screen.getByRole("button", {
+      name: /^Show 3 messages by zerk\. Latest, zerk: /,
+    });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // This file draws each row as its id; MessageRow tests own the relayed line.
+    for (const id of ["activity-0", "activity-1", "activity-2"])
+      expect(
+        screen.getByRole("button", { name: `Retain ${id}` }),
+      ).toBeVisible();
+    fireEvent.click(toggle);
+    expect(
+      screen.queryByRole("button", { name: "Retain activity-0" }),
+    ).toBeNull();
+  } finally {
+    owner.dispose();
+  }
+});

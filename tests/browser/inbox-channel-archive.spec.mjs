@@ -32,7 +32,7 @@ test("excludes a channel-archived conversation across reload without clearing lo
   ).toBeVisible();
   await expect(rows.getByRole("img", { name: "Unread" })).toHaveCount(0);
   await rows.getByRole("button", { name: /^Open / }).click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Mark unread" }).click();
+  await page.getByRole("menuitem", { name: "Mark as unread" }).click();
   await expect(rows.getByRole("img", { name: "Unread" })).toBeVisible();
 
   // Navigate to ordinary Channels without earning another Inbox read.

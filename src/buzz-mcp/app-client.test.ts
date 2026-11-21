@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { AgentHandle } from "../features/agents/service";
 import type { AgentProtection } from "../features/agent-protection/service";
-import { appClient, readFile } from "./app-client";
+import { appClient, relayKeyOf, readFile } from "./app-client";
 import type { Host } from "../features/host/service";
 import { pngChunks } from "../features/messages/image-metadata";
 
@@ -111,6 +111,23 @@ it("withholds file bytes when the protected handle retires during a read", async
   }
 });
 
+it.each(["call", "route"])(
+  "exposes %s cancellation to added tools",
+  (scope) => {
+    const route = new AbortController();
+    const call = new AbortController();
+    const client = appClient({ pubkey: "agent" } as AgentHandle, {
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+      signal: route.signal,
+      ...(scope === "call" ? { callSignal: call.signal } : {}),
+    });
+    const reason = new Error("Tool stopped");
+    (scope === "call" ? call : route).abort(reason);
+    expect(() => client.signal?.throwIfAborted()).toThrow(reason);
+  },
+);
+
 it("binds shared-tool review to native conversation context and refuses missing context", async () => {
   const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
   const agent = {
@@ -189,6 +206,24 @@ it("does not invent authority when a host has none", () => {
   });
   expect(client.relayAuthor).toBeUndefined();
   expect(client.signingAuthority).toBeUndefined();
+});
+
+it("keeps a relay with no key apart from a key it can't tell", () => {
+  const options = {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  };
+  const agent = { pubkey: "agent" } as AgentHandle;
+  expect(
+    appClient(agent, { ...options, signingAuthority: null }),
+  ).toHaveProperty("signingAuthority", null);
+  expect(
+    "signingAuthority" in
+      appClient(agent, { ...options, signingAuthority: undefined }),
+  ).toBe(false);
+  expect(relayKeyOf(undefined)).toBeUndefined();
+  expect(relayKeyOf({ workflowAuthority: () => undefined })).toBeNull();
+  expect(relayKeyOf({ workflowAuthority: () => "relay" })).toBe("relay");
 });
 
 it("withholds a query result when the owning turn ends during the read", async () => {
@@ -661,4 +696,131 @@ it("retains native context through the check and releases it on denial", async (
   finish();
   await expect(result).rejects.toThrow("denied");
   expect(release).toHaveBeenCalledOnce();
+});
+
+it.each([undefined, true])(
+  "defaults to forwarding managedAttachments when localAttachments is %s",
+  async (localAttachments) => {
+    const publish = vi.fn().mockResolvedValue({ id: "confirmed" });
+    const client = appClient(
+      { pubkey: "agent", publish } as unknown as AgentHandle,
+      {
+        read: async () => new TextEncoder().encode("bytes"),
+        memories: async () => ({ entries: [], partial: false }),
+        ...(localAttachments !== undefined ? { localAttachments } : {}),
+      },
+    );
+    const event = { kind: 9, content: "attachment", tags: [] };
+    const options = {
+      managedAttachments: [
+        {
+          path: "/saved/file",
+          sha256: "a".repeat(64),
+          size: 5,
+          url: "https://example.test/media",
+        },
+      ],
+    };
+    await expect(client.publish(event, options)).resolves.toEqual({
+      id: "confirmed",
+    });
+    expect(publish).toHaveBeenCalledExactlyOnceWith(
+      event,
+      expect.any(Function),
+      options,
+    );
+    await client.publish(event);
+    expect(publish).toHaveBeenLastCalledWith(event, expect.any(Function));
+  },
+);
+
+it("drops the options argument entirely when localAttachments is false and only managedAttachments was set", async () => {
+  const publish = vi.fn().mockResolvedValue({ id: "confirmed" });
+  const client = appClient(
+    { pubkey: "agent", publish } as unknown as AgentHandle,
+    {
+      read: async () => new TextEncoder().encode("bytes"),
+      memories: async () => ({ entries: [], partial: false }),
+      localAttachments: false,
+    },
+  );
+  const event = { kind: 9, content: "attachment", tags: [] };
+  await client.publish(event, {
+    managedAttachments: [
+      {
+        path: "/elsewhere/file",
+        sha256: "c".repeat(64),
+        size: 3,
+        url: "https://example.test/x",
+      },
+    ],
+  });
+  // The two-argument form keeps the existing publish arity with no options.
+  expect(publish).toHaveBeenCalledExactlyOnceWith(event, expect.any(Function));
+});
+
+it("refuses publish once the owning turn has ended, whether localAttachments is true or false", async () => {
+  for (const localAttachments of [true, false]) {
+    const publish = vi.fn().mockResolvedValue({ id: "confirmed" });
+    const controller = new AbortController();
+    const client = appClient(
+      { pubkey: "agent", publish } as unknown as AgentHandle,
+      {
+        read: async () => new TextEncoder().encode("bytes"),
+        memories: async () => ({ entries: [], partial: false }),
+        signal: controller.signal,
+        localAttachments,
+      },
+    );
+    controller.abort(new Error("Turn ended"));
+    await expect(async () =>
+      client.publish(
+        { kind: 9, content: "x", tags: [] },
+        {
+          managedAttachments: [
+            {
+              path: "/x",
+              sha256: "d".repeat(64),
+              size: 1,
+              url: "https://example.test/x",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow();
+    expect(publish).not.toHaveBeenCalled();
+  }
+});
+
+it("refuses publish when the explicit check rejects, whether localAttachments is true or false", async () => {
+  for (const localAttachments of [true, false]) {
+    const publish = vi.fn().mockResolvedValue({ id: "confirmed" });
+    const client = appClient(
+      { pubkey: "agent", publish } as unknown as AgentHandle,
+      {
+        read: async () => new TextEncoder().encode("bytes"),
+        memories: async () => ({ entries: [], partial: false }),
+        check: () => {
+          throw new Error("Community ended");
+        },
+        localAttachments,
+      },
+    );
+    await expect(async () =>
+      client.publish(
+        { kind: 9, content: "x", tags: [] },
+        {
+          managedAttachments: [
+            {
+              path: "/x",
+              sha256: "e".repeat(64),
+              size: 1,
+              url: "https://example.test/x",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("Community ended");
+    expect(publish).not.toHaveBeenCalled();
+  }
 });

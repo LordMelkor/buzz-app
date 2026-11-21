@@ -9,10 +9,31 @@ import { provideRelay } from "./service";
 
 const storage = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("./persistence", () => ({ createHeadPersistence: storage.create }));
+const native = vi.hoisted(() => ({
+  clear: vi.fn(async () => {}),
+  enabled: vi.fn(() => false),
+}));
+vi.mock("../identity/service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity/service")>()),
+  nativeIdentityEnabled: native.enabled,
+}));
+const images = vi.hoisted(() => ({ retry: vi.fn() }));
+vi.mock("../../shared/design-system/useReadyImage", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../shared/design-system/useReadyImage")
+  >()),
+  retryFailedImages: images.retry,
+}));
+vi.mock("./native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./native")>()),
+  clearNativeMedia: native.clear,
+  nativeMediaUrl: (url: string) => `native:${url}`,
+}));
 const roots: Context[] = [];
 afterEach(async () => {
   for (const ctx of roots.splice(0)) await ctx.fiber.dispose();
   vi.useRealTimers();
+  native.enabled.mockReset().mockReturnValue(false);
 });
 /** A signature no JavaScript check accepts; only a stubbed host admits it. */
 const FORGED = "0".repeat(128);
@@ -33,6 +54,7 @@ function setup({
   relay = keypair(),
   verifiedProfiles,
   forged = false,
+  origin = "primary",
 }: {
   saved?: boolean;
   profiles?: unknown[];
@@ -42,6 +64,7 @@ function setup({
   verifiedProfiles?: unknown;
   /** Give the saved history message a signature only a host could accept. */
   forged?: boolean;
+  origin?: string;
 } = {}) {
   const viewer = keypair();
   const events = [
@@ -118,7 +141,7 @@ function setup({
     undefined,
     undefined,
     undefined,
-    { viewer: viewer.pubkey, scope: "primary" },
+    { viewer: viewer.pubkey, scope: origin },
     undefined,
     verifyStored,
   );
@@ -172,6 +195,31 @@ it.each(["profile mirror", "discovery", "history", "head profiles"])(
     expect(source.query).not.toHaveBeenCalled();
   },
 );
+it.each([false, true])(
+  "shows saved avatars offline with the URLs the connection will use (native=%s)",
+  async (enabled) => {
+    native.enabled.mockReturnValue(enabled);
+    const origin = "https://relay.example.org";
+    const { restored } = setup({ origin });
+    const { session } = await restored();
+    const hash = "a".repeat(64);
+    expect(session.media(`${origin}/media/${hash}.png`, "small")).toBe(
+      enabled ? `native:${origin}/media/${hash}.thumb.webp` : undefined,
+    );
+    expect(session.media("https://cdn.example.org/a.png")).toBe(
+      "https://cdn.example.org/a.png",
+    );
+  },
+);
+it("asks failed images to load again once the connection replaces the restored session", async () => {
+  images.retry.mockClear();
+  const { data, connections, source, restored } = setup();
+  await restored();
+  expect(images.retry).not.toHaveBeenCalled();
+  connections[0]?.resolve(source);
+  await vi.waitFor(() => expect(data.snapshot().status).toBe("ready"));
+  expect(images.retry).toHaveBeenCalledOnce();
+});
 it.each([false, true])(
   "restores valid cached profiles with JS when host verification fails or is absent (host=%s)",
   async (host) => {
@@ -382,6 +430,21 @@ it("explicit handshake denial purges saved history instead of retaining offline 
   expect(await disk.readStartup?.()).toBeUndefined();
   expect(await disk.read()).toEqual([]);
 });
+it.each([
+  [
+    "an access refusal forgets",
+    "restricted: authorization denied",
+    [["primary"]],
+  ],
+  ["a sign-in refusal keeps", "auth-required: authentication required", []],
+])("%s this community's saved images", async (_, message, cleared) => {
+  const { data, connections, restored } = setup();
+  await restored();
+  native.clear.mockClear();
+  connections[0]?.reject(new ReadError("denied", message));
+  await vi.waitFor(() => expect(data.snapshot().status).toBe("error"));
+  expect(native.clear.mock.calls).toEqual(cleared);
+});
 it("clearing during successor hydration fences the old result and clears next-launch records", async () => {
   const { data, disk, connections, source, restored } = setup();
   await restored();
@@ -390,7 +453,9 @@ it("clearing during successor hydration fences the old result and clears next-la
   vi.mocked(disk.read).mockReturnValueOnce(hydration.promise);
   connections[0]?.resolve(source);
   await vi.waitFor(() => expect(disk.read).toHaveBeenCalledTimes(3));
+  native.clear.mockClear();
   await data.clearCache();
+  expect(native.clear.mock.calls).toEqual([["primary"]]);
   hydration.resolve(stale);
   await vi.waitFor(() => expect(connections).toHaveLength(2));
   expect(data.snapshot().session.channels.list().channels).toEqual([]);
@@ -462,6 +527,22 @@ it.each(["success", "failure"])(
     expect(await disk.read()).toEqual([]);
   },
 );
+it.each([
+  ["saved images", () => native.clear],
+  ["saved records", (disk: HeadPersistence) => vi.mocked(disk.clear)],
+])(
+  "a clear that can't forget %s clears the rest and then fails",
+  async (_, failing) => {
+    const { data, disk, restored } = setup();
+    await restored();
+    failing(disk).mockRejectedValueOnce(new Error("busy"));
+    await expect(data.clearCache()).rejects.toThrow();
+    expect(native.clear).toHaveBeenCalledWith("primary");
+    expect(data.snapshot().session.channels.list().channels).toEqual([]);
+    await expect(data.clearCache()).resolves.toBeUndefined();
+    expect(await disk.read()).toEqual([]);
+  },
+);
 it("disconnect during a coalesced cache clear does not reconnect", async () => {
   const { data, disk, connections, restored } = setup();
   await restored();
@@ -475,3 +556,274 @@ it("disconnect during a coalesced cache clear does not reconnect", async () => {
   expect(data.snapshot().status).toBe("disconnected");
   expect(connections).toHaveLength(1);
 });
+it.each([
+  ["at once", false],
+  ["after its first attempt times out", true],
+])(
+  "reload reads a fresh saved head from the relay again %s",
+  async (_, timesOut) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const relay = keypair();
+    const { data, connections, source, restored } = setup({ relay });
+    const author = keypair();
+    await restored();
+    connections[0]?.resolve(source);
+    await vi.waitFor(() =>
+      expect(data.snapshot()).toMatchObject({ status: "ready" }),
+    );
+    expect(data.snapshot().cached).toBeUndefined();
+    const before = data.snapshot();
+    // The saved head is fresh, so the live session showed it without asking.
+    expect(before.session.channels.window("alpha").rows[0]?.content).toBe(
+      "Saved history",
+    );
+    const headQuery = vi.mocked(source.query);
+    headQuery.mockImplementation(async (filters) =>
+      filters.some((f) => f.kinds?.includes(39002))
+        ? [
+            roster(relay, "alpha", [source.viewer]),
+            metadata(relay, "alpha", "Alpha"),
+          ]
+        : filters.some((f) => f["#h"]?.includes("alpha"))
+          ? [
+              message(author, "alpha", "Relay reply", 30),
+              bounds(relay, "alpha", "head", {
+                has_more: false,
+                next_cursor: null,
+              }),
+            ]
+          : [],
+    );
+
+    data.reload();
+    expect(data.snapshot()).toMatchObject({
+      status: "connecting",
+      reloading: true,
+    });
+    await vi.waitFor(() => expect(connections).toHaveLength(2));
+    expect(data.snapshot().restoring).toBeUndefined();
+    expect(data.snapshot().generation).toBeGreaterThan(before.generation);
+    if (timesOut) {
+      await vi.advanceTimersByTimeAsync(8_001);
+      expect(data.snapshot()).toMatchObject({
+        status: "error",
+        retrying: true,
+        reloading: true,
+      });
+      // Its automatic retry is still the reload.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(data.snapshot()).toMatchObject({
+        status: "connecting",
+        reloading: true,
+      });
+      await vi.waitFor(() => expect(connections).toHaveLength(3));
+    }
+    connections.at(-1)?.resolve(source);
+    await vi.waitFor(() =>
+      expect(
+        data.snapshot().session.channels.window("alpha").rows[0]?.content,
+      ).toBe("Relay reply"),
+    );
+    expect(data.snapshot()).toMatchObject({ status: "ready" });
+    expect(data.snapshot().reloading).toBeUndefined();
+    expect(data.snapshot().session).not.toBe(before.session);
+  },
+);
+it("reload keeps its state through a denial until disconnected, and does nothing once disconnected", async () => {
+  const { data, connections, source, restored } = setup();
+  await restored();
+  connections[0]?.resolve(source);
+  await vi.waitFor(() => expect(data.snapshot().status).toBe("ready"));
+  data.reload();
+  await vi.waitFor(() => expect(connections).toHaveLength(2));
+  connections.at(-1)?.reject(new ReadError("denied", "Removed"));
+  await vi.waitFor(() =>
+    expect(data.snapshot()).toMatchObject({
+      status: "error",
+      denied: true,
+      reloading: true,
+    }),
+  );
+  data.disconnect();
+  expect(data.snapshot().reloading).toBeUndefined();
+  const count = connections.length;
+  data.reload();
+  expect(data.snapshot().status).toBe("disconnected");
+  expect(connections).toHaveLength(count);
+});
+it("reload keeps a channel to reopen through a second reload before its roster answers", async () => {
+  const relay = keypair();
+  const { data, connections, source, restored } = setup({ relay });
+  await restored();
+  connections[0]?.resolve(source);
+  await vi.waitFor(() => expect(data.snapshot().status).toBe("ready"));
+  const query = vi.mocked(source.query);
+  const rosterRead = (filters: readonly import("./events").ReadFilter[]) =>
+    filters.some((f) => f.kinds?.includes(39002));
+  const fallback = async (filters: readonly import("./events").ReadFilter[]) =>
+    rosterRead(filters)
+      ? [
+          roster(relay, "alpha", [source.viewer]),
+          metadata(relay, "alpha", "Alpha"),
+          roster(relay, "beta", [source.viewer]),
+          metadata(relay, "beta", "Beta"),
+        ]
+      : filters.some((f) => f["#h"]?.includes("beta"))
+        ? [
+            bounds(relay, "beta", "head", {
+              has_more: false,
+              next_cursor: null,
+            }),
+          ]
+        : [];
+  query.mockImplementation(fallback);
+  const { channels } = data.snapshot().session;
+  channels.refreshList?.();
+  await vi.waitFor(() => expect(channels.get?.("beta")).toBeDefined());
+  // Beta is open in the background; alpha stays the selected channel.
+  channels.ensure("beta");
+  channels.ensure("alpha");
+  query.mockImplementation(async (filters) => {
+    if (rosterRead(filters)) return new Promise(() => {});
+    return fallback(filters);
+  });
+  data.reload();
+  await vi.waitFor(() => expect(connections).toHaveLength(2));
+  connections.at(-1)?.resolve(source);
+  await vi.waitFor(() => expect(data.snapshot().status).toBe("ready"));
+  expect(data.snapshot().session.channels.list().status).toBe("loading");
+  // Another reload before the roster answers still carries beta.
+  query.mockImplementation(fallback);
+  data.reload();
+  await vi.waitFor(() => expect(connections).toHaveLength(3));
+  connections.at(-1)?.resolve(source);
+  await vi.waitFor(() =>
+    expect(data.snapshot().session.channels.window("beta").status).toBe(
+      "ready",
+    ),
+  );
+});
+it.each([
+  ["a later roster page", "paged"],
+  ["the retry after a roster error", "failed"],
+] as const)(
+  "reload reopens a channel the new roster first authorizes in %s",
+  async (_, mode) => {
+    const relay = keypair();
+    const { data, connections, source, restored } = setup({ relay });
+    await restored();
+    connections[0]?.resolve(source);
+    await vi.waitFor(() => expect(data.snapshot().status).toBe("ready"));
+    const query = vi.mocked(source.query);
+    const rosterRead = (filters: readonly import("./events").ReadFilter[]) =>
+      filters.some((f) => f.kinds?.includes(39002));
+    const beta = [
+      roster(relay, "beta", [source.viewer], 1_600_000_000),
+      metadata(relay, "beta", "Beta", 1_600_000_000),
+    ];
+    const head = (filters: readonly import("./events").ReadFilter[]) =>
+      filters.some((f) => f["#h"]?.includes("beta"))
+        ? [
+            bounds(relay, "beta", "head", {
+              has_more: false,
+              next_cursor: null,
+            }),
+          ]
+        : [];
+    query.mockImplementation(async (filters) =>
+      rosterRead(filters)
+        ? [
+            roster(relay, "alpha", [source.viewer]),
+            roster(relay, "gamma", [source.viewer]),
+            ...beta,
+          ]
+        : head(filters),
+    );
+    const { channels } = data.snapshot().session;
+    channels.refreshList?.();
+    await vi.waitFor(() => expect(channels.get?.("gamma")).toBeDefined());
+    channels.ensure("gamma");
+    channels.ensure("beta");
+    channels.ensure("alpha");
+    // A full first page with beta's and gamma's metadata but not their
+    // rosters, so both stay closed until a later page or a retry: it brings
+    // beta's roster, and no longer lists gamma.
+    const firstPage = [
+      metadata(relay, "beta", "Beta", 1_600_000_000),
+      metadata(relay, "gamma", "Gamma", 1_600_000_000),
+      ...Array.from({ length: 500 }, (_, index) =>
+        roster(
+          relay,
+          `filler-${index}`,
+          [source.viewer],
+          1_700_000_000 - index,
+        ),
+      ),
+    ];
+    let failed = false;
+    let release = () => {};
+    const later = new Promise<void>((resolve) => (release = resolve));
+    query.mockImplementation(async (filters) => {
+      if (!rosterRead(filters)) return head(filters);
+      if (!filters.some((f) => f.until !== undefined)) return firstPage;
+      if (mode === "failed" && !failed) {
+        failed = true;
+        throw new ReadError("unavailable", "Down");
+      }
+      await later;
+      return beta;
+    });
+    const reloadCalls = query.mock.calls.length;
+    data.reload();
+    await vi.waitFor(() => expect(connections).toHaveLength(2));
+    connections.at(-1)?.resolve(source);
+    const next = () => data.snapshot().session.channels;
+    await vi.waitFor(() => expect(next().get?.("filler-0")).toBeDefined());
+    expect(next().window("beta").status).toBe("idle");
+    if (mode === "failed") {
+      await vi.waitFor(() => expect(next().list().status).toBe("error"));
+      next().ensureList();
+    }
+    release();
+    // Reopened, it reads its head from the new session.
+    await vi.waitFor(() =>
+      expect(
+        query.mock.calls
+          .slice(reloadCalls)
+          .some(([filters]) => filters.some((f) => f["#h"]?.includes("beta"))),
+      ).toBe(true),
+    );
+    // The complete roster left gamma out, so a later reload does not carry
+    // it, even once gamma is the viewer's again.
+    await vi.waitFor(() => expect(next().list().rosterAsOf).toBeDefined());
+    query.mockImplementation(async (filters) =>
+      rosterRead(filters)
+        ? [roster(relay, "gamma", [source.viewer]), ...beta]
+        : filters.some((f) => f["#h"]?.includes("gamma"))
+          ? [
+              bounds(relay, "gamma", "head", {
+                has_more: false,
+                next_cursor: null,
+              }),
+            ]
+          : head(filters),
+    );
+    const secondCalls = query.mock.calls.length;
+    data.reload();
+    await vi.waitFor(() => expect(connections).toHaveLength(3));
+    connections.at(-1)?.resolve(source);
+    await vi.waitFor(() => expect(next().get?.("gamma")).toBeDefined());
+    await vi.waitFor(() =>
+      expect(
+        query.mock.calls
+          .slice(secondCalls)
+          .some(([filters]) => filters.some((f) => f["#h"]?.includes("beta"))),
+      ).toBe(true),
+    );
+    expect(
+      query.mock.calls
+        .slice(secondCalls)
+        .some(([filters]) => filters.some((f) => f["#h"]?.includes("gamma"))),
+    ).toBe(false);
+  },
+);

@@ -1,3 +1,5 @@
+import { hostComposerProvenance } from "../../src/features/messages/mention-draft";
+import { MessageComposer } from "../../src/features/messages/MessageComposer";
 import "../../src/shared/styles/globals.css";
 import { useKeyboardFocusVisibility } from "../../src/shared/design-system/useKeyboardFocusVisibility";
 import { AgentSettings } from "../../src/app/AgentSettings";
@@ -27,6 +29,7 @@ import {
   profile,
   message,
   signed,
+  bounds,
 } from "../../src/features/relay/testing";
 import { matchesEvent } from "../../src/features/relay/projection";
 import type { RelayEvent } from "../../src/features/relay/events";
@@ -40,6 +43,20 @@ const viewer = keypair(),
 let members = [viewer.pubkey, first.pubkey, second.pubkey];
 let time = 1700000000;
 const publications: RelayEvent[] = [];
+// Channel history the viewer wrote elsewhere, read like the relay's own.
+const history: RelayEvent[] = [];
+const invocation = (() => {
+  if (!new URLSearchParams(location.search).has("invocation")) return;
+  const root = message(first, "c", "Physical thread", ++time);
+  const anchor = message(first, "c", "Invocation", ++time, [
+    ["e", root.id, "", "reply"],
+  ]);
+  const sibling = message(first, "c", "Sibling invocation", ++time, [
+    ["e", root.id, "", "reply"],
+  ]);
+  history.push(root, anchor, sibling);
+  return { rootId: root.id, anchorId: anchor.id, siblingId: sibling.id };
+})();
 let replaceRecipients = (
   _people: readonly { pubkey: string; name: string }[],
 ): boolean => false;
@@ -227,8 +244,9 @@ const owner = createRelaySession(
           ...extraChannels,
           ...openChannels,
           ...publications,
+          ...history,
         ];
-        return events.filter((event) =>
+        const matched = events.filter((event) =>
           filters.some((filter) => {
             const { search, search_mode: _mode, ...ordinary } = filter;
             // Name-prefix directory search, like the relay's prefix mode.
@@ -242,6 +260,17 @@ const owner = createRelaySession(
             );
           }),
         );
+        // Seeded history ends the channel's window: nothing older remains.
+        return history.length &&
+          filters.some((filter) => filter["#h"]?.includes("c"))
+          ? [
+              ...matched,
+              bounds(relay, "c", "head", {
+                has_more: false,
+                next_cursor: null,
+              }),
+            ]
+          : matched;
       } finally {
         pendingReads--;
       }
@@ -401,7 +430,17 @@ Object.assign(window, {
     outsider: outsider.pubkey,
     first: first.pubkey,
     second: second.pubkey,
+    invocation,
     publications,
+    ownerMention: (rootId: string | null) =>
+      owner.session.ownerMentions?.latest({ channelId: "c", rootId }),
+    confirmedOwnerSends: (rootId: string | null, eventIds: readonly string[]) =>
+      owner.session.ownerMentions?.confirmedOwnerSends(
+        { channelId: "c", rootId },
+        eventIds,
+      ),
+    programmaticOwnerSend: (rootId: string, text: string) =>
+      owner.session.messages.reply("c", rootId, text),
     replaceRecipients: (people: readonly { pubkey: string; name: string }[]) =>
       replaceRecipients(people),
     disabledCalls,
@@ -455,7 +494,9 @@ Object.assign(window, {
 function Fixture() {
   useKeyboardFocusVisibility();
   const [thread, setThread] = useState(false);
+  const [replyParent, setReplyParent] = useState(invocation?.anchorId);
   const [disabled, setDisabled] = useState(false);
+  const [focusRequest, setFocusRequest] = useState(0);
   return (
     <main
       style={
@@ -470,6 +511,14 @@ function Fixture() {
             }
       }
     >
+      {invocation && (
+        <button
+          type="button"
+          onClick={() => setReplyParent(publications[0]?.id)}
+        >
+          Reply to first invocation message
+        </button>
+      )}
       {testControls && (
         <>
           <button type="button" onClick={() => setThread(!thread)}>
@@ -488,10 +537,30 @@ function Fixture() {
           <button type="button" onClick={() => setDisabled(!disabled)}>
             Toggle disabled
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              // The viewer's latest message tagged an agent, as when the
+              // channel's history lands after its composer mounted.
+              const sent = message(viewer, "c", "@Honey hi", ++time, [
+                ["p", second.pubkey],
+              ]);
+              history.push(sent);
+              owner.session.channels.ensure("c");
+              incoming([sent]);
+            }}
+          >
+            Load history
+          </button>
+          <button type="button" onClick={() => setFocusRequest((n) => n + 1)}>
+            Focus composer
+          </button>
         </>
       )}
       <div style={{ width: "100%", maxWidth: 720 }}>
-        <conversation.ui.Composer
+        <MessageComposer
+          evidenceOwner={hostComposerProvenance}
+          extensions={conversation}
           disabled={disabled}
           session={namedSession}
           scope={
@@ -501,7 +570,16 @@ function Fixture() {
           }
           channelId="c"
           channelName="General"
-          {...(thread ? { threadRootId: "a".repeat(64) } : {})}
+          {...(focusRequest ? { focusRequest } : {})}
+          {...(invocation
+            ? {
+                threadRootId: invocation.anchorId,
+                sourceRootId: invocation.rootId,
+                replyParentId: replyParent,
+              }
+            : thread
+              ? { threadRootId: "a".repeat(64) }
+              : {})}
         />
       </div>
       {showSettings && <AgentSettings />}

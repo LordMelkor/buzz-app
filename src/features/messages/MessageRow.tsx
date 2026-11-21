@@ -4,12 +4,16 @@ import { requestWork, isSettledWork } from "../agents/request-work";
 import { ActivityDisclosure } from "./ActivityDisclosure";
 import { ActivityOutcome } from "./ActivityOutcome";
 import { AgentResponsePreview } from "./AgentResponsePreview";
+import { useChannelActivitySubscription } from "../agents/use-channel-agent-activity";
+import { useSpringLoaded } from "./spring-loaded-drag";
 import { useActivityIndicator } from "./use-activity-indicator";
 import type { ActivityRowPresentation } from "./activity-presentation";
 import { ShimmerText } from "../../shared/design-system/ui/ShimmerText";
 import { Collapsible } from "@base-ui/react/collapsible";
-import { formatItemTimestamp } from "../../shared/datetime";
-import { useClockPreference } from "../../shared/clock-preference";
+import {
+  formatFullTimestamp,
+  formatItemTimestamp,
+} from "../../shared/datetime";
 import { ProfilePeek } from "../profiles/ProfilePeek";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import {
@@ -20,6 +24,7 @@ import {
 import { breathing, localActivity } from "../agents/local-activity";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import {
+  CaretRightIcon,
   DotsThreeIcon,
   LightningIcon,
   RobotIcon,
@@ -39,6 +44,7 @@ import { MessageLink } from "../conversation/MessageLink";
 import {
   DayDivider,
   MessageTimestamp,
+  useMessageTimeVisible,
   MessageTimestampHint,
 } from "./MessageTimestamp";
 import { useChannelIdentityNames } from "../identity-names/react";
@@ -47,6 +53,7 @@ import { ReplySummary } from "./ReplySummary";
 import { usePresenceStatus } from "../presence/react";
 import { UserStatusDisplay } from "../user-status/StatusDisplay";
 import { useMessageDensity } from "../../shared/theme/message-density";
+import { useLocalDay } from "../../shared/use-local-day";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import {
   memo,
@@ -95,6 +102,7 @@ import { AttachmentDownloadContext } from "./AttachmentDownloadContext";
 import { isNativeMediaSource, isProxySource } from "./attachment-source";
 import { FileAttachment } from "./FileAttachment";
 import { useReferenceDirectory } from "./ReferenceText";
+import { withoutRelayNotice } from "../relay/relayed-from";
 import { EditedMarker, MessageMarkdown } from "./MessageMarkdown";
 import {
   safeMessageUrl,
@@ -104,7 +112,6 @@ import styles from "./Messages.module.css";
 import { LinkPreviews } from "./LinkPreviews";
 import { previewLinks } from "./preview-links";
 import { usesLargeEmojiPresentation } from "./emoji-size";
-import { separateChatCards } from "./chat-cards";
 import { MessageReactionControls, MessageReactions } from "./MessageReactions";
 
 import {
@@ -152,7 +159,7 @@ export type MessageRowProps = {
   participantProfiles?: ReadonlyMap<string, Profile> | undefined;
   agentPubkeys?: ReadonlySet<string> | undefined;
   canOpenLink?: ((target: string) => boolean) | undefined;
-  media(url: string, size?: "small"): string | undefined;
+  media(url: string, size?: "small", channel?: string): string | undefined;
   /** Receives the thread the link was opened from: the row’s root, or the row. */
   onOpenLink(url: string, origin?: MessageLinkOrigin): boolean;
   day: boolean;
@@ -191,6 +198,8 @@ export type MessageRowProps = {
 
 type MessageContentProps = MessageRowProps & {
   shownRow?: ChannelMessage;
+  /** Leave out the reactions row and its controls. */
+  withoutReactions?: boolean;
   renderMessage?: (
     message: ReactNode,
     trigger: RefObject<HTMLButtonElement | null>,
@@ -202,8 +211,9 @@ function useCompletedMessageWork(
   activity: RelaySession["agentActivity"] | undefined,
   row: ChannelMessage,
 ) {
+  const subscribe = useChannelActivitySubscription(activity, row.channelId);
   const read = () => {
-    const snapshot = activity?.snapshot();
+    const snapshot = activity?.snapshot(row.channelId);
     if (!snapshot) return false;
     const published = (snapshot.local ?? []).filter(
       (work) =>
@@ -225,7 +235,7 @@ function useCompletedMessageWork(
       )
     );
   };
-  return useSyncExternalStore(activity?.subscribe ?? noSubscribe, read, read);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 const FullMessageRow = memo(function MessageRow(props: MessageContentProps) {
@@ -245,6 +255,7 @@ function MessageRowContent({
   bodyContent,
   fullWidth = false,
   shownRow,
+  withoutReactions = false,
   renderMessage,
   getThreadRoot,
   session,
@@ -316,6 +327,10 @@ function MessageRowContent({
     (url: string) => onOpenLink(url, { rootId }),
     [onOpenLink, rootId],
   );
+  const springLoadedThread = useSpringLoaded(
+    () => onOpenThread?.(row.id, rootId),
+    threadOpen,
+  );
   const channels = session?.channels;
   const listed = useListedChannel(
     channels,
@@ -337,20 +352,12 @@ function MessageRowContent({
     row.channelId,
     (channel) => !!channel?.readOnly,
   );
-  const { messageTimestamps } = useClockPreference();
-  const solo = useListedChannel(
-    references?.channels,
-    row.channelId,
-    (channel) => channel?.channelType === "solo",
-  );
   const dmMembers = useListedChannel(
     references?.channels,
     row.channelId,
     (channel) => (channel?.channelType === "dm" && channel.members) || none,
   );
-  const showTime =
-    messageTimestamps === "show" ||
-    (messageTimestamps === "hide-solo" && !solo);
+  const showTime = useMessageTimeVisible(references?.channels, row.channelId);
   const unreadLabel =
     threadUnread?.manual === "local-only"
       ? "Thread marked unread on this device only"
@@ -506,19 +513,10 @@ function MessageRowContent({
     shown.diff || bodyContent != null
       ? undefined
       : parseMediaTimeReply(row.forward?.note ?? shown.content);
-  const sourceRow =
+  const displayRow =
     timeReply && !row.forward
       ? { ...shown, content: timeReply.content }
       : shown;
-  const { caption: displayRow, cards: chatCards } = useMemo(
-    () =>
-      bodyContent != null
-        ? { caption: sourceRow, cards: [] }
-        : separateChatCards(sourceRow, directory.channels),
-    [sourceRow, directory.channels, bodyContent],
-  );
-  const cardsOnly =
-    chatCards.length > 0 && !displayRow.content.trim() && !timeReply;
   const attachmentOnly =
     !row.content.trim() &&
     !row.diff &&
@@ -689,7 +687,7 @@ function MessageRowContent({
   // A message renderer may draw some attachments itself. Its claims count only
   // while its card is mounted, and they return to the host list while its
   // fallback shows. A remounted card starts healthy and claims again.
-  const bodyShown = !attachmentOnly && !cardsOnly;
+  const bodyShown = !attachmentOnly;
   const messageRenderer = useMessageRenderer(extensions?.messages, row);
   const [failedRenderer, setFailedRenderer] = useState<MessageRenderer>();
   const claims =
@@ -767,6 +765,10 @@ function MessageRowContent({
       previous.push(attachment);
     else attachmentGroups.push([attachment]);
   }
+  // A message's images are saved with its channel, so losing the channel
+  // forgets them.
+  const attachmentMedia = (url: string, size?: "small") =>
+    media(url, size, row.channelId);
   const attachmentContent = (copied = false) =>
     attachmentGroups.some(
       (group) => copiedUrls.has(group[0]?.url ?? "") === copied,
@@ -795,7 +797,7 @@ function MessageRowContent({
             const items = previews.map((attachment, index) => {
               const url = safeMessageUrl(attachment.url);
               if (!url) return null;
-              const source = media(url);
+              const source = attachmentMedia(url);
               if (attachment.kind === "file") {
                 const fallback = (
                   <FileAttachment
@@ -858,8 +860,7 @@ function MessageRowContent({
                 );
               }
               if (attachment.kind === "image") {
-                // biome-ignore lint/plugin: Attachment thumbnails, not avatars.
-                const small = media(url, "small");
+                const small = attachmentMedia(url, "small");
                 // Third-party URLs map to themselves: no thumbnail. JPEG
                 // drops alpha, so these formats use the WebP variant.
                 const alpha =
@@ -868,7 +869,7 @@ function MessageRowContent({
                   small === source
                     ? undefined
                     : alpha
-                      ? media(`${alpha[1]}.thumb.webp`)
+                      ? attachmentMedia(`${alpha[1]}.thumb.webp`)
                       : small;
                 const image = (
                   <AttachmentImage
@@ -929,7 +930,7 @@ function MessageRowContent({
                 <MediaAttachment
                   key={url}
                   attachment={{ ...attachment, url }}
-                  media={media}
+                  media={attachmentMedia}
                   compact={images && group.length >= 4 && !!onOpenMediaReview}
                   overlayCount={collapsed && index === 3 ? group.length - 3 : 0}
                   label={
@@ -1363,6 +1364,7 @@ function MessageRowContent({
               event.currentTarget.focus();
               onOpenThread(row.id, row.threadRootId ?? row.id);
             }}
+            {...springLoadedThread}
           >
             <ReplySummary
               hideEmptyLabel={!!activity}
@@ -1418,12 +1420,7 @@ function MessageRowContent({
     );
   };
   const reactionsInBubble =
-    !attachmentOnly &&
-    !cardsOnly &&
-    !row.huddle &&
-    !shownRow &&
-    !emojiOnly &&
-    !row.diff;
+    !attachmentOnly && !row.huddle && !shownRow && !emojiOnly && !row.diff;
   // A plugin card keeps reactions in its bubble, so its mark goes above them.
   const editedInBubble = !editedInBody && reactionsInBubble;
   const reactionContent =
@@ -1503,10 +1500,7 @@ function MessageRowContent({
             ? ""
             : undefined
         }
-        data-own={
-          (!attachmentOnly && !cardsOnly && !row.huddle && ownBubble) ||
-          undefined
-        }
+        data-own={(!attachmentOnly && !row.huddle && ownBubble) || undefined}
       >
         {!renderMessage && <span className={styles.messageGutter} />}
 
@@ -1515,8 +1509,7 @@ function MessageRowContent({
           <div
             className={styles.messageContent}
             data-bubble={
-              (!attachmentOnly && !cardsOnly && !row.huddle && !shownRow) ||
-              undefined
+              (!attachmentOnly && !row.huddle && !shownRow) || undefined
             }
           >
             {/* A live append must not remove the reader's current focus target. */}
@@ -1677,32 +1670,6 @@ function MessageRowContent({
               }
               attachments={attachmentGroups.length > 0}
             >
-              {chatCards.length > 0 && (
-                <div
-                  className={styles.messageAttachments}
-                  data-solo-cards
-                  data-message-action-anchor
-                >
-                  {chatCards.map((card) => (
-                    <MessageMarkdown
-                      key={card.start}
-                      directory={directory}
-                      session={references}
-                      scope={scope}
-                      row={{
-                        ...shown,
-                        content: card.content,
-                        attachmentSeams: [],
-                      }}
-                      extensions={extensions}
-                      media={media}
-                      onOpenLink={openLink}
-                      canOpenLink={canOpenLink}
-                      participantProfiles={participantProfiles}
-                    />
-                  ))}
-                </div>
-              )}
               {bodyShown && (
                 <div
                   className={
@@ -1755,7 +1722,7 @@ function MessageRowContent({
                     body
                   )}
                   {editedInBubble && shown.edited && <EditedMarker />}
-                  {reactionsInBubble && reactionContent}
+                  {reactionsInBubble && !withoutReactions && reactionContent}
                 </div>
               )}
               {previewUrls.length > 0 && (
@@ -1772,7 +1739,7 @@ function MessageRowContent({
               )}
             </MessageTimestampHint>
           </div>
-          {!reactionsInBubble && reactionContent}
+          {!reactionsInBubble && !withoutReactions && reactionContent}
           <DeliveryNotice row={row} retry={retry} />
           {session && scope && (
             <AgentDeclineNotes
@@ -1881,6 +1848,8 @@ export const MessageRow = memo(function AudienceMessageRow(
         ) : (
           <AgentsMessageRow {...props} failure />
         )
+      ) : row.relayedFrom?.verified ? (
+        <RelayedMessageRow {...props} />
       ) : row.audience === "agents" ? (
         <AgentsMessageRow {...props} />
       ) : (
@@ -2145,6 +2114,188 @@ function AgentsMessageRow(props: MessageRowProps & { failure?: boolean }) {
   );
 }
 
+/** Another agent's message that its owner relayed here from another chat. It
+ * reads as that agent's quiet line, never as the signer's own message, and
+ * opens to the text without the notice older clients show in its place. */
+function RelayedMessageRow(props: MessageRowProps) {
+  const { row, session, media, participantProfiles, agentPubkeys } = props;
+  const source = row.relayedFrom;
+  const references = props.references ?? session;
+  const [open, setOpen] = useState(false);
+  const keepMounted = props.keepMounted;
+  useEffect(() => {
+    if (open) return keepMounted?.(row.id);
+  }, [open, keepMounted, row.id]);
+  const resolveName = useChannelIdentityNames(references, row.channelId);
+  const directory = useReferenceDirectory(references, participantProfiles);
+  const showTime = useMessageTimeVisible(references?.channels, row.channelId);
+  // The button's name carries the full date, so it follows time zone changes.
+  useLocalDay();
+  const shown = useMemo(() => {
+    const content = withoutRelayNotice(row.content, row.relayedFrom?.notice);
+    const removed = row.content.length - content.length;
+    // Attachment seams are offsets into the content, so they move with it.
+    const attachmentSeams = row.attachmentSeams?.flatMap((seam) =>
+      seam >= removed ? [seam - removed] : [],
+    );
+    return {
+      ...row,
+      content,
+      ...(attachmentSeams ? { attachmentSeams } : {}),
+    };
+  }, [row]);
+  if (!source) return null;
+  const name = (pubkey: string) =>
+    resolveName(
+      pubkey,
+      (pubkey === row.authorId ? props.profile : directory.profiles.get(pubkey))
+        ?.name ?? pubkey.slice(0, 10),
+    );
+  const agent = {
+    name: name(source.agent),
+    profile: directory.profiles.get(source.agent),
+  };
+  const recipients = row.mentions
+    .filter((pubkey) => pubkey !== source.agent)
+    .map(name);
+  // Only the reader's own chats are named; anyone else sees the agent alone.
+  const chat = directory.channels.find((item) => item.id === source.channelId);
+  const chatLabel =
+    chat && `${chat.channelType === "dm" ? "" : "#"}${chat.name}`;
+  const excerpt = Array.from(
+    messagePreviewText(shown.content).replace(/\s+/g, " "),
+  );
+  const preview =
+    excerpt.length > 280
+      ? `${excerpt.slice(0, 279).join("")}…`
+      : excerpt.join("");
+  return (
+    <FullMessageRow
+      {...props}
+      shownRow={shown}
+      withoutReactions
+      alignViewer={false}
+      day={false}
+      layout="continuation"
+      stackPrevious
+      stackNext
+      renderMessage={(message, trigger) => (
+        <div
+          className={styles.relayedRow}
+          data-relayed=""
+          data-layout={props.layout ?? "timeline"}
+          data-open={open || undefined}
+        >
+          {props.day && <DayDivider createdAt={row.createdAt} />}
+          <Collapsible.Root
+            open={open}
+            onOpenChange={setOpen}
+            className={styles.relayedEntry}
+            data-highlight-surface=""
+            data-thread-open={props.threadOpen || undefined}
+            aria-current={props.threadOpen ? true : undefined}
+            data-message-id={row.id}
+          >
+            {/* The whole line opens it; only the source chat link sits above. */}
+            <div className={styles.relayedHeader} data-open={open || undefined}>
+              <Collapsible.Trigger
+                ref={trigger}
+                data-buzz-ui=""
+                className={styles.relayedTrigger}
+                aria-label={`${agent.name}${chatLabel ? ` from ${chatLabel}` : ""}: ${preview}${row.edited ? " (edited)" : ""}${row.replyCount > 0 ? `, ${row.replyCount === 1 ? "1 reply" : `${row.replyCount} replies`}` : ""}, ${formatFullTimestamp(row.createdAt)}`}
+              />
+              <span className={styles.relayedAvatar} aria-hidden="true">
+                <AgentAvatar
+                  session={session}
+                  agentPubkey={source.agent}
+                  channelId={row.channelId}
+                  src={avatarMedia(agent.profile?.picture, media)}
+                  alt=""
+                  fallback={agent.name}
+                  size="fill"
+                  shape={
+                    agentPubkeys?.has(source.agent) || agent.profile?.isAgent
+                      ? "squircle"
+                      : "circle"
+                  }
+                />
+              </span>
+              <span className={styles.relayedName} aria-hidden="true">
+                {agent.name}
+              </span>
+              {chat && (
+                <>
+                  <span
+                    className={styles.relayedSubtle}
+                    data-relayed-source=""
+                    data-relayed-from={chat.channelType === "dm" ? "dm" : ""}
+                    aria-hidden="true"
+                  >
+                    from
+                  </span>
+                  <span className={styles.relayedChat} data-relayed-source="">
+                    <MessageLink
+                      url={`buzz://channel/${encodeURIComponent(chat.id)}`}
+                      label={chatLabel}
+                      registry={props.extensions?.links}
+                      onOpenLink={(url) => props.onOpenLink(url)}
+                      session={session}
+                      scope={props.scope}
+                      channelPrivate={!!chat.private}
+                    />
+                  </span>
+                </>
+              )}
+              <span className={styles.relayedPreview} aria-hidden="true">
+                {!open && preview}
+              </span>
+              {!open && row.edited && (
+                <span aria-hidden="true">
+                  <EditedMarker />
+                </span>
+              )}
+              {/* Opening the line shows the thread control and its unread cue. */}
+              {!open && row.replyCount > 0 && (
+                <span className={styles.relayedSubtle} aria-hidden="true">
+                  {row.replyCount === 1
+                    ? "1 reply"
+                    : `${row.replyCount} replies`}
+                </span>
+              )}
+              <span className={styles.relayedTime} aria-hidden="true">
+                <MessageTimestamp
+                  createdAt={row.createdAt}
+                  visible={showTime}
+                />
+              </span>
+              <CaretRightIcon
+                className={styles.relayedCaret}
+                aria-hidden="true"
+              />
+            </div>
+            <Collapsible.Panel
+              className={styles.relayedPanel}
+              inert={!open || undefined}
+              aria-hidden={!open || undefined}
+            >
+              <div className={styles.relayedBody}>
+                {message}
+                <p className={styles.relayedFooter}>
+                  Sent as{" "}
+                  {row.authorId === (props.viewer ?? session?.viewer)
+                    ? "you"
+                    : name(row.authorId)}
+                  {recipients.length > 0 && ` · to ${recipients.join(", ")}`}
+                </p>
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+        </div>
+      )}
+    />
+  );
+}
+
 // Subscribe only for mounted thread buttons. Evidence and reading remain session-owned;
 // rendering a row must not initiate per-thread reads or acknowledge unseen replies.
 function useThreadUnread(
@@ -2204,8 +2355,12 @@ function useThreadAgents(
     get,
   );
   // Subscribe to this thread's working agents, not every activity step.
+  const subscribeWork = useChannelActivitySubscription(
+    session?.agentActivity,
+    channelId,
+  );
   const getWork = () => {
-    const activity = session?.agentActivity?.snapshot();
+    const activity = session?.agentActivity?.snapshot(channelId);
     const typers = threadWorkingAgents(
       activity,
       keys ? keys.split(",") : [],
@@ -2226,11 +2381,7 @@ function useThreadAgents(
       typers.length > 0 && typers.every((agent) => breathing(local.get(agent)));
     return `${waiting ? "waiting" : "working"}:${typers.join(",")}`;
   };
-  const work = useSyncExternalStore(
-    session?.agentActivity?.subscribe ?? noSubscribe,
-    getWork,
-    getWork,
-  );
+  const work = useSyncExternalStore(subscribeWork, getWork, getWork);
   const [state, joined = ""] = work.split(/:(.*)/s);
   const typers = joined ? joined.split(",") : [];
   const hasWork = typers.length > 0;
