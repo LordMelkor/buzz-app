@@ -4,6 +4,7 @@ import {
   rmSync,
   renameSync,
   truncateSync,
+  utimesSync,
   appendFileSync,
   writeFileSync,
 } from "node:fs";
@@ -264,10 +265,28 @@ function server(
       [...(declared.args ?? []), ...(options?.args ?? [])],
       { cwd: dir },
     );
-    // The desktop host holds an incomplete UTF-8 sequence even at EOF.
-    const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-    child.stdout.on("data", (chunk: Buffer) => {
-      options?.onStdout?.(decoder.decode(chunk, { stream: true }));
+    // Match the host's 64 KiB reads and take_text: an invalid sequence
+    // flushes the whole buffer lossily, including its incomplete suffix.
+    let pending: Buffer = Buffer.alloc(0);
+    child.stdout.on("readable", () => {
+      for (;;) {
+        const chunk: Buffer | null = child.stdout.read(64 << 10);
+        if (chunk === null) break;
+        const data = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+        const decoder = new TextDecoder("utf-8", {
+          fatal: true,
+          ignoreBOM: true,
+        });
+        let text: string;
+        try {
+          text = decoder.decode(data, { stream: true });
+          pending = data.subarray(Buffer.byteLength(text));
+        } catch {
+          text = data.toString("utf8");
+          pending = Buffer.alloc(0);
+        }
+        if (text) options?.onStdout?.(text);
+      }
     });
     child.stderr
       .setEncoding("utf8")
@@ -770,14 +789,14 @@ const turnStart = (id: string) =>
     type: "event_msg",
     payload: { type: "task_started", turn_id: id },
   });
-const scriptCall = (id: string) =>
+const scriptCall = (id: string, input = "🎈") =>
   JSON.stringify({
     type: "response_item",
     payload: {
       type: "custom_tool_call",
       name: "exec",
       call_id: id,
-      input: "🎈",
+      input,
     },
   });
 
@@ -810,7 +829,7 @@ it("opens an empty rollout without asking the host to read zero bytes", async ()
 });
 
 it("restores an appended script when the first poll ends inside a UTF-8 character", async () => {
-  const { file, read } = fileTranscript("split-utf8");
+  const { file, read, spawn } = fileTranscript("split-utf8");
   const bytes = Buffer.from(`${turnStart("turn-1")}\n${scriptCall("split")}\n`);
   const cut = bytes.indexOf("🎈") + 2;
   writeFileSync(file, bytes.subarray(0, cut));
@@ -819,6 +838,53 @@ it("restores an appended script when the first poll ends inside a UTF-8 characte
   expect((await read(true))?.turns[0]?.items).toMatchObject([
     { id: "split", input: "🎈" },
   ]);
+  const complete = bytes.indexOf(10) + 1;
+  expect(spawn).toHaveBeenLastCalledWith(
+    "read-window",
+    expect.objectContaining({
+      args: [
+        "/sessions/split-utf8.jsonl",
+        String(complete + 1),
+        String(bytes.length - complete),
+      ],
+    }),
+  );
+});
+
+it("restores the same script text when the first tail byte splits a character", async () => {
+  const { file, read } = fileTranscript("utf8-tail");
+  const input = "🎈".repeat(32_768);
+  const records = [turnStart("turn-1"), scriptCall("dense", input), ""].join(
+    "\n",
+  );
+  writeFileSync(file, records);
+  const whole = (await read())?.turns[0]?.items;
+  expect(whole).toMatchObject([{ id: "dense", input }]);
+
+  const block = Buffer.from(`${JSON.stringify("🎈".repeat(16_383))} \n`);
+  writeFileSync(file, "");
+  for (let i = 0; i < 320; i++) appendFileSync(file, block);
+  appendFileSync(file, `${turnStart("earlier")}\n`);
+  const previous = scriptCall("earlier-script", "🎈".repeat(1_024));
+  const cut = Buffer.from(previous).indexOf("🎈") + 3;
+  const seam = `${previous}\n${records}`;
+  appendFileSync(file, seam);
+  // File size puts the 32 MiB cut inside the balloon in the preceding line.
+  const remaining = (32 << 20) + cut - Buffer.byteLength(seam);
+  for (let i = 0; i < Math.floor(remaining / block.length); i++)
+    appendFileSync(file, block);
+  appendFileSync(file, Buffer.alloc(remaining % block.length, 32));
+  expect((await read())?.turns[0]?.items).toEqual(whole);
+});
+
+it("refreshes a working rollout rewritten in place at the same size", async () => {
+  const { file, read } = fileTranscript("rewrite");
+  const start = turnStart("turn-1");
+  writeFileSync(file, `${start}\n${scriptCall("old")}\n`);
+  expect((await read(true))?.turns[0]?.items).toMatchObject([{ id: "old" }]);
+  writeFileSync(file, `${start}\n${scriptCall("new")}\n`);
+  utimesSync(file, 1, 1);
+  expect((await read(true))?.turns[0]?.items).toMatchObject([{ id: "new" }]);
 });
 
 it("restores shown scripts when a newer turn has no start record", async () => {

@@ -270,7 +270,7 @@ login | review)
   ;;
 rollout-stat)
   if [ "$(uname)" = Darwin ]; then
-    exec stat -Lf '%z %d:%i %Fm %Fc' "$1"
+    exec /usr/bin/stat -Lf '%z %d:%i %Fm %Fc' -- "$1"
   fi
   exec stat -Lc '%s %d:%i %y %z' -- "$1"
   ;;
@@ -283,15 +283,30 @@ read-window)
     [ "${codes[1]}" -eq 0 ] || exit "${codes[1]}"
     [ "${codes[0]}" -eq 0 ] || [ "${codes[0]}" -eq 141 ] || exit "${codes[0]}"
   }
-  # The boundary probe owns the record containing its last byte.
-  if [ "${4:-}" = through-line ]; then
-    [ "$3" -le 1 ] || copy_range "$1" "$2" -c "$(($3 - 1))"
-    copy_range "$1" "$(($2 + $3 - 1))" -n 1
-  else
-    copy_range "$1" "$2" -c "$3"
+  path=$1 start=$2 count=$3
+  end=$((start - 1 + count))
+  shift 3
+  if [ "${1:-}" = align ]; then
+    # Keep a clipped UTF-8 character out of the host decoder. Report the
+    # discarded byte count so an append resumes at the last complete line.
+    skipped=$(set -o pipefail; copy_range "$path" "$start" -n 1 | wc -c)
+    [ "$skipped" -le "$count" ] || skipped=$count
+    echo "$((skipped))" >&2
+    start=$((start + skipped))
+    count=$((count - skipped))
+    shift
   fi
-  size=$(wc -c <"$1")
-  [ "$size" -ge "$(($2 - 1 + $3))" ] || { echo "$1 shrank" >&2; exit 3; }
+  if [ "$count" -gt 0 ]; then
+    # The boundary probe owns the record containing its last byte.
+    if [ "${1:-}" = through-line ]; then
+      [ "$count" -le 1 ] || copy_range "$path" "$start" -c "$((count - 1))"
+      copy_range "$path" "$end" -n 1
+    else
+      copy_range "$path" "$start" -c "$count"
+    fi
+  fi
+  size=$(wc -c <"$path")
+  [ "$size" -ge "$end" ] || { echo "$path shrank" >&2; exit 3; }
   ;;
 *)
   echo "Unknown command: $command" >&2

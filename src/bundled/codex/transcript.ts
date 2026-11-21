@@ -505,36 +505,23 @@ async function readWindow(
   signal: AbortSignal,
   from: number,
   size: number,
-  skip: boolean,
+  align: boolean,
   throughLine = false,
 ) {
   const lines: Json[] = [];
   const fragments: string[] = [];
-  let bytes: number | undefined = throughLine ? undefined : from;
-  const consumed = (text: string) => {
-    // A lossy decode at the leading edge cannot give an exact append offset.
-    if (bytes !== undefined)
-      bytes = text.includes("�")
-        ? undefined
-        : bytes + encoder.encode(text).length;
-  };
-  let error = "";
+  let bytes = from;
+  let stderr = "";
   const child = await spawn("read-window", {
     cwd,
     args: [
       path,
       String(from + 1),
       String(size - from),
+      ...(align ? ["align"] : []),
       ...(throughLine ? ["through-line"] : []),
     ],
     onStdout: (chunk) => {
-      if (skip) {
-        const start = chunk.indexOf("\n");
-        consumed(start < 0 ? chunk : chunk.slice(0, start + 1));
-        if (start < 0) return;
-        chunk = chunk.slice(start + 1);
-        skip = false;
-      }
       const end = chunk.lastIndexOf("\n");
       if (end < 0) {
         fragments.push(chunk);
@@ -542,21 +529,25 @@ async function readWindow(
       }
       fragments.push(chunk.slice(0, end + 1));
       const complete = fragments.join("");
-      consumed(complete);
+      if (!throughLine) bytes += encoder.encode(complete).length;
       for (const record of recordedLines(complete)) lines.push(record);
       fragments.length = 0;
       fragments.push(chunk.slice(end + 1));
     },
     onStderr: (data) => {
-      error += data;
+      stderr += data;
     },
   });
   const code = await fileExit(child, signal);
-  if (code !== 0) throw new Error(error.trim() || `Could not read ${path}`);
+  if (code !== 0) throw new Error(stderr.trim() || `Could not read ${path}`);
+  const skipped = align && /^\d+$/.test(stderr.trim()) ? Number(stderr) : 0;
   const tail = fragments.join("");
   return {
     lines,
-    bytes: skip ? undefined : bytes,
+    bytes:
+      !throughLine && (!align || skipped > 0) && from + skipped < size
+        ? bytes + skipped
+        : undefined,
     trailing: recordedLines(tail),
   };
 }
@@ -648,7 +639,8 @@ async function rollout(
   let read = await readAt(from);
   if (!held && from > 0) {
     const shown = new Set(turns.map((turn) => turn.turnId));
-    const first = firstTurn(read.lines, shown);
+    const first =
+      firstTurn(read.lines, shown) ?? firstTurn(read.trailing, shown);
     if (first !== "earlier") {
       const limitStart = size - READ_LIMIT;
       if (
