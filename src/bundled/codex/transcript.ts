@@ -13,7 +13,11 @@ import type { AgentKey } from "../../features/agents/membership";
 import { sessionTag, sessionTitle } from "./prompt";
 import { AppServer, Oversized, type Spawn } from "./rpc";
 import { READ_LIMIT } from "../../buzz-mcp/app-client";
-import { recordedLines, restoreRecordedTools } from "./recorded-tools";
+import {
+  recordedLines,
+  recordedTurnStart,
+  restoreRecordedTools,
+} from "./recorded-tools";
 
 /** The latest turns shown; earlier ones stay in Codex's own history. */
 export const TURN_LIMIT = 20;
@@ -445,7 +449,7 @@ type Rollout = { oldest: string; from: number; bytes: number; lines: Json[] };
 const rollouts = new Map<string, Rollout>();
 const TAIL_BYTES = 32 << 20;
 const CACHE_RECORDS = 8192;
-const MAX_SHOWN_BYTES = 256 << 20;
+const encoder = new TextEncoder();
 
 async function fileExit(
   child: Awaited<ReturnType<Spawn>>,
@@ -496,16 +500,31 @@ async function readWindow(
   from: number,
   size: number,
   skip: boolean,
+  throughLine = false,
 ) {
   const lines: Json[] = [];
   const fragments: string[] = [];
+  let bytes: number | undefined = throughLine ? undefined : from;
+  const consumed = (text: string) => {
+    // A lossy decode at the leading edge cannot give an exact append offset.
+    if (bytes !== undefined)
+      bytes = text.includes("�")
+        ? undefined
+        : bytes + encoder.encode(text).length;
+  };
   let error = "";
   const child = await spawn("read-window", {
     cwd,
-    args: [path, String(from + 1), String(size - from)],
+    args: [
+      path,
+      String(from + 1),
+      String(size - from),
+      ...(throughLine ? ["through-line"] : []),
+    ],
     onStdout: (chunk) => {
       if (skip) {
         const start = chunk.indexOf("\n");
+        consumed(start < 0 ? chunk : chunk.slice(0, start + 1));
         if (start < 0) return;
         chunk = chunk.slice(start + 1);
         skip = false;
@@ -515,9 +534,10 @@ async function readWindow(
         fragments.push(chunk);
         return;
       }
-      fragments.push(chunk.slice(0, end));
-      for (const record of recordedLines(fragments.join("")))
-        lines.push(record);
+      fragments.push(chunk.slice(0, end + 1));
+      const complete = fragments.join("");
+      consumed(complete);
+      for (const record of recordedLines(complete)) lines.push(record);
       fragments.length = 0;
       fragments.push(chunk.slice(end + 1));
     },
@@ -528,11 +548,51 @@ async function readWindow(
   const code = await fileExit(child, signal);
   if (code !== 0) throw new Error(error.trim() || `Could not read ${path}`);
   const tail = fragments.join("");
-  // A read ending mid-character cannot give an exact byte offset for append.
-  const bytes = tail.includes("�")
-    ? undefined
-    : size - new TextEncoder().encode(tail).length;
-  return { lines, bytes, trailing: recordedLines(tail) };
+  return {
+    lines,
+    bytes: skip ? undefined : bytes,
+    trailing: recordedLines(tail),
+  };
+}
+
+/** A start in an earlier turn proves the window reaches past the shown
+ * history. A completion from an earlier turn can outlive it. */
+function firstTurn(lines: Json[], shown: Set<string>) {
+  for (const record of lines) {
+    const id = str((record.payload as Json)?.turn_id);
+    if (shown.has(id)) return "shown";
+    if (recordedTurnStart(record)) return "earlier";
+  }
+}
+
+/** A context or even a repeated start of the oldest shown turn can occur in
+ * mid-turn. Walk back to the preceding turn or EOF before accepting that cut.
+ * Include the record straddling each cut in the preceding page. */
+async function hasShownPrefix(
+  spawn: Spawn,
+  directory: string,
+  path: string,
+  signal: AbortSignal,
+  end: number,
+  shown: Set<string>,
+) {
+  while (end > 0) {
+    const from = Math.max(0, end - (4 << 20));
+    const read = await readWindow(
+      spawn,
+      directory,
+      path,
+      signal,
+      Math.max(0, from - 1),
+      end,
+      from > 0,
+      true,
+    );
+    const owner = firstTurn(read.lines.concat(read.trailing).reverse(), shown);
+    if (owner) return owner === "shown";
+    end = from;
+  }
+  return false;
 }
 
 async function rollout(
@@ -546,15 +606,19 @@ async function rollout(
   if (!oldest) return [];
   const known = rollouts.get(path);
   const size = await rolloutSize(spawn, directory, path, signal);
+  if (size === 0) {
+    rollouts.delete(path);
+    return [];
+  }
   const held =
     known?.oldest === oldest &&
     size >= known.bytes &&
-    size - known.from <= MAX_SHOWN_BYTES
+    size - known.from <= READ_LIMIT
       ? known
       : undefined;
   if (held && size === held.bytes) return held.lines;
   rollouts.delete(path);
-  let length = TAIL_BYTES;
+  let length = size <= READ_LIMIT && turns[0]?.newSession ? size : TAIL_BYTES;
   for (;;) {
     const from = held?.bytes ?? Math.max(0, size - length);
     const read = await readWindow(
@@ -567,28 +631,22 @@ async function rollout(
       !held && from > 0,
     );
     if (!held && from > 0) {
-      const needed = new Set(turns.map((turn) => turn.turnId));
-      for (const record of read.lines) {
-        const payload = record.payload as Json;
-        if (record.type === "event_msg" && payload.type === "task_started")
-          needed.delete(str(payload.turn_id));
-      }
-      if (needed.size) {
-        if (length === MAX_SHOWN_BYTES)
-          throw new Error(
-            `Shown turns require more than ${MAX_SHOWN_BYTES >> 20} MiB of session history.`,
-          );
-        length = Math.min(length * 2, MAX_SHOWN_BYTES);
+      const shown = new Set(turns.map((turn) => turn.turnId));
+      const first = firstTurn(read.lines, shown);
+      if (
+        first !== "earlier" &&
+        ((!first && length < READ_LIMIT) ||
+          (await hasShownPrefix(spawn, directory, path, signal, from, shown)))
+      ) {
+        if (length === READ_LIMIT)
+          throw new Error(`${path} is larger than 50 MB`);
+        length = READ_LIMIT;
         continue;
       }
     }
     const lines = held ? held.lines.concat(read.lines) : read.lines;
     const start = held?.from ?? from;
-    if (
-      read.bytes !== undefined &&
-      size - start <= READ_LIMIT &&
-      lines.length <= CACHE_RECORDS
-    ) {
+    if (read.bytes !== undefined && lines.length <= CACHE_RECORDS) {
       rollouts.set(path, { oldest, from: start, bytes: read.bytes, lines });
       for (const old of rollouts.keys())
         if (rollouts.size > 2) rollouts.delete(old);

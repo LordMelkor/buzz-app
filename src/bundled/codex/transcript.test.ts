@@ -263,9 +263,11 @@ function server(
       [...(declared.args ?? []), ...(options?.args ?? [])],
       { cwd: dir },
     );
-    child.stdout
-      .setEncoding("utf8")
-      .on("data", options?.onStdout ?? (() => {}));
+    // The desktop host holds an incomplete UTF-8 sequence even at EOF.
+    const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+    child.stdout.on("data", (chunk: Buffer) => {
+      options?.onStdout?.(decoder.decode(chunk, { stream: true }));
+    });
     child.stderr
       .setEncoding("utf8")
       .on("data", options?.onStderr ?? (() => {}));
@@ -762,109 +764,141 @@ it("fails a transcript with an item over app-server's output frame", async () =>
   ).toEqual([50, 25, 13, 7, 4, 2, 1]);
 });
 
-it("restores the shown script from the tail of a rollout larger than 50 MiB", async () => {
-  const start = JSON.stringify({
+const turnStart = (id: string) =>
+  JSON.stringify({
     type: "event_msg",
-    payload: { type: "task_started", turn_id: "turn-1" },
+    payload: { type: "task_started", turn_id: id },
   });
-  const script = JSON.stringify({
+const scriptCall = (id: string) =>
+  JSON.stringify({
     type: "response_item",
     payload: {
       type: "custom_tool_call",
-      call_id: "script",
       name: "exec",
-      input: "text(42)",
+      call_id: id,
+      input: "🎈",
     },
   });
-  const expected = "🎈".repeat(20);
-  const output = JSON.stringify({
-    type: "response_item",
-    payload: {
-      type: "custom_tool_call_output",
-      call_id: "script",
-      output: expected,
-    },
-  });
-  const records = [start, script, output].join("\n");
-  const path = "/sessions/large.jsonl";
-  const { spawn, file } = server(
-    paged([turn({ items: [] })]),
+
+function fileTranscript(name: string, turns = [turn({ items: [] })]) {
+  const { file, spawn } = server(
+    paged(turns),
     [],
     undefined,
-    path,
+    `/sessions/${name}.jsonl`,
   );
-  writeFileSync(file, "");
-  truncateSync(file, 257 << 20);
-  appendFileSync(file, "\n" + records);
-  const read = await readTranscript(
+  return {
+    file,
     spawn,
-    { ...lookup, threadId: "thread-1" },
-    new AbortController().signal,
-  );
-  expect(read?.turns[0]?.items).toMatchObject([
-    { title: "exec", input: "text(42)", output: expected },
-  ]);
-  // The same file exceeds the shown-span limit when the turn starts at its beginning.
-  writeFileSync(file, start + "\n");
-  truncateSync(file, 257 << 20);
-  appendFileSync(file, "\n" + script + "\n" + output);
-  const over = await readTranscript(
-    spawn,
-    { ...lookup, threadId: "thread-1" },
-    new AbortController().signal,
-  );
-  expect(over?.turns[0]?.items).toMatchObject([
-    {
-      type: "status",
-      text: expect.stringContaining("Shown turns require more than 256 MiB"),
-    },
-  ]);
-});
-
-it.each(["record count", "source bytes"] as const)(
-  "streams an oversized working rollout again after it exceeds the cache %s limit",
-  async (limit) => {
-    const pad =
-      limit === "record count"
-        ? '{"type":"turn_context","payload":{"turn_id":"turn-1"}}\n'.repeat(
-            8193,
-          )
-        : (
-            JSON.stringify({
-              type: "response_item",
-              payload: { type: "message", text: "x".repeat(8192) },
-            }) + "\n"
-          ).repeat(6400);
-    const file =
-      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}\n' +
-      pad +
-      '{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"one","name":"exec","input":"text(42)"}}\n';
-    const path = `/sessions/limit-${limit}.jsonl`;
-    const { spawn } = server(
-      paged([turn({ status: "interrupted", items: [] })]),
-      [],
-      file,
-      path,
-    );
-    for (let poll = 0; poll < 2; poll++) {
-      const view = await readTranscript(
+    read: (working = false) =>
+      readTranscript(
         spawn,
         { ...lookup, threadId: "thread-1" },
         new AbortController().signal,
         undefined,
-        true,
-      );
-      expect(view?.turns[0]?.items).toMatchObject([
-        { title: "exec", input: "text(42)" },
-      ]);
-    }
-    expect(
-      spawn.mock.calls.filter(
-        ([id, opts]) => id === "read-window" && opts?.args?.[1] === "1",
+        working,
       ),
-    ).toHaveLength(2);
-  },
-);
+  };
+}
+
+it("opens an empty rollout without asking the host to read zero bytes", async () => {
+  const { file, read, spawn } = fileTranscript("empty");
+  writeFileSync(file, "");
+  expect((await read())?.turns[0]?.items).toEqual([]);
+  expect(spawn.mock.calls.map(([id]) => id)).not.toContain("read-window");
+});
+
+it("restores an appended script when the first poll ends inside a UTF-8 character", async () => {
+  const { file, read } = fileTranscript("split-utf8");
+  const bytes = Buffer.from(`${turnStart("turn-1")}\n${scriptCall("split")}\n`);
+  const cut = bytes.indexOf("🎈") + 2;
+  writeFileSync(file, bytes.subarray(0, cut));
+  expect((await read(true))?.turns[0]?.items).toEqual([]);
+  appendFileSync(file, bytes.subarray(cut));
+  expect((await read(true))?.turns[0]?.items).toMatchObject([
+    { id: "split", input: "🎈" },
+  ]);
+});
+
+it("restores shown scripts when a newer turn has no start record", async () => {
+  const { file, read, spawn } = fileTranscript("missing-start", [
+    turn({ id: "latest", items: [], status: "inProgress" }),
+    turn({ items: [] }),
+  ]);
+  writeFileSync(file, "");
+  truncateSync(file, 64 << 20);
+  appendFileSync(
+    file,
+    '\n{"type":"turn_context","payload":{"turn_id":"older"}}\n' +
+      '{"type":"turn_context","payload":{"turn_id":"turn-1"}}\n' +
+      scriptCall("shown") +
+      "\n",
+  );
+  const view = await read();
+  expect(view?.turns.map((t) => t.items.map((i) => i.id))).toEqual([
+    ["shown"],
+    [],
+  ]);
+  expect(spawn.mock.calls.filter(([id]) => id === "read-window")).toHaveLength(
+    1,
+  );
+});
+
+it("keeps the first script when the oldest turn starts twice", async () => {
+  const { file, read } = fileTranscript("repeated-start");
+  const start = `${turnStart("turn-1")}\n`;
+  writeFileSync(file, `${start}${scriptCall("first")}\n`);
+  truncateSync(file, 15 << 20);
+  appendFileSync(file, `\n${start}${scriptCall("second")}\n`);
+  truncateSync(file, 40 << 20);
+  expect((await read())?.turns[0]?.items.map((i) => i.id)).toEqual([
+    "first",
+    "second",
+  ]);
+});
+
+it("restores a 50 MiB shown span and shows the existing warning one byte past it", async () => {
+  const { file, read } = fileTranscript("span");
+  const prefix = 1 << 20;
+  writeFileSync(file, "");
+  truncateSync(file, prefix - 1);
+  appendFileSync(
+    file,
+    "\n" +
+      turnStart("turn-1") +
+      '\n{"type":"turn_context","payload":{"turn_id":"turn-1"}}\n' +
+      scriptCall("one") +
+      "\n",
+  );
+  truncateSync(file, prefix + (50 << 20) - 1);
+  appendFileSync(file, "\n");
+  expect((await read(true))?.turns[0]?.items).toMatchObject([{ id: "one" }]);
+  appendFileSync(file, "\n");
+  expect((await read(true))?.turns[0]?.items).toMatchObject([
+    {
+      id: "thread-1:recorded-tools-unavailable",
+      type: "status",
+      text: "CodeMode scripts could not be loaded. Showing app-server history only. /sessions/span.jsonl is larger than 50 MB",
+    },
+  ]);
+});
+
+it("streams a working rollout again past the cache record limit", async () => {
+  const { file, spawn, read } = fileTranscript("record-count");
+  writeFileSync(
+    file,
+    turnStart("turn-1") +
+      "\n" +
+      '{"type":"turn_context","payload":{"turn_id":"turn-1"}}\n'.repeat(8193) +
+      scriptCall("one") +
+      "\n",
+  );
+  for (let poll = 0; poll < 2; poll++)
+    expect((await read(true))?.turns[0]?.items).toMatchObject([{ id: "one" }]);
+  expect(spawn.mock.calls.filter(([id]) => id === "read-window")).toHaveLength(
+    2,
+  );
+});
 
 it("remembers a rollout while a thread found by name is in progress", async () => {
   const tag = sessionTag(agent.key, lookup);
