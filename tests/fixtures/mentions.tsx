@@ -16,6 +16,7 @@ import { SettingsCardsService } from "../../src/features/settings/service";
 import { provideNavigation } from "../../src/features/navigation/service";
 import { ConversationService } from "../../src/features/conversation/service";
 import { bundledPlugins } from "../../src/bundled";
+import { mentionQuery } from "../../src/bundled/mentions/mention-query";
 import { conversationFeatures } from "../../src/app/conversation-features";
 import { bindNames } from "../../src/features/identity-names/service";
 import { createAgentDirectory } from "../../src/features/identity-names/testing";
@@ -92,6 +93,7 @@ const secondProfile = () =>
   );
 const delayed = new URLSearchParams(location.search).has("delayed-profiles");
 const testControls = new URLSearchParams(location.search).has("test-controls");
+const supplement = new URLSearchParams(location.search).has("supplement");
 const channels = new URLSearchParams(location.search).has("channels");
 const stream = new URLSearchParams(location.search).has("stream");
 // Opt-in roster scale for local typing diagnostics; ordinary journeys keep two channels.
@@ -344,6 +346,49 @@ const plugins = createPluginManager(context, {
       ({ manifest }) =>
         channels && ["buzz.channels", "buzz.links"].includes(manifest.id),
     ),
+    ...(supplement
+      ? [
+          {
+            manifest: {
+              id: "test.crew",
+              name: "Crew supplement",
+              apiVersion: 1,
+            },
+            module: {
+              inject: ["conversation"],
+              apply(ctx) {
+                ctx.conversation.registerCompletionSupplement({
+                  id: "crew",
+                  title: "Crews",
+                  order: 10,
+                  match: ({ text, start }) => mentionQuery(text, start),
+                  component: ({ publish }) => {
+                    useLayoutEffect(
+                      () =>
+                        publish({
+                          items: [
+                            {
+                              id: "crew",
+                              label: "Honey crew",
+                              edit: {
+                                mentions: [
+                                  { pubkey: first.pubkey, name: "Honey" },
+                                  { pubkey: second.pubkey, name: "Honey" },
+                                ],
+                              },
+                            },
+                          ],
+                        }) || undefined,
+                      [publish],
+                    );
+                    return null;
+                  },
+                });
+              },
+            },
+          },
+        ]
+      : []),
     {
       manifest: {
         id: "test.disabled-command",
