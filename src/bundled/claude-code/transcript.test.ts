@@ -394,13 +394,19 @@ it("opens only the bound saved tail before reading canonical order across sessio
         uuid: "before",
         timestamp: "2026-01-03T00:00:00Z",
       }),
-      line("assistant", [{ type: "text", text: "x".repeat(3 << 20) }]),
-      line("assistant", [{ type: "text", text: "part of the older turn" }]),
+      line("assistant", [{ type: "text", text: "x".repeat(3 << 20) }], {
+        timestamp: "2026-01-03T00:00:01Z",
+      }),
+      line("assistant", [{ type: "text", text: "part of the older turn" }], {
+        timestamp: "2026-01-03T00:00:02Z",
+      }),
       line("user", turn("recent saved prompt"), {
         uuid: "recent",
         timestamp: "2026-01-01T00:00:00Z",
       }),
-      line("assistant", [{ type: "text", text: "recent saved reply" }]),
+      line("assistant", [{ type: "text", text: "recent saved reply" }], {
+        timestamp: "2026-01-01T00:00:01Z",
+      }),
     ].join("\n"),
     "./-Users-me--buzz/discovered.jsonl": line(
       "user",

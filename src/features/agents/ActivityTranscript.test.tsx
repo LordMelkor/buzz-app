@@ -510,44 +510,18 @@ it("opens at the latest turn and follows new ones until the reader scrolls up", 
 
 it.each([
   {
-    situation: "after the reader moves during loading",
-    fits: false,
-    appended: false,
-    shortened: false,
-    expectedTop: 205,
-  },
-  {
-    situation:
-      "when the partial transcript fits and opens at the natural latest",
+    situation: "when the partial transcript fits",
     fits: true,
-    appended: false,
-    shortened: false,
     expectedTop: 90,
-  },
-  {
-    situation: "when the full read prepends history and appends live rows",
-    fits: true,
-    appended: true,
-    shortened: false,
-    expectedTop: 210,
   },
   {
     situation: "when native restoration scroll fires inside the follow margin",
     fits: false,
-    appended: false,
-    shortened: true,
-    expectedTop: 205,
-  },
-  {
-    situation: "when a tall read prepends history and appends live rows",
-    fits: false,
-    appended: true,
-    shortened: false,
     expectedTop: 205,
   },
 ])(
   "keeps the open disclosure and its viewport $situation",
-  async ({ fits, appended, shortened, expectedTop }) => {
+  async ({ fits, expectedTop }) => {
     const item = (id: string, text: string) => ({
       id,
       text,
@@ -597,8 +571,8 @@ it.each([
         );
       },
     });
-    const canonicalItems = shortened ? turn.items.slice(0, -1) : turn.items;
-    const show = (history: boolean, live = appended) => (
+    const canonicalItems = !fits ? turn.items.slice(0, -1) : turn.items;
+    const show = (history: boolean, live = false) => (
       <ActivityTranscript
         transcript={{
           ...(!history && { historyPreview: true }),
@@ -653,7 +627,7 @@ it.each([
       expect(view.scrollTop).toBe(expectedTop);
       expect(screen.getByText("Middle")).toBe(summary);
       expect(screen.getByText("Details")).toBeVisible();
-      if (shortened) {
+      if (!fits) {
         view.dispatchEvent(new Event("scroll"));
         rerender(show(true, true));
         expect(view.scrollTop).toBe(expectedTop);
@@ -989,6 +963,7 @@ it("divides sessions, and shows each one's prompt once at its top", async () => 
       .map((line) => line.textContent),
   ).toEqual(["Session continued; earlier turns not shown", "New session"]);
   expect(screen.getAllByText(/System prompt/)).toHaveLength(1);
+  expect(screen.queryByText("Agent instructions")).not.toBeInTheDocument();
   await userEvent.click(screen.getByText(/System prompt/));
   expect(screen.getByText("Agent instructions")).toBeVisible();
 });

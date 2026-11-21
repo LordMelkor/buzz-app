@@ -17,6 +17,9 @@
 [data-transcript] .timeline:has(> .turn) {
   margin-inline: calc(-1 * var(--space-3));
 }
+[data-transcript] .timeline:has(> .turn) > :not(.turn) {
+  padding-inline: var(--space-3);
+}
 [data-transcript] .turn {
   contain: paint;
   box-sizing: border-box;
