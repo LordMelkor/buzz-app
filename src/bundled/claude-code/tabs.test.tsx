@@ -44,7 +44,7 @@ import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { AgentCreateDialog } from "../agents/AgentCreateDialog";
 import { manifestProcesses } from "./claude-testing";
 import { apply, inject } from "./index";
-import { type Config, DEFAULT_CONFIG } from "./runtime";
+import { ClaudeRuntime, type Config, DEFAULT_CONFIG } from "./runtime";
 import { ClaudeSetup } from "./setup";
 import { ClaudeAuth, KEY_ONCE } from "./auth";
 import { ClaudeDefaults } from "./defaults";
@@ -236,7 +236,8 @@ function applied({
     const name = step === "run" ? "claude" : (step ?? id);
     const args = (options.args ?? []).slice(step ? 3 : 0).join(" ");
     // The manifest's listing and search run for real on a copy of `files`.
-    if (name === "list" || name === "starts") return listed(name, options);
+    if (["list", "starts", "size", "read-page"].includes(name))
+      return listed(name, options);
     if (name === "workspace" || name === "read") {
       const file = files[args];
       queueMicrotask(() =>
@@ -487,6 +488,9 @@ it("lists saved conversations and shows one's transcript, or that it is gone", a
   expect(
     screen.getByText("Two files.", { selector: "summary span" }),
   ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: /earlier activity/i }),
+  ).toBeNull();
   await user.click(screen.getByRole("button", { name: "Refresh transcript" }));
   await waitFor(() =>
     expect(
@@ -503,6 +507,77 @@ it("lists saved conversations and shows one's transcript, or that it is gone", a
   ).toBeVisible();
   expect(screen.queryByRole("alert")).toBeNull();
   expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps an untouched tail on working changes until earlier activity is requested", async () => {
+  const key = "channel";
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: { [key]: { id: "kept", seen: 0, at: 1 } },
+    }),
+  );
+  const question = (uuid: string) =>
+    JSON.stringify({
+      uuid,
+      type: "user",
+      timestamp: "2026-10-09T10:00:00Z",
+      message: {
+        content: `<buzz-event>\nEvent ID: ${uuid}\nContent: ${uuid}\nTags: []\n</buzz-event>`,
+      },
+    });
+  const file = [
+    question("earlier"),
+    JSON.stringify({ type: "progress", data: "x".repeat(2 ** 21) }),
+    question("newest"),
+  ].join("\n");
+  const Activity = tab(
+    installed({ files: { "./-Users-me--buzz/kept.jsonl": file } }).type,
+    1,
+  );
+  const sessions = vi
+    .spyOn(ClaudeRuntime.prototype, "sessions")
+    .mockReturnValue([]);
+  const preview = vi.spyOn(ClaudeRuntime.prototype, "transcriptPreview");
+  const canonical = vi.spyOn(ClaudeRuntime.prototype, "transcript");
+  const page = () => <Activity agent={agent()} save={vi.fn()} />;
+  const view = render(page());
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /^View transcript/ }));
+  await screen.findByText("newest", { selector: "summary span" });
+  for (const busy of [true, false]) {
+    const count = preview.mock.calls.length;
+    sessions.mockReturnValue([{ key, busy }]);
+    view.rerender(page());
+    await waitFor(() =>
+      expect(
+        preview.mock.calls.length + canonical.mock.calls.length,
+      ).toBeGreaterThan(count),
+    );
+    expect(canonical).not.toHaveBeenCalled();
+    await act(async () => {
+      await preview.mock.results.at(-1)?.value;
+    });
+    expect(
+      screen.queryByText("earlier", { selector: "summary span" }),
+    ).toBeNull();
+  }
+  const load = screen.getByRole("button", { name: /earlier activity/i });
+  expect(load.closest('[data-transcript-history="partial"]')).toBeVisible();
+  canonical.mockRejectedValueOnce(new Error("history unavailable"));
+  await user.click(load);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "history unavailable",
+  );
+  expect(
+    screen.getByText("newest", { selector: "summary span" }),
+  ).toBeVisible();
+  await user.click(load);
+  expect(
+    await screen.findByText("earlier", { selector: "summary span" }),
+  ).toBeVisible();
+  expect(canonical).toHaveBeenCalledTimes(2);
+  expect(load).not.toBeInTheDocument();
 });
 
 it("reads an open transcript again in place when its conversation's session changes", async () => {
@@ -680,6 +755,9 @@ it("shows the transcript and that sessions may be missing when some history cann
   expect(
     screen.getByText(/sessions may be missing\. Refresh to try again\./),
   ).toHaveTextContent(/unreadable\.jsonl/);
+  expect(
+    screen.queryByRole("button", { name: /earlier activity/i }),
+  ).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
 });
 

@@ -116,6 +116,7 @@ export function claudeTurns(
   conversation: Session,
   working: boolean,
   name?: Names,
+  tail?: { uncertain: boolean },
 ): TranscriptTurn[] {
   const turns: TranscriptTurn[] = [];
   const tools = new Map<string, ToolItem>();
@@ -156,7 +157,8 @@ export function claudeTurns(
     if (!entry || entry.isSidechain || entry.isMeta) continue;
     const id = str(entry.uuid);
     if (!id) continue;
-    const at = Date.parse(str(entry.timestamp)) || last;
+    const timestamp = Date.parse(str(entry.timestamp));
+    const at = timestamp || last;
     if (entry.type === "attachment") {
       const attachment = object(entry.attachment);
       if (attachment?.type !== "queued_command") continue;
@@ -176,6 +178,8 @@ export function claudeTurns(
     if (entry.type === "user" && !results.length) {
       const { item } = prompt(id, at, text(message.content), name);
       const current = item.steer ? turns.at(-1) : undefined;
+      if (tail && (!timestamp || (item.steer && (!current || current.partial))))
+        tail.uncertain = true;
       (current ?? turn(id, at, false)).items.push(item);
       last = at;
       continue;
@@ -195,7 +199,10 @@ export function claudeTurns(
         });
       }
       const tool = tools.get(str(result.tool_use_id));
-      if (!tool) continue;
+      if (!tool) {
+        if (tail && !sent && !current.partial) tail.uncertain = true;
+        continue;
+      }
       tool.output = text(result.content);
       tool.status = result.is_error ? "failed" : "completed";
       tool.completedAt = at;
@@ -396,6 +403,83 @@ export const OVERSIZED_READ_MS = 30_000;
 /** When each such session was last left to a full read. */
 const oversized = new Map<string, number>();
 
+async function readTail(
+  spawn: Spawn,
+  path: string,
+  signal: AbortSignal,
+  size: number,
+) {
+  const from = Math.max(0, Math.ceil(size / (1 << 20)) - LATEST_MIB);
+  const bytes = await readFile(
+    spawn,
+    "~/.claude/projects",
+    path,
+    signal,
+    undefined,
+    "read-page",
+    [String(from), String(LATEST_MIB)],
+  );
+  const start = from ? bytes.indexOf(10) + 1 : 0;
+  return {
+    from,
+    text: from && !start ? undefined : decode(bytes.subarray(start)),
+  };
+}
+
+export async function readTranscriptPreview(
+  spawn: Spawn,
+  workspace: SessionsPlace,
+  conversation: Conversation,
+  working: boolean,
+  signal: AbortSignal,
+  nameOf?: Names,
+) {
+  const { sessionId, channelId, root } = conversation;
+  if (!sessionId || !/^[\w-]+$/.test(sessionId)) return undefined;
+  try {
+    const project = await workspaceProject(spawn, workspace, signal);
+    if (!project) return undefined;
+    const path = `./${project}/${sessionId}.jsonl`;
+    const size = await sizeOf(spawn, path, signal);
+    if (size <= LATEST_MIB * (1 << 20)) return undefined;
+    const { from, text } = await readTail(spawn, path, signal, size);
+    signal.throwIfAborted();
+    if (!text) return undefined;
+    const boundary = { uncertain: false };
+    const turns = claudeTurns(
+      text,
+      { sessionId, channelId, ...(root ? { root } : {}) },
+      working,
+      nameOf,
+      boundary,
+    );
+    const first = turns[0];
+    if (
+      boundary.uncertain ||
+      (first?.partial &&
+        first.items.some((item) => item.type === "prompt" && item.steer))
+    )
+      return undefined;
+    const whole = turns.filter((turn) => !turn.partial);
+    const firstWhole = whole[0];
+    if (
+      !firstWhole ||
+      whole.some(
+        (turn, index) => turn.startedAt < (whole[index - 1]?.startedAt ?? 0),
+      )
+    )
+      return undefined;
+    if (from) firstWhole.newSession = false;
+    return {
+      turns: whole.slice(-TURN_LIMIT),
+      more: true,
+    } satisfies ClaudeTranscript;
+  } catch {
+    signal.throwIfAborted();
+    return undefined;
+  }
+}
+
 /** The whole turns in the last {@link LATEST_MIB} MiB of the conversation's
  * saved session, oldest first; undefined with no saved session. While a turn
  * is larger than that, none, so what is shown stays, except undefined every
@@ -420,27 +504,16 @@ export async function readLatestTurns(
   if (!project || !sessionId) return undefined;
   const path = `./${project}/${sessionId}.jsonl`;
   const size = await sizeOf(spawn, path, signal);
-  const from = Math.max(0, Math.floor((size - 1) / (1 << 20)) - LATEST_MIB + 1);
-  const bytes = await readFile(
-    spawn,
-    "~/.claude/projects",
-    path,
-    signal,
-    undefined,
-    "read-page",
-    [String(from), String(LATEST_MIB)],
-  );
+  const { from, text } = await readTail(spawn, path, signal, size);
   const tooLarge = () => {
     const last = oversized.get(path);
     if (last !== undefined && Date.now() - last < OVERSIZED_READ_MS) return [];
     oversized.set(path, Date.now());
     return undefined;
   };
-  // A chunk from partway through starts partway through a line.
-  const start = from ? bytes.indexOf(10) + 1 : 0;
-  if (from && !start) return tooLarge();
+  if (text === undefined) return tooLarge();
   const turns = claudeTurns(
-    decode(bytes.subarray(start)),
+    text,
     {
       sessionId,
       channelId: conversation.channelId,

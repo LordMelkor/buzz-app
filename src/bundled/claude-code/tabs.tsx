@@ -14,6 +14,7 @@ import { ProviderDialogActions } from "../../features/agents/ProviderDialogActio
 import {
   Fragment,
   type ReactNode,
+  useContext,
   useEffect,
   useRef,
   useId,
@@ -21,6 +22,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
+import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
 import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
@@ -994,17 +996,79 @@ export function createTabs({
     working: boolean;
   }) {
     const workspace = readConfig(agent.config).workspace;
+    const input = JSON.stringify([workspace, conversation.sessionId]);
+    const focus = useContext(TranscriptFocus);
+    const [history, setHistory] = useState({
+      input,
+      attempt: focus ? 1 : 0,
+      loading: false,
+    });
+    const canonical = useRef<string>(undefined);
+    if (history.input !== input || (focus && !history.attempt)) {
+      setHistory({ input, attempt: focus ? 1 : 0, loading: false });
+    }
+    const loadEarlier = () =>
+      setHistory((old) =>
+        old.loading
+          ? old
+          : {
+              ...old,
+              attempt: old.attempt + 1,
+              loading: true,
+            },
+      );
     return (
       <TranscriptPanel
         agent={agent}
-        read={(signal) =>
-          runtime.transcript(conversation, workspace, working, signal)
-        }
-        readLatest={(signal, held) =>
-          runtime.latestTurns(conversation, workspace, working, signal, held)
-        }
+        read={async (signal) => {
+          if (!history.attempt && canonical.current !== input) {
+            const tail = await runtime.transcriptPreview(
+              conversation,
+              workspace,
+              working,
+              signal,
+            );
+            signal.throwIfAborted();
+            if (tail) return { ...tail, historyPreview: true as const };
+          }
+          try {
+            const result = await runtime.transcript(
+              conversation,
+              workspace,
+              working,
+              signal,
+            );
+            signal.throwIfAborted();
+            canonical.current = input;
+            return result;
+          } finally {
+            if (history.loading && !signal.aborted) {
+              setHistory((current) =>
+                current === history ? { ...current, loading: false } : current,
+              );
+            }
+          }
+        }}
+        readLatest={async (signal, held) => {
+          const turns = await runtime.latestTurns(
+            conversation,
+            workspace,
+            working,
+            signal,
+            held,
+          );
+          signal.throwIfAborted();
+          if (
+            !turns ||
+            (turns.length &&
+              !held.some((turn) => turn.turnId === turns[0]?.turnId))
+          ) {
+            canonical.current = input;
+          }
+          return turns;
+        }}
         readKey={`${conversation.key}\u0000${workspace}`}
-        readAgain={conversation.sessionId ?? ""}
+        readAgain={JSON.stringify([input, history.attempt])}
         working={working}
         reading="Reading the Claude session…"
         failed="Could not read the Claude session"
@@ -1016,6 +1080,21 @@ export function createTabs({
         }
         notes={(transcript) => (
           <>
+            {"historyPreview" in transcript && (
+              <div data-transcript-history="partial">
+                <span className="text-body-sm text-subtle">
+                  Earlier activity is not loaded.{" "}
+                </span>
+                <Button
+                  variant="plain"
+                  size="inline"
+                  loading={history.loading}
+                  onClick={loadEarlier}
+                >
+                  Load earlier activity
+                </Button>
+              </div>
+            )}
             {transcript.incomplete && (
               <p role="status" className="m-0 text-body-sm">
                 Some of this conversation’s sessions may be missing. Refresh to
@@ -1025,7 +1104,7 @@ export function createTabs({
                 </span>
               </p>
             )}
-            {transcript.more && (
+            {transcript.more && !("historyPreview" in transcript) && (
               <p className="m-0 text-body-sm text-subtle">
                 {transcript.turns.length
                   ? `Showing the latest ${transcript.turns.length === 1 ? "turn" : `${transcript.turns.length} turns`}.`

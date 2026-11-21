@@ -14,11 +14,13 @@ import type { HostProcessOptions } from "../../features/host/service";
 import { manifestProcesses } from "./claude-testing";
 import manifest from "./manifest.json";
 import type { EventData } from "../../features/relay/events";
-import { localStore } from "../../features/agents/state";
+import { fileStore, localStore } from "../../features/agents/state";
 import type { TranscriptTurn } from "../../features/agents/activity-transcript";
+import { conversationKey } from "../../features/agents/conversation-folders";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { steerPrompt, turnPrompt } from "./prompt";
 import { ClaudeRuntime } from "./runtime";
+import { localSessions } from "./sessions";
 import {
   claudeTurns,
   projectName,
@@ -363,6 +365,277 @@ function host(files: Record<string, string>) {
   });
   return { spawn, reads, home };
 }
+
+const savedPath = "./-Users-me--buzz/session-1.jsonl";
+
+function previewHost(files: Record<string, string>) {
+  const { spawn, reads } = host(files);
+  const storage = fileStore(new Map(), async () => {});
+  const saved = localSessions(storage, agent);
+  saved.set(conversationKey(conversation.channelId, root), {
+    id: conversation.sessionId,
+    at: 1000,
+    seen: 0,
+  });
+  const runtime = new ClaudeRuntime(
+    { spawn },
+    () => undefined,
+    async () => null,
+    storage,
+  );
+  const signal = new AbortController().signal;
+  return { runtime, spawn, reads, signal };
+}
+
+it("opens only the bound saved tail before reading canonical order across sessions", async () => {
+  const { runtime, spawn, reads, signal } = previewHost({
+    [savedPath]: [
+      line("user", turn("before the clock rolled back"), {
+        uuid: "before",
+        timestamp: "2026-01-03T00:00:00Z",
+      }),
+      line("assistant", [{ type: "text", text: "x".repeat(3 << 20) }]),
+      line("assistant", [{ type: "text", text: "part of the older turn" }]),
+      line("user", turn("recent saved prompt"), {
+        uuid: "recent",
+        timestamp: "2026-01-01T00:00:00Z",
+      }),
+      line("assistant", [{ type: "text", text: "recent saved reply" }]),
+    ].join("\n"),
+    "./-Users-me--buzz/discovered.jsonl": line(
+      "user",
+      turn("discovered prompt"),
+      { uuid: "discovered", timestamp: "2026-01-02T00:00:00Z" },
+    ),
+  });
+  const preview = await runtime.transcriptPreview(
+    conversation,
+    "~/.buzz",
+    false,
+    signal,
+  );
+  expect(preview).toMatchObject({
+    more: true,
+    turns: [
+      {
+        turnId: "recent",
+        newSession: false,
+        continued: true,
+        partial: false,
+        items: [
+          { type: "prompt", text: "recent saved prompt" },
+          { type: "message", text: "recent saved reply" },
+        ],
+      },
+    ],
+  });
+  expect(reads).toHaveLength(0);
+  expect(
+    spawn.mock.calls.some(([id]) => id === "list" || id === "starts"),
+  ).toBe(false);
+  expect(
+    spawn.mock.calls
+      .filter(([id]) => id === "read-page")
+      .map(([, options]) => options?.args?.[2]),
+  ).toEqual(["2"]);
+
+  const canonical = await runtime.transcript(
+    conversation,
+    "~/.buzz",
+    false,
+    signal,
+  );
+  expect(canonical?.turns.map(({ turnId }) => turnId)).toEqual([
+    "recent",
+    "discovered",
+    "before",
+  ]);
+  expect(canonical?.more).toBe(false);
+});
+
+it("leaves a visible clock rollback to canonical timestamp order", async () => {
+  const { runtime, signal } = previewHost({
+    [savedPath]: [
+      line("system", "x".repeat(3 << 20)),
+      line("user", turn("before rollback"), {
+        uuid: "before",
+        timestamp: "2026-01-02T00:00:00Z",
+      }),
+      line("user", turn("after rollback"), {
+        uuid: "after",
+        timestamp: "2026-01-01T00:00:00Z",
+      }),
+    ].join("\n"),
+  });
+  await expect(
+    runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+  ).resolves.toBeUndefined();
+  const canonical = await runtime.transcript(
+    conversation,
+    "~/.buzz",
+    false,
+    signal,
+  );
+  expect(canonical?.turns.map(({ turnId }) => turnId)).toEqual([
+    "after",
+    "before",
+  ]);
+});
+
+it("does not preview an ID saved for another agent or conversation, or only discovered on disk", async () => {
+  const { runtime, spawn, signal } = previewHost({
+    [savedPath]: line("user", turn("saved prompt")),
+    "./-Users-me--buzz/discovered.jsonl": line(
+      "user",
+      turn("discovered prompt"),
+    ),
+  });
+  for (const mismatch of [
+    { agent: sam },
+    { root: sam },
+    { sessionId: "discovered" },
+  ]) {
+    await expect(
+      runtime.transcriptPreview(
+        { ...conversation, ...mismatch },
+        "~/.buzz",
+        false,
+        signal,
+      ),
+    ).resolves.toBeUndefined();
+  }
+  expect(spawn).not.toHaveBeenCalled();
+});
+
+it.each(["queued steer", "user steer"] as const)(
+  "leaves a clipped %s for canonical history even when another prompt fits",
+  async (kind) => {
+    const steer = steerPrompt(turn("follow-up"));
+    const clipped =
+      kind === "queued steer"
+        ? line("attachment", undefined, {
+            attachment: { type: "queued_command", prompt: steer },
+          })
+        : line("user", steer);
+    const { runtime, signal } = previewHost({
+      [savedPath]: [
+        line("user", turn("opening prompt")),
+        line("assistant", [
+          { type: "thinking", thinking: "x".repeat(3 << 20) },
+        ]),
+        clipped,
+        line("user", turn("later complete prompt")),
+      ].join("\n"),
+    });
+    await expect(
+      runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+    ).resolves.toBeUndefined();
+    const canonical = await runtime.transcript(
+      conversation,
+      "~/.buzz",
+      false,
+      signal,
+    );
+    expect(canonical?.turns).toHaveLength(2);
+    expect(canonical?.turns[0]?.items).toContainEqual(
+      expect.objectContaining({
+        type: "prompt",
+        steer: true,
+        text: "follow-up",
+      }),
+    );
+  },
+);
+
+it.each(["discarded", "retained"] as const)(
+  "handles an orphan result in the %s turn without inventing a tool",
+  async (location) => {
+    const clippedResult = [
+      { type: "tool_result", tool_use_id: "earlier-tool", content: "result" },
+    ];
+    const follow = turn("visible complete prompt");
+    const { runtime, signal } = previewHost({
+      [savedPath]: [
+        line("user", turn("opening prompt")),
+        line("assistant", [
+          { type: "tool_use", id: "earlier-tool", name: "Read", input: {} },
+        ]),
+        line("assistant", [
+          { type: "thinking", thinking: "x".repeat(3 << 20) },
+        ]),
+        ...(location === "discarded" ? [line("user", clippedResult)] : []),
+        line("user", follow),
+        ...(location === "retained" ? [line("user", clippedResult)] : []),
+        line("assistant", [{ type: "text", text: "visible reply" }]),
+      ].join("\n"),
+    });
+    const preview = await runtime.transcriptPreview(
+      conversation,
+      "~/.buzz",
+      false,
+      signal,
+    );
+    if (location === "retained") expect(preview).toBeUndefined();
+    else
+      expect(preview?.turns).toMatchObject([
+        {
+          partial: false,
+          items: [
+            { type: "prompt", text: "visible complete prompt" },
+            { type: "message", text: "visible reply" },
+          ],
+        },
+      ]);
+  },
+);
+
+it("uses canonical discovery directly for a saved file small enough to fit one page", async () => {
+  const { runtime, spawn, signal } = previewHost({
+    [savedPath]: line("user", turn("saved prompt")),
+    "./-Users-me--buzz/discovered.jsonl": line(
+      "user",
+      turn("discovered prompt"),
+    ),
+  });
+  await expect(
+    runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+  ).resolves.toBeUndefined();
+  expect(spawn.mock.calls.some(([id]) => id === "read-page")).toBe(false);
+  const canonical = await runtime.transcript(
+    conversation,
+    "~/.buzz",
+    false,
+    signal,
+  );
+  expect(canonical?.turns.map(({ sessionId }) => sessionId)).toEqual([
+    "session-1",
+    "discovered",
+  ]);
+});
+
+it("leaves a 9 MiB session record for canonical history", async () => {
+  const reply = "x".repeat(9 << 20);
+  const { runtime, reads, signal } = previewHost({
+    [savedPath]: [
+      line("user", turn("opening prompt")),
+      line("assistant", [{ type: "text", text: reply }]),
+    ].join("\n"),
+  });
+  await expect(
+    runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+  ).resolves.toBeUndefined();
+  expect(reads).toHaveLength(0);
+  const canonical = await runtime.transcript(
+    conversation,
+    "~/.buzz",
+    false,
+    signal,
+  );
+  expect(canonical?.turns[0]?.items[1]).toMatchObject({
+    type: "message",
+    text: reply,
+  });
+});
 
 it("reads the session file from the project of the agent's workspace", async () => {
   const { spawn, reads } = host({

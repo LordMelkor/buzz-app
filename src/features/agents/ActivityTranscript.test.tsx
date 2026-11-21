@@ -508,6 +508,162 @@ it("opens at the latest turn and follows new ones until the reader scrolls up", 
   shared.remove();
 });
 
+it.each([
+  {
+    situation: "after the reader moves during loading",
+    fits: false,
+    appended: false,
+    shortened: false,
+    expectedTop: 205,
+  },
+  {
+    situation:
+      "when the partial transcript fits and opens at the natural latest",
+    fits: true,
+    appended: false,
+    shortened: false,
+    expectedTop: 90,
+  },
+  {
+    situation: "when the full read prepends history and appends live rows",
+    fits: true,
+    appended: true,
+    shortened: false,
+    expectedTop: 210,
+  },
+  {
+    situation: "when native restoration scroll fires inside the follow margin",
+    fits: false,
+    appended: false,
+    shortened: true,
+    expectedTop: 205,
+  },
+  {
+    situation: "when a tall read prepends history and appends live rows",
+    fits: false,
+    appended: true,
+    shortened: false,
+    expectedTop: 205,
+  },
+])(
+  "keeps the open disclosure and its viewport $situation",
+  async ({ fits, appended, shortened, expectedTop }) => {
+    const item = (id: string, text: string) => ({
+      id,
+      text,
+      type: "thought" as const,
+      at: 1,
+    });
+    const turn: TranscriptTurn = {
+      turnId: "ongoing",
+      channelId: null,
+      threadRootId: null,
+      triggeringEventIds: [],
+      newSession: false,
+      config: [],
+      startedAt: 1,
+      partial: false,
+      items: [
+        item("first", "First"),
+        item("middle", "Middle\n\nDetails"),
+        item("last", "Last"),
+      ],
+    };
+    const older = item("history", "Older");
+    const newer = item("live", "Newer");
+    const view = document.body.appendChild(document.createElement("div"));
+    view.style.overflowY = "auto";
+    const prependHeight = () =>
+      view.querySelector('[data-entry="item:history"]') ? 150 : 0;
+    const viewportHeight = 150;
+    const rowLengths = fits ? [20, 50, 20] : [80, 140, 100];
+    const contentHeight = fits ? 90 : 320;
+    const naturalHeight = () =>
+      contentHeight +
+      prependHeight() -
+      (view.querySelector('[data-entry="item:last"]') ? 0 : 100) +
+      (view.querySelector('[data-entry="item:live"]') ? 120 : 0);
+    Object.defineProperty(view, "clientHeight", { value: viewportHeight });
+    Object.defineProperty(view, "scrollHeight", {
+      get: () => Math.max(viewportHeight, naturalHeight()),
+    });
+    let scrollTop = 0;
+    Object.defineProperty(view, "scrollTop", {
+      get: () => scrollTop,
+      set: (desired: number) => {
+        scrollTop = Math.min(
+          Math.max(0, desired),
+          view.scrollHeight - viewportHeight,
+        );
+      },
+    });
+    const canonicalItems = shortened ? turn.items.slice(0, -1) : turn.items;
+    const show = (history: boolean, live = appended) => (
+      <ActivityTranscript
+        transcript={{
+          ...(!history && { historyPreview: true }),
+          turns: [
+            history
+              ? {
+                  ...turn,
+                  items: live
+                    ? [older, ...canonicalItems, newer]
+                    : [older, ...canonicalItems],
+                }
+              : turn,
+          ],
+        }}
+        agentName="Agent"
+        state={() => "working"}
+      />
+    );
+    try {
+      const { rerender } = render(show(false), { container: view });
+      const timeline = view.firstElementChild;
+      const renderedTurn = timeline?.lastElementChild;
+      if (!timeline || !renderedTurn)
+        throw new Error("Missing transcript turn");
+      Object.defineProperty(renderedTurn, "getBoundingClientRect", {
+        value: () => new DOMRect(0, -scrollTop, 100, naturalHeight()),
+      });
+      const rowStarts = [0, rowLengths[0] ?? 0, fits ? 70 : 220];
+      for (const [index, entry] of [
+        ...renderedTurn.querySelectorAll("[data-entry]"),
+      ].entries()) {
+        Object.defineProperty(entry, "getBoundingClientRect", {
+          value: () =>
+            new DOMRect(
+              0,
+              (rowStarts[index] ?? 0) + prependHeight() - scrollTop,
+              100,
+              rowLengths[index],
+            ),
+        });
+      }
+      const summary = screen.getByText("Middle");
+      await userEvent.click(summary);
+      expect(screen.getByText("Details")).toBeVisible();
+      if (!fits) {
+        view.scrollTop = 95;
+        fireEvent.scroll(view);
+        view.scrollTop = 55;
+      }
+
+      rerender(show(true));
+      expect(view.scrollTop).toBe(expectedTop);
+      expect(screen.getByText("Middle")).toBe(summary);
+      expect(screen.getByText("Details")).toBeVisible();
+      if (shortened) {
+        view.dispatchEvent(new Event("scroll"));
+        rerender(show(true, true));
+        expect(view.scrollTop).toBe(expectedTop);
+      }
+    } finally {
+      view.remove();
+    }
+  },
+);
+
 it("shows the turn a message began, its prompt open, instead of the latest, once", async () => {
   const id = (n: number) => String(n).repeat(64);
   // A retry asks the same message again, so `event` can repeat.
@@ -566,12 +722,12 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
   const header = (node: HTMLDivElement | null) => {
     if (node) Object.defineProperty(node, "offsetHeight", { value: 40 });
   };
-  const show = (turns: TranscriptTurn[], events: string[]) => (
+  const show = (turns: TranscriptTurn[], events: string[], partial = false) => (
     <TranscriptFocus.Provider value={{ events, inputs: readerInputs(), done }}>
       <div data-transcript>
         <div data-transcript-header ref={header} />
         <ActivityTranscript
-          transcript={{ turns }}
+          transcript={{ turns, ...(partial && { historyPreview: true }) }}
           agentName="Sol"
           state={() => "ended"}
         />
@@ -589,6 +745,9 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
     // reader's own move.
     const trigger = document.body.appendChild(document.createElement("button"));
     trigger.focus();
+    rerender(show([turn(1), turn(2), turn(3)], ["reply", id(2)], true));
+    expect(done).not.toHaveBeenCalled();
+    expect(shown).toEqual([]);
     rerender(show([turn(1), turn(2), turn(3)], ["reply", id(2)]));
     expect(shown).toEqual(["item:p2"]);
     // It starts below the sticky header, with room for its focus ring, and

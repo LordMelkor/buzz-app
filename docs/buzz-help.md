@@ -1856,6 +1856,9 @@ If an agent reports incompatible synced settings, choose the **Previous Versions
 - **Activity**, where the agent type provides it, shows sessions and their
   transcripts in the agent's profile. An open transcript updates by itself
   while the agent works; **Refresh transcript** stays at the top as you scroll.
+  A local Claude transcript can open on its latest activity. Choose **Load
+  earlier activity** to load the available history, up to 50 turns. Find on
+  screen searches the loaded rows.
   Once goose agents run through the agent gateway, a goose turn woken in a
   conversation by a plugin, watch or timer that ran without the gateway shows
   "Ran without the agent gateway" beside its prompt only while the app keeps
