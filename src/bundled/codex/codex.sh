@@ -268,6 +268,12 @@ login | review)
     printf '%s\n' "$workspace"
   fi
   ;;
+rollout-stat)
+  if [ "$(uname)" = Darwin ]; then
+    exec stat -Lf '%z %d:%i %Fm %Fc' "$1"
+  fi
+  exec stat -Lc '%s %d:%i %y %z' -- "$1"
+  ;;
 read-window)
   # Copy the snapshot prefix even when a working thread has appended since.
   [ "$3" -gt 0 ] || exit 0

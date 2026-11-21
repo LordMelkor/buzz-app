@@ -40,7 +40,6 @@
         "program": "uname",
         "args": ["-sm"]
       },
-      { "id": "size", "program": "wc", "args": ["-c"] },
       {
         "id": "read",
         "program": "base64",

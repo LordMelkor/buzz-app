@@ -2,6 +2,7 @@ import { spawn as spawnChild } from "node:child_process";
 import {
   mkdtempSync,
   rmSync,
+  renameSync,
   truncateSync,
   appendFileSync,
   writeFileSync,
@@ -882,6 +883,48 @@ it("restores a 50 MiB shown span and shows the existing warning one byte past it
     },
   ]);
 });
+
+it.each(["shrink", "replacement", "oldest turn"] as const)(
+  "reuses an over-cap warning on append and drops it after a change of %s",
+  async (change) => {
+    const turns = [turn({ id: "latest", items: [] }), turn({ items: [] })];
+    const { file, read, spawn } = fileTranscript(`oversize-${change}`, turns);
+    const limit = 50 << 20;
+    const tail = `\n${turnStart("latest")}\n${scriptCall("recent")}\n`;
+    writeFileSync(file, `${turnStart("turn-1")}\n`);
+    for (let i = 1; i <= 51; i++) {
+      truncateSync(file, i << 20);
+      appendFileSync(file, "\n");
+    }
+    appendFileSync(file, `${turnStart("turn-1")}${tail}`);
+    const first = await read(true);
+    const warning = first?.turns.at(-1)?.items;
+    expect(warning).toMatchObject([
+      { type: "status", text: expect.stringContaining("larger than 50 MB") },
+    ]);
+    spawn.mockClear();
+    appendFileSync(file, "\n");
+    expect((await read(true))?.turns.at(-1)?.items).toEqual(warning);
+    expect(spawn.mock.calls.map(([id]) => id)).not.toContain("read-window");
+
+    if (change === "shrink") {
+      truncateSync(file, limit - 1024);
+      appendFileSync(file, tail);
+    } else if (change === "replacement") {
+      const replacement = `${file}.new`;
+      writeFileSync(replacement, "");
+      truncateSync(replacement, 52 << 20);
+      appendFileSync(
+        replacement,
+        `\n${turnStart("earlier")}\n${turnStart("turn-1")}${tail}`,
+      );
+      renameSync(replacement, file);
+    } else turns.pop();
+    expect((await read(true))?.turns.at(-1)?.items).toMatchObject([
+      { id: "recent" },
+    ]);
+  },
+);
 
 it("streams a working rollout again past the cache record limit", async () => {
   const { file, spawn, read } = fileTranscript("record-count");

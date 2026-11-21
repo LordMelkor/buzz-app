@@ -445,7 +445,12 @@ export async function withServer<T>(
 }
 
 /** Only complete records are cached. A live final line is read again on append. */
-type Rollout = { oldest: string; from: number; bytes: number; lines: Json[] };
+type RecordedWindow = { from: number; bytes: number; lines: Json[] };
+type Rollout = {
+  oldest: string;
+  file: Awaited<ReturnType<typeof rolloutStat>>;
+  content: "over-limit" | RecordedWindow;
+};
 const rollouts = new Map<string, Rollout>();
 const TAIL_BYTES = 32 << 20;
 const CACHE_RECORDS = 8192;
@@ -469,14 +474,14 @@ async function fileExit(
   }
 }
 
-async function rolloutSize(
+async function rolloutStat(
   spawn: Spawn,
   cwd: string,
   path: string,
   signal: AbortSignal,
 ) {
   let output = "";
-  const child = await spawn("size", {
+  const child = await spawn("rollout-stat", {
     cwd,
     args: [path],
     onStdout: (s) => {
@@ -484,10 +489,11 @@ async function rolloutSize(
     },
   });
   const code = await fileExit(child, signal);
-  const size = Number.parseInt(output, 10);
-  if (code !== 0 || !Number.isSafeInteger(size) || size < 0)
+  const match = /^(\d+) (\d+:\d+) (.+)$/.exec(output.trim());
+  const size = Number(match?.[1]);
+  if (code !== 0 || !match || !Number.isSafeInteger(size))
     throw new Error(`Could not read ${path}`);
-  return size;
+  return { size, id: match[2], modified: match[3] };
 }
 
 /** The host delivers complete UTF-8 characters. Keep split records until
@@ -604,55 +610,66 @@ async function rollout(
 ) {
   const oldest = turns[0]?.turnId;
   if (!oldest) return [];
+  const file = await rolloutStat(spawn, directory, path, signal);
+  const { size } = file;
   const known = rollouts.get(path);
-  const size = await rolloutSize(spawn, directory, path, signal);
-  if (size === 0) {
-    rollouts.delete(path);
-    return [];
-  }
-  const held =
+  const tooLarge = () => new Error(`${path} is larger than 50 MB`);
+  let held: RecordedWindow | undefined;
+  if (
     known?.oldest === oldest &&
-    size >= known.bytes &&
-    size - known.from <= READ_LIMIT
-      ? known
-      : undefined;
+    known.file.id === file.id &&
+    (size > known.file.size ||
+      (size === known.file.size && file.modified === known.file.modified))
+  ) {
+    known.file = file;
+    if (known.content === "over-limit") throw tooLarge();
+    if (size - known.content.from <= READ_LIMIT) held = known.content;
+  }
   if (held && size === held.bytes) return held.lines;
   rollouts.delete(path);
-  let length = size <= READ_LIMIT && turns[0]?.newSession ? size : TAIL_BYTES;
-  for (;;) {
-    const from = held?.bytes ?? Math.max(0, size - length);
-    const read = await readWindow(
+  if (size === 0) return [];
+
+  const remember = (content: Rollout["content"]) => {
+    rollouts.set(path, { oldest, file, content });
+    for (const old of rollouts.keys())
+      if (rollouts.size > 2) rollouts.delete(old);
+  };
+  let from = held?.bytes ?? (size <= READ_LIMIT ? 0 : size - TAIL_BYTES);
+  const readAt = (start: number) =>
+    readWindow(
       spawn,
       directory,
       path,
       signal,
-      !held && from > 0 ? from - 1 : from,
+      !held && start > 0 ? start - 1 : start,
       size,
-      !held && from > 0,
+      !held && start > 0,
     );
-    if (!held && from > 0) {
-      const shown = new Set(turns.map((turn) => turn.turnId));
-      const first = firstTurn(read.lines, shown);
+  let read = await readAt(from);
+  if (!held && from > 0) {
+    const shown = new Set(turns.map((turn) => turn.turnId));
+    const first = firstTurn(read.lines, shown);
+    if (first !== "earlier") {
+      const limitStart = size - READ_LIMIT;
       if (
-        first !== "earlier" &&
-        ((!first && length < READ_LIMIT) ||
-          (await hasShownPrefix(spawn, directory, path, signal, from, shown)))
+        await hasShownPrefix(spawn, directory, path, signal, limitStart, shown)
       ) {
-        if (length === READ_LIMIT)
-          throw new Error(`${path} is larger than 50 MB`);
-        length = READ_LIMIT;
-        continue;
+        remember("over-limit");
+        throw tooLarge();
+      }
+      if (
+        !first ||
+        (await hasShownPrefix(spawn, directory, path, signal, from, shown))
+      ) {
+        from = limitStart;
+        read = await readAt(from);
       }
     }
-    const lines = held ? held.lines.concat(read.lines) : read.lines;
-    const start = held?.from ?? from;
-    if (read.bytes !== undefined && lines.length <= CACHE_RECORDS) {
-      rollouts.set(path, { oldest, from: start, bytes: read.bytes, lines });
-      for (const old of rollouts.keys())
-        if (rollouts.size > 2) rollouts.delete(old);
-    }
-    return lines.concat(read.trailing);
   }
+  const lines = held ? held.lines.concat(read.lines) : read.lines;
+  if (read.bytes !== undefined && lines.length <= CACHE_RECORDS)
+    remember({ from: held?.from ?? from, bytes: read.bytes, lines });
+  return lines.concat(read.trailing);
 }
 
 /** The latest turns of all the conversation's threads, oldest first, from a
