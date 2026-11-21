@@ -1031,8 +1031,10 @@ export function createTabs({
       );
     type History = ClaudeTranscript & { partial?: true };
     const again = JSON.stringify([input, history.attempt]);
+    const refreshCount = useRef(0);
     const settled = useRef<{
       again: string;
+      refresh: number;
       working: boolean;
       result: History;
     }>(undefined);
@@ -1071,13 +1073,18 @@ export function createTabs({
     return (
       <TranscriptPanel
         agent={agent}
+        onRefreshRequested={() => {
+          refreshCount.current++;
+        }}
         read={async (signal) => {
+          const refresh = refreshCount.current;
           const prior = settled.current;
           settled.current = undefined;
           let result: History | undefined;
           try {
             if (
               prior?.again === again &&
+              prior.refresh === refresh &&
               prior.working !== working &&
               !prior.result.partial &&
               !prior.result.incomplete
@@ -1112,8 +1119,7 @@ export function createTabs({
               signal.throwIfAborted();
               fullHistory.current = { input, loaded: Boolean(result) };
             }
-            if (result && !document.hidden)
-              settled.current = { again, working, result };
+            if (result) settled.current = { again, working, refresh, result };
             return result;
           } finally {
             if (history.loading && !signal.aborted) {
@@ -1125,14 +1131,17 @@ export function createTabs({
         }}
         readLatest={async (signal, held) => {
           const prior = settled.current;
-          settled.current = undefined;
-          const turns = await latestTurns(signal, held);
-          signal.throwIfAborted();
-          if (prior && turns && !document.hidden) {
-            const result = withLatest(prior.result, turns);
-            if (result) settled.current = { ...prior, result };
+          let result: History | undefined;
+          try {
+            const turns = await latestTurns(signal, held);
+            signal.throwIfAborted();
+            if (prior && turns) result = withLatest(prior.result, turns);
+            return turns;
+          } finally {
+            if (!signal.aborted)
+              settled.current =
+                prior && result ? { ...prior, result } : undefined;
           }
-          return turns;
         }}
         readKey={`${conversation.key}\u0000${workspace}`}
         readAgain={again}

@@ -105,6 +105,7 @@ export function useLiveTranscript<T extends Transcript>({
   working,
   refreshWhileWorking = true,
   agentKey,
+  onRefreshRequested,
 }: {
   read: (signal: AbortSignal) => Promise<T | undefined>;
   readLatest?:
@@ -118,6 +119,7 @@ export function useLiveTranscript<T extends Transcript>({
   working: boolean;
   refreshWhileWorking?: boolean | undefined;
   agentKey: string;
+  onRefreshRequested?: (() => void) | undefined;
 }) {
   const agents = useContext(AgentsContext);
   const [shown, setShown] = useState<Shown<T>>({ key });
@@ -291,7 +293,10 @@ export function useLiveTranscript<T extends Transcript>({
   return {
     shown: shown.key === key ? shown : ({ key } as Shown<T>),
     loading,
-    refresh: () => void request(false),
+    refresh: () => {
+      onRefreshRequested?.();
+      request(false);
+    },
   };
 }
 
@@ -303,6 +308,7 @@ export function TranscriptPanel<T extends Transcript>({
   readLatest,
   readKey,
   readAgain = "",
+  onRefreshRequested,
   working,
   refreshWhileWorking,
   reading,
@@ -323,6 +329,8 @@ export function TranscriptPanel<T extends Transcript>({
   readKey: string;
   /** Inputs that only make `read` read again, keeping what it shows. */
   readAgain?: string;
+  /** Called immediately on manual Refresh, including when its read must queue. */
+  onRefreshRequested?: () => void;
   working: boolean;
   /** Whether a working agent's transcript reads again on a timer and on its
    * steps; otherwise only when it starts or stops working. On by default. */
@@ -344,6 +352,7 @@ export function TranscriptPanel<T extends Transcript>({
     working,
     refreshWhileWorking,
     agentKey: agent.key,
+    onRefreshRequested,
   });
   const { transcript, error } = shown;
   return (

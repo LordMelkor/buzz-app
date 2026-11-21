@@ -49,7 +49,7 @@ function reads() {
 
 type Props = { key: string; again?: string; working: boolean };
 
-function setup() {
+function setup(onRefreshRequested?: () => void) {
   const steps = new Set<() => void>();
   const agents = {
     subscribeSteps: (_agent: string, listener: () => void) => {
@@ -80,6 +80,7 @@ function setup() {
         again,
         working,
         agentKey: "agent",
+        onRefreshRequested,
       }),
     { wrapper, initialProps: { key: "a", working: false } as Props },
   );
@@ -153,14 +154,17 @@ it("polls only while working, and stops when idle", async () => {
 });
 
 it("never overlaps reads, and reads once more after one asked during it", async () => {
-  const { calls, view, step } = setup();
+  const onRefreshRequested = vi.fn();
+  const { calls, view, step } = setup(onRefreshRequested);
   await settle(nth(calls, 0), "first");
   view.rerender({ key: "a", working: true });
   act(() => vi.advanceTimersByTime(LIVE_READ_MS * 4));
   // Automatic reads don't show as loading; Refresh does.
   expect(view.result.current.loading).toBe(false);
   step();
+  expect(onRefreshRequested).not.toHaveBeenCalled();
   act(() => view.result.current.refresh());
+  expect(onRefreshRequested).toHaveBeenCalledOnce();
   expect(view.result.current.loading).toBe(true);
   expect(calls).toHaveLength(2);
   await settle(nth(calls, 1), "second");
