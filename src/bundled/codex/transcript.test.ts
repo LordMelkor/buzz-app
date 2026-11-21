@@ -1,4 +1,10 @@
-import { expect, it, vi } from "vitest";
+import { spawn as spawnChild } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it, onTestFinished, vi } from "vitest";
+import manifest from "./manifest.json";
+import { withScript } from "./setup";
 import type { HostProcessOptions } from "../../features/host/service";
 import type { Wire } from "./rpc";
 import { sessionTag } from "./prompt";
@@ -240,24 +246,53 @@ function server(
 ) {
   const sent: Wire[] = [];
   const items = new Map<string, unknown[]>();
+  const dir = mkdtempSync(join(tmpdir(), "codex-transcript-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  let written: string | undefined;
+  const fileProcess = withScript(async (id, options) => {
+    const declared = manifest.host.processes.find((p) => p.id === id);
+    if (!declared) throw new Error(`undeclared process ${id}`);
+    const child = spawnChild(
+      declared.program,
+      [...(declared.args ?? []), ...(options?.args ?? [])],
+      { cwd: dir },
+    );
+    child.stdout
+      .setEncoding("utf8")
+      .on("data", options?.onStdout ?? (() => {}));
+    child.stderr
+      .setEncoding("utf8")
+      .on("data", options?.onStderr ?? (() => {}));
+    return {
+      exited: new Promise<number | null>((resolve, reject) => {
+        child.on("close", resolve);
+        child.on("error", reject);
+      }),
+      kill: async () => {
+        child.kill();
+      },
+      write: async (text) => {
+        child.stdin.write(text);
+      },
+      end: async () => {
+        child.stdin.end();
+      },
+    };
+  });
   const spawn = vi.fn(async (_id: string, options?: HostProcessOptions) => {
-    if (_id === "read" || _id === "read-from") {
-      // Match the desktop host's process-directory contract.
-      if (options?.cwd && !options.cwd.startsWith("/"))
-        throw new Error("The process directory must be absolute");
+    if (_id !== "app-server") {
+      if (!options?.cwd?.startsWith("/") || options.args?.[0] !== path)
+        throw new Error("Expected the rollout in its absolute directory");
       const file = typeof rollout === "function" ? rollout() : rollout;
-      // `read-from` is `tail -c +N`: from byte N, counting from 1.
-      const from = _id === "read" ? 0 : Number(options?.args?.[1]) - 1;
-      const shrank = file !== undefined && from > file.length;
-      if (file === undefined) options?.onStderr?.("file unavailable");
-      else if (shrank) options?.onStderr?.(`${path} shrank`);
-      else options?.onStdout?.(btoa(file.slice(from)));
-      return {
-        write: async () => {},
-        end: async () => {},
-        kill: async () => {},
-        exited: Promise.resolve(file === undefined ? 1 : shrank ? 3 : 0),
-      };
+      const local = join(dir, "rollout.jsonl");
+      if (file !== undefined && file !== written) {
+        writeFileSync(local, file);
+        written = file;
+      }
+      return fileProcess(_id, {
+        ...options,
+        args: [local, ...options.args.slice(1)],
+      });
     }
     let exit!: (code: number) => void;
     const exited = new Promise<number>((resolve) => {
@@ -376,8 +411,8 @@ it("loads the recorded script through the declared file reader, and reports unav
     new AbortController().signal,
   );
   expect(spawn).toHaveBeenCalledWith(
-    "read",
-    expect.objectContaining({ args: ["/sessions/rollout.jsonl"] }),
+    "read-page",
+    expect.objectContaining({ args: ["/sessions/rollout.jsonl", "0", "1"] }),
   );
   expect(read?.turns[0]?.items).toMatchObject([
     { title: "exec", input: "text(42)", output: "42" },
@@ -462,7 +497,7 @@ it("reads only what a rollout appended since its last read, showing the same rec
   );
   expect(
     spawn.mock.calls.filter(
-      ([id, options]) => id === "read" && options?.args?.[0] === path,
+      ([id, options]) => id === "read-page" && options?.args?.[0] === path,
     ),
   ).toHaveLength(2);
   expect(shrunk?.turns).toEqual(
@@ -700,35 +735,51 @@ it("fails a transcript with an item over app-server's output frame", async () =>
   ).toEqual([50, 25, 13, 7, 4, 2, 1]);
 });
 
-it("refuses a remembered rollout that grew past a full read's limit, without rereading it", async () => {
-  const half = `${"x".repeat(30 * 1024 * 1024)}\n`;
-  let file = half;
+it("restores the shown script across page boundaries in a rollout larger than 50 MiB", async () => {
+  const page = 1 << 20;
+  const start = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: "turn-1" },
+  });
+  const script = JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      call_id: "script",
+      name: "exec",
+      input: "text(42)",
+    },
+  });
+  const expected = "🎈".repeat(20);
+  const output = JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call_output",
+      call_id: "script",
+      output: expected,
+    },
+  });
+  const records = [start, script, output].join("\n");
+  const bytesBeforeEmoji = Buffer.byteLength(
+    records.slice(0, records.indexOf(expected)),
+  );
+  // Split a four-byte code point across two pages, inside the final record.
+  const file = `${" ".repeat(51 * page - bytesBeforeEmoji - 3)}\n${records}`;
   const path = "/sessions/large.jsonl";
-  const { spawn } = server(
-    paged([turn({ items: [], status: "inProgress", completedAt: null })]),
-    [],
-    () => file,
-    path,
+  const { spawn } = server(paged([turn({ items: [] })]), [], file, path);
+  const read = await readTranscript(
+    spawn,
+    { ...lookup, threadId: "thread-1" },
+    new AbortController().signal,
   );
-  const lookupOne = { ...lookup, threadId: "thread-1" };
-  const signal = new AbortController().signal;
-  await readTranscript(spawn, lookupOne, signal);
-  file = half + half;
-  for (const more of ["", "y\n", ""]) {
-    file += more;
-    const grown = await readTranscript(spawn, lookupOne, signal);
-    expect(JSON.stringify(grown?.turns)).toContain("larger than 50 MB");
-    // Only what was appended is read, not the whole file again.
-    expect(spawn).toHaveBeenLastCalledWith("read-from", expect.anything());
-  }
-  // A file that shrank is read whole again.
-  file = '{"type":"event_msg"}\n';
-  const fresh = await readTranscript(spawn, lookupOne, signal);
-  expect(JSON.stringify(fresh?.turns)).not.toContain("larger than 50 MB");
-  expect(spawn).toHaveBeenLastCalledWith(
-    "read",
-    expect.objectContaining({ args: [path] }),
-  );
+  expect(read?.turns[0]?.items).toMatchObject([
+    { title: "exec", input: "text(42)", output: expected },
+  ]);
+  expect(
+    spawn.mock.calls
+      .filter(([id]) => id === "read-page")
+      .map(([, opts]) => opts?.args?.[1]),
+  ).toEqual(["51", "50"]);
 });
 
 it("remembers a rollout while a thread found by name is in progress", async () => {
@@ -744,7 +795,7 @@ it("remembers a rollout while a thread found by name is in progress", async () =
   expect(lookup).not.toHaveProperty("threadId");
   await readTranscript(spawn, lookup, signal);
   await readTranscript(spawn, lookup, signal);
-  expect(spawn).toHaveBeenLastCalledWith("read-from", expect.anything());
+  expect(spawn.mock.calls.filter(([id]) => id === "read-page")).toHaveLength(1);
 });
 
 it("merges the threads other builds started, found by tag or by their earlier name", async () => {
