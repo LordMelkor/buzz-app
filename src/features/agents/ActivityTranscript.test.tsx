@@ -664,6 +664,77 @@ it.each([
   },
 );
 
+it.each([
+  { promptHeight: 40, expectedAnchor: "item:reading" },
+  { promptHeight: 200, expectedAnchor: "turn:reading" },
+])(
+  "holds $expectedAnchor when the session prompt moves to an older turn",
+  ({ promptHeight, expectedAnchor }) => {
+    const turn = (id: string, startedAt: number) =>
+      ({
+        turnId: id,
+        startedAt,
+        sessionId: "s",
+        channelId: null,
+        threadRootId: null,
+        triggeringEventIds: [],
+        newSession: false,
+        config: [],
+        partial: false,
+        items: [{ type: "thought", id, at: startedAt, text: id }],
+      }) satisfies TranscriptTurn;
+    const reading = turn("reading", 2);
+    const show = (history: boolean) => (
+      <ActivityTranscript
+        agentName="Agent"
+        state={() => "ended"}
+        transcript={{
+          ...(!history && { historyPreview: true }),
+          turns: withSessionPrompts(
+            history ? [turn("older", 1), reading] : [reading],
+            () => [{ label: "base", text: "Instructions" }],
+          ),
+        }}
+      />
+    );
+    const view = document.body.appendChild(document.createElement("div"));
+    view.style.overflowY = "auto";
+    Object.defineProperty(view, "clientHeight", { value: 150 });
+    const loaded = () => !!view.querySelector('[data-entry="turn:older"]');
+    Object.defineProperty(view, "scrollHeight", {
+      get: () => (loaded() ? 700 : 500),
+    });
+    try {
+      const { rerender } = render(show(false), { container: view });
+      const entry = (id: string) => {
+        const el = view.querySelector<HTMLElement>(`[data-entry="${id}"]`);
+        if (!el) throw new Error(`Missing entry ${id}`);
+        return el;
+      };
+      const rect = (top: number, height: number) =>
+        new DOMRect(0, top - view.scrollTop, 100, height);
+      const prompt = entry("item:s:system-prompt");
+      prompt.getBoundingClientRect = () => rect(20, promptHeight);
+      entry("turn:reading").getBoundingClientRect = () =>
+        rect(loaded() ? 340 : 0, 360);
+      entry("item:reading").getBoundingClientRect = () =>
+        rect(loaded() ? 360 : 20 + promptHeight, 130);
+      view.scrollTop = 25;
+      fireEvent.scroll(view);
+      const anchor = entry(expectedAnchor);
+      const offset = anchor.getBoundingClientRect().top;
+      rerender(show(true));
+      expect(entry("item:s:system-prompt").closest("article")).toBe(
+        entry("turn:older"),
+      );
+      expect(entry(expectedAnchor)).toBe(anchor);
+      expect(anchor.getBoundingClientRect().top).toBe(offset);
+    } finally {
+      view.remove();
+    }
+  },
+);
+
 it("shows the turn a message began, its prompt open, instead of the latest, once", async () => {
   const id = (n: number) => String(n).repeat(64);
   // A retry asks the same message again, so `event` can repeat.

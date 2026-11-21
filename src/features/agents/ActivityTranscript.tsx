@@ -232,7 +232,10 @@ function useFollowLatest(content: unknown, enabled: boolean) {
   return { timeline, following, restoredTop };
 }
 
-type HistoryAnchor = { view: HTMLElement; row: HTMLElement; offset: number };
+type HistoryAnchor = {
+  view: HTMLElement;
+  candidates: { row: HTMLElement; offset: number }[];
+};
 
 class TranscriptTimeline extends Component<{
   scroll: ReturnType<typeof useFollowLatest>;
@@ -260,15 +263,26 @@ class TranscriptTimeline extends Component<{
       top,
       header?.getBoundingClientRect().bottom ?? top,
     );
-    const first = (selector: string) =>
-      [...body.querySelectorAll<HTMLElement>(selector)].find((row) => {
-        const rect = row.getBoundingClientRect();
-        return rect.bottom > visibleTop && rect.top < top + view.clientHeight;
-      });
-    const row =
-      first(":scope > article > [data-entry]") ?? first(":scope > article");
-    if (!row) return null;
-    return { view, row, offset: row.getBoundingClientRect().top - top };
+    const bottom = top + view.clientHeight;
+    const visible = (rect: DOMRect) =>
+      rect.bottom > visibleTop && rect.top < bottom;
+    const turn = [
+      ...body.querySelectorAll<HTMLElement>(":scope > article"),
+    ].find((article) => visible(article.getBoundingClientRect()));
+    if (!turn) return null;
+    const candidates: HistoryAnchor["candidates"] = [];
+    for (const row of turn.querySelectorAll<HTMLElement>(
+      ":scope > [data-entry]",
+    )) {
+      const rect = row.getBoundingClientRect();
+      if (rect.top >= bottom) break;
+      if (visible(rect)) candidates.push({ row, offset: rect.top - top });
+    }
+    candidates.push({
+      row: turn,
+      offset: turn.getBoundingClientRect().top - top,
+    });
+    return { view, candidates };
   }
 
   componentDidUpdate(
@@ -278,8 +292,10 @@ class TranscriptTimeline extends Component<{
   ) {
     const { timeline, restoredTop } = this.props.scroll;
     const body = timeline.current;
-    if (!anchor || !body?.contains(anchor.row)) return;
-    const { view, row, offset } = anchor;
+    const survivor = anchor?.candidates.find(({ row }) => body?.contains(row));
+    if (!anchor || !survivor) return;
+    const { view } = anchor;
+    const { row, offset } = survivor;
     const top = view.getBoundingClientRect().top + view.clientTop;
     const shift = row.getBoundingClientRect().top - top - offset;
     view.scrollTop += shift;
