@@ -1045,7 +1045,10 @@ it("lists the agent's saved conversations and reads one's transcript by id, with
   expect(
     await screen.findByText("Hi from goose", { selector: "summary span" }),
   ).toBeInTheDocument();
-  expect(screen.getAllByText(/@Gander what's up\?/).length).toBeGreaterThan(0);
+  await user.click(screen.getByText("Request", { selector: "summary span" }));
+  expect(
+    await screen.findByText(/@Gander what's up\?/, { selector: "p" }),
+  ).toBeVisible();
   expect(listings(fake)).toEqual([]);
 });
 
