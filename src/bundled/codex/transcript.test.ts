@@ -846,16 +846,25 @@ it("restores shown scripts when a newer turn has no start record", async () => {
 });
 
 it("keeps the first script when the oldest turn starts twice", async () => {
-  const { file, read } = fileTranscript("repeated-start");
-  const start = `${turnStart("turn-1")}\n`;
-  writeFileSync(file, `${start}${scriptCall("first")}\n`);
-  truncateSync(file, 15 << 20);
-  appendFileSync(file, `\n${start}${scriptCall("second")}\n`);
-  truncateSync(file, 40 << 20);
-  expect((await read())?.turns[0]?.items.map((i) => i.id)).toEqual([
-    "first",
-    "second",
+  const { file, read } = fileTranscript("repeated-start", [
+    ...Array.from({ length: TURN_LIMIT - 1 }, (_, i) =>
+      turn({ id: `newer-${i}`, items: [] }),
+    ),
+    turn({ items: [] }),
+    turn({ id: "earlier", items: [] }),
   ]);
+  const start = `${turnStart("turn-1")}\n`;
+  writeFileSync(file, "");
+  for (let mib = 1; mib <= 60; mib++) {
+    truncateSync(file, mib << 20);
+    appendFileSync(file, "\n");
+    if (mib === 8) appendFileSync(file, `${turnStart("earlier")}\n`);
+    if (mib === 15) appendFileSync(file, `${start}${scriptCall("first")}\n`);
+    if (mib === 35) appendFileSync(file, `${start}${scriptCall("second")}\n`);
+  }
+  const view = await read();
+  expect(view?.more).toBe(true);
+  expect(view?.turns[0]?.items.map((i) => i.id)).toEqual(["first", "second"]);
 });
 
 it("restores a 50 MiB shown span and shows the existing warning one byte past it", async () => {
