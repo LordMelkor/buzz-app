@@ -31,6 +31,10 @@
 }
 .item {
   min-width: 0;
+  contain: paint;
+  /* Leave room for the summary's click target and keyboard outline. */
+  padding: var(--space-1) var(--space-3);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-3));
 }
 .at {
   display: block;
