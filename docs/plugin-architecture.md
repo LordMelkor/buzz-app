@@ -3458,10 +3458,11 @@ the provider that published it. Each provider keeps its own 50-row cap. A
 supplement decides no exact match. The host ignores its `spaceId`, `spacePending`,
 `agent` and `group`. Its `holdAutoSelect: true` says that its whole source, not only its
 shown rows, has or extends the typed name, or is still loading. Then a typed
-terminator never accepts the winner's exact match and types as text. A supplement
-that has not published yet for this query holds the same way, so supplements
-publish on mount, even with no rows. One that fails drops only its own section
-and holds nothing. A hold has no time limit.
+terminator never accepts the winner's exact match and types as text. Only a
+published hold holds: a supplement that has published nothing for this query
+holds nothing, so one that is still loading publishes `holdAutoSelect: true`
+itself. One that fails drops only its own section and holds nothing. A hold has
+no time limit.
 
 Providers receive immutable observation/range evidence and `publish(result)`—not
 DOM, focus or replacement commands. Results contain stable IDs, labels, optional

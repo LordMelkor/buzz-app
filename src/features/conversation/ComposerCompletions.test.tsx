@@ -541,6 +541,7 @@ it("keeps Space from picking the winner's exact match while a supplement holds i
   expect(replace).not.toHaveBeenCalled();
 });
 it.each([
+  ["has not answered", undefined],
   ["publishes no rows", { items: [] }],
   [
     "fails",
@@ -665,13 +666,15 @@ it("keeps the winner's rows when a supplement's preview throws", async () => {
   expect(listed()).toEqual(["Eng Bot"]);
   error.mockRestore();
 });
-it("lets Escape dismiss a supplement that has not answered beside an empty winner", () => {
+it("lets Escape dismiss a supplement that holds beside an empty winner", () => {
   const empty = people({ items: [], spaceId: undefined });
-  expect(mountSources([empty, groups(undefined)]).press("Escape")).toBe(true);
+  expect(
+    mountSources([empty, groups({ items: [], holdAutoSelect: true })]).press(
+      "Escape",
+    ),
+  ).toBe(true);
   cleanup();
-  expect(mountSources([empty, groups({ items: [] })]).press("Escape")).toBe(
-    false,
-  );
+  expect(mountSources([empty, groups(undefined)]).press("Escape")).toBe(false);
 });
 it("holds a pending exact match too while a supplement holds it", async () => {
   const resolve = vi.fn();
@@ -697,12 +700,6 @@ it("holds a pending exact match too while a supplement holds it", async () => {
     expect.anything(),
     " ",
   );
-});
-it("holds Space until a supplement has answered", async () => {
-  const { replace, press } = mountSources([people(), groups(undefined)]);
-  await screen.findByRole("option", { name: /^Eng Bot$/ });
-  expect(press(" ")).toBe(false);
-  expect(replace).not.toHaveBeenCalled();
 });
 it("ignores a supplement's own exact match and agent mark, and retries it alone", async () => {
   const retry = vi.fn();

@@ -378,3 +378,41 @@ for (const row of ["people", "supplement"]) {
     }
   });
 }
+
+for (const mode of ["hold", "silent"]) {
+  test(`Space picks an exact person unless a supplement published a hold (${mode})`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/tests/fixtures/mentions.html?delayed-profiles&supplement=${mode}`,
+    );
+    await page.evaluate(() => window.mentionFixture.releaseProfiles());
+    const input = page.getByRole("textbox", { name: "Message #General" });
+    await expect
+      .poll(() => page.evaluate(() => window.mentionFixture.list().status))
+      .toBe("ready");
+    await input.pressSequentially("@Mary Jane ");
+    if (mode === "silent") {
+      await expect(input.locator(".inline-chip")).toHaveText("@Mary Jane");
+      return;
+    }
+    await expect(input).toHaveJSProperty("value", "@Mary Jane ");
+    await expect(input.locator(".inline-chip")).toHaveCount(0);
+  });
+}
+
+for (const key of ["Enter", "Tab"]) {
+  test(`${key} takes a supplement row ordered first`, async ({ page }) => {
+    await page.goto("/tests/fixtures/mentions.html?supplement=hold");
+    const input = page.getByRole("textbox", { name: "Message #General" });
+    await expect
+      .poll(() => page.evaluate(() => window.mentionFixture.list().status))
+      .toBe("ready");
+    await input.fill("@Hon");
+    await expect(
+      page.getByRole("option", { name: "Honey crew", selected: true }),
+    ).toBeVisible();
+    await input.press(key);
+    await expect(input.locator(".inline-chip")).toHaveCount(2);
+  });
+}

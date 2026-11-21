@@ -464,7 +464,7 @@ function OwnedCompletion({
       return (
         source.provider !== provider &&
         !failed.current.has(slot(source)) &&
-        (!published || published.holdAutoSelect)
+        published?.holdAutoSelect === true
       );
     });
   const isolate = (source: CompletionMatch, node: ReactNode) =>
