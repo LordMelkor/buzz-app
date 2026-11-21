@@ -1112,7 +1112,8 @@ export function createTabs({
               signal.throwIfAborted();
               fullHistory.current = { input, loaded: Boolean(result) };
             }
-            if (result) settled.current = { again, working, result };
+            if (result && !document.hidden)
+              settled.current = { again, working, result };
             return result;
           } finally {
             if (history.loading && !signal.aborted) {
@@ -1127,7 +1128,7 @@ export function createTabs({
           settled.current = undefined;
           const turns = await latestTurns(signal, held);
           signal.throwIfAborted();
-          if (prior && turns) {
+          if (prior && turns && !document.hidden) {
             const result = withLatest(prior.result, turns);
             if (result) settled.current = { ...prior, result };
           }

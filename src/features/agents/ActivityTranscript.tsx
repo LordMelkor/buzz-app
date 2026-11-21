@@ -248,7 +248,7 @@ class TranscriptTimeline extends Component<{
     const { timeline, following } = this.props.scroll;
     const body = timeline.current;
     const view = scroller(body);
-    if (!body || !view || view.scrollHeight <= view.clientHeight) return null;
+    if (!body || !view) return null;
     if (
       following.current &&
       view.scrollHeight - view.scrollTop - view.clientHeight <= END_SLACK

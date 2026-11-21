@@ -519,7 +519,7 @@ it.each([
     situation: "when the viewport grows to fit after scrolling up",
     resized: true,
     fits: true,
-    expectedTop: 0,
+    expectedTop: 90,
   },
   {
     situation: "when native restoration scroll fires inside the follow margin",
