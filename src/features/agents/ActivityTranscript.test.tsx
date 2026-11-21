@@ -511,17 +511,25 @@ it("opens at the latest turn and follows new ones until the reader scrolls up", 
 it.each([
   {
     situation: "when the partial transcript fits",
+    resized: false,
     fits: true,
     expectedTop: 90,
   },
   {
+    situation: "when the viewport grows to fit after scrolling up",
+    resized: true,
+    fits: true,
+    expectedTop: 0,
+  },
+  {
     situation: "when native restoration scroll fires inside the follow margin",
+    resized: false,
     fits: false,
     expectedTop: 205,
   },
 ])(
   "keeps the open disclosure and its viewport $situation",
-  async ({ fits, expectedTop }) => {
+  async ({ fits, resized, expectedTop }) => {
     const item = (id: string, text: string) => ({
       id,
       text,
@@ -549,7 +557,7 @@ it.each([
     view.style.overflowY = "auto";
     const prependHeight = () =>
       view.querySelector('[data-entry="item:history"]') ? 150 : 0;
-    const viewportHeight = 150;
+    let viewportHeight = resized ? 35 : 150;
     const rowLengths = fits ? [20, 50, 20] : [80, 140, 100];
     const contentHeight = fits ? 90 : 320;
     const naturalHeight = () =>
@@ -557,7 +565,7 @@ it.each([
       prependHeight() -
       (view.querySelector('[data-entry="item:last"]') ? 0 : 100) +
       (view.querySelector('[data-entry="item:live"]') ? 120 : 0);
-    Object.defineProperty(view, "clientHeight", { value: viewportHeight });
+    Object.defineProperty(view, "clientHeight", { get: () => viewportHeight });
     Object.defineProperty(view, "scrollHeight", {
       get: () => Math.max(viewportHeight, naturalHeight()),
     });
@@ -575,7 +583,7 @@ it.each([
     const show = (history: boolean, live = false) => (
       <ActivityTranscript
         transcript={{
-          ...(!history && { historyPreview: true }),
+          ...(!history && { partial: true }),
           turns: [
             history
               ? {
@@ -617,6 +625,11 @@ it.each([
       const summary = screen.getByText("Middle");
       await userEvent.click(summary);
       expect(screen.getByText("Details")).toBeVisible();
+      if (resized) {
+        view.scrollTop = 0;
+        fireEvent.scroll(view);
+        viewportHeight = 150;
+      }
       if (!fits) {
         view.scrollTop = 95;
         fireEvent.scroll(view);
@@ -663,7 +676,7 @@ it.each([
         agentName="Agent"
         state={() => "ended"}
         transcript={{
-          ...(!history && { historyPreview: true }),
+          ...(!history && { partial: true }),
           turns: withSessionPrompts(
             history ? [turn("older", 1), reading] : [reading],
             () => [{ label: "base", text: "Instructions" }],
@@ -772,7 +785,7 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
       <div data-transcript>
         <div data-transcript-header ref={header} />
         <ActivityTranscript
-          transcript={{ turns, ...(partial && { historyPreview: true }) }}
+          transcript={{ turns, ...(partial && { partial: true }) }}
           agentName="Sol"
           state={() => "ended"}
         />

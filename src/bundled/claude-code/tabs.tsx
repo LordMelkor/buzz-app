@@ -23,7 +23,12 @@ import {
 } from "react";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
-import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
+import type { TranscriptTurn } from "../../features/agents/activity-transcript";
+import type { ClaudeTranscript } from "./transcript";
+import {
+  TranscriptPanel,
+  withLatest,
+} from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
@@ -1000,12 +1005,19 @@ export function createTabs({
     const focus = useContext(TranscriptFocus);
     const [history, setHistory] = useState({
       input,
+      focus,
       attempt: focus ? 1 : 0,
       loading: false,
     });
-    const skipPreview = useRef<string>(undefined);
-    if (history.input !== input || (focus && !history.attempt)) {
-      setHistory({ input, attempt: focus ? 1 : 0, loading: false });
+    const fullHistory = useRef<{ input: string; loaded: boolean }>(undefined);
+    if (history.input !== input) {
+      setHistory({ input, focus, attempt: focus ? 1 : 0, loading: false });
+    } else if (
+      focus &&
+      history.focus !== focus &&
+      !(fullHistory.current?.input === input && fullHistory.current.loaded)
+    ) {
+      setHistory({ ...history, focus, attempt: history.attempt + 1 });
     }
     const loadEarlier = () =>
       setHistory((old) =>
@@ -1017,29 +1029,90 @@ export function createTabs({
               loading: true,
             },
       );
+    type History = ClaudeTranscript & { partial?: true };
+    const again = JSON.stringify([input, history.attempt]);
+    const settled = useRef<{
+      again: string;
+      working: boolean;
+      result: History;
+    }>(undefined);
+    async function latestTurns(
+      signal: AbortSignal,
+      held: readonly TranscriptTurn[],
+    ) {
+      const turns = await runtime.latestTurns(
+        conversation,
+        workspace,
+        working,
+        signal,
+        held,
+      );
+      signal.throwIfAborted();
+      if (turns && !turns.length) return turns;
+      const from = held.findIndex((turn) => turn.turnId === turns?.[0]?.turnId);
+      if (
+        !turns ||
+        from < 0 ||
+        held
+          .slice(from)
+          .some((turn, index) => turn.turnId !== turns[index]?.turnId) ||
+        turns.some(
+          (turn, index) =>
+            turn.startedAt <
+            ((turns[index - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
+        )
+      ) {
+        if (fullHistory.current?.input !== input)
+          fullHistory.current = { input, loaded: false };
+        return undefined;
+      }
+      return turns;
+    }
     return (
       <TranscriptPanel
         agent={agent}
         read={async (signal) => {
-          if (!history.attempt && skipPreview.current !== input) {
-            const tail = await runtime.transcriptPreview(
-              conversation,
-              workspace,
-              working,
-              signal,
-            );
-            signal.throwIfAborted();
-            if (tail) return { ...tail, historyPreview: true as const };
-          }
+          const prior = settled.current;
+          settled.current = undefined;
+          let result: History | undefined;
           try {
-            const result = await runtime.transcript(
-              conversation,
-              workspace,
-              working,
-              signal,
-            );
-            signal.throwIfAborted();
-            skipPreview.current = input;
+            if (
+              prior?.again === again &&
+              prior.working !== working &&
+              !prior.result.partial &&
+              !prior.result.incomplete
+            ) {
+              const turns = await latestTurns(signal, prior.result.turns).catch(
+                () => undefined,
+              );
+              signal.throwIfAborted();
+              if (turns?.length) result = withLatest(prior.result, turns);
+            }
+            if (
+              !result &&
+              !history.attempt &&
+              fullHistory.current?.input !== input
+            ) {
+              const tail = await runtime.transcriptPreview(
+                conversation,
+                workspace,
+                working,
+                signal,
+              );
+              signal.throwIfAborted();
+              if (tail) result = { ...tail, partial: true };
+            }
+            if (!result) {
+              result = await runtime.transcript(
+                conversation,
+                workspace,
+                working,
+                signal,
+              );
+              signal.throwIfAborted();
+              fullHistory.current = { input, loaded: Boolean(result) };
+            }
+            if (result) settled.current = { again, working, result };
             return result;
           } finally {
             if (history.loading && !signal.aborted) {
@@ -1049,41 +1122,19 @@ export function createTabs({
             }
           }
         }}
-        latestOnWorkingChange={(held) =>
-          !("historyPreview" in held) && !held.incomplete
-        }
         readLatest={async (signal, held) => {
-          const turns = await runtime.latestTurns(
-            conversation,
-            workspace,
-            working,
-            signal,
-            held,
-          );
+          const prior = settled.current;
+          settled.current = undefined;
+          const turns = await latestTurns(signal, held);
           signal.throwIfAborted();
-          if (turns && !turns.length) return turns;
-          const from = held.findIndex(
-            (turn) => turn.turnId === turns?.[0]?.turnId,
-          );
-          if (
-            !turns ||
-            from < 0 ||
-            held
-              .slice(from)
-              .some((turn, index) => turn.turnId !== turns[index]?.turnId) ||
-            turns.some(
-              (turn, index) =>
-                turn.startedAt <
-                ((turns[index - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
-            )
-          ) {
-            skipPreview.current = input;
-            return undefined;
+          if (prior && turns) {
+            const result = withLatest(prior.result, turns);
+            if (result) settled.current = { ...prior, result };
           }
           return turns;
         }}
         readKey={`${conversation.key}\u0000${workspace}`}
-        readAgain={JSON.stringify([input, history.attempt])}
+        readAgain={again}
         working={working}
         reading="Reading the Claude session…"
         failed="Could not read the Claude session"
@@ -1095,7 +1146,7 @@ export function createTabs({
         }
         notes={(transcript) => (
           <>
-            {"historyPreview" in transcript && (
+            {transcript.partial && (
               <div data-transcript-history="partial">
                 <span className="text-body-sm text-subtle">
                   Earlier activity is not loaded.{" "}
@@ -1119,7 +1170,7 @@ export function createTabs({
                 </span>
               </p>
             )}
-            {transcript.more && !("historyPreview" in transcript) && (
+            {transcript.more && !transcript.partial && (
               <p className="m-0 text-body-sm text-subtle">
                 {transcript.turns.length
                   ? `Showing the latest ${transcript.turns.length === 1 ? "turn" : `${transcript.turns.length} turns`}.`

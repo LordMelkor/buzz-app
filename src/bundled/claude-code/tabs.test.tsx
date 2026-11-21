@@ -750,6 +750,197 @@ it("finishes Load earlier requested during work even when the turn ends", async 
   expect(load).not.toBeInTheDocument();
 });
 
+it("retries each focused opening once after Load earlier fails", async () => {
+  const { Activity, path, fileReads } = longTranscript();
+  const focus = {
+    events: [earlierEvent],
+    inputs: readerInputs(),
+    done: vi.fn(),
+  };
+  const page = (opening?: typeof focus) => (
+    <TranscriptFocus.Provider value={opening}>
+      <Activity agent={agent()} save={vi.fn()} />
+    </TranscriptFocus.Provider>
+  );
+  const { rerender } = render(page());
+  await userEvent.click(
+    screen.getByRole("button", { name: /^View transcript/ }),
+  );
+  const load = await screen.findByRole("button", {
+    name: /load earlier activity/i,
+  });
+  chmodSync(path, 0);
+  await userEvent.click(load);
+  await screen.findByRole("alert");
+  const before = fileReads().length;
+  rerender(page(focus));
+  await waitFor(() => expect(fileReads().length).toBeGreaterThan(before));
+  await waitFor(() => expect(screen.getByRole("alert")).toBeVisible());
+  rerender(page(focus));
+  expect(fileReads().length).toBe(before + 1);
+  chmodSync(path, 0o600);
+  Element.prototype.scrollIntoView = () => {};
+  try {
+    rerender(page({ ...focus }));
+    await waitFor(() => expect(focus.done).toHaveBeenCalled());
+    expect(
+      screen
+        .getByText("earlier", { selector: "summary span" })
+        .closest("details"),
+    ).toHaveProperty("open", true);
+  } finally {
+    Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+  }
+});
+
+it("opens the replacement session's preview when its first turn starts while hidden", async () => {
+  const { load, path, gap, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  writeFileSync(
+    join(dirname(path), "replacement.jsonl"),
+    [
+      sessionPrompt("replacement history"),
+      gap,
+      sessionPrompt("replacement tail"),
+    ].join("\n"),
+  );
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: { channel: { id: "replacement", seen: 0, at: 2 } },
+    }),
+  );
+  let finish!: () => Promise<void>;
+  await act(async () => {
+    finish = startCompaction();
+  });
+  hidden.mockReturnValue(false);
+  fireEvent(document, new Event("visibilitychange"));
+  try {
+    await summary("replacement tail");
+    expect(screen.getByText("Earlier activity is not loaded.")).toBeVisible();
+    expect(
+      screen.queryByText("replacement history", { selector: "summary span" }),
+    ).toBeNull();
+  } finally {
+    await act(finish);
+  }
+});
+
+it("finishes a Refresh interrupted while hidden when the window returns", async () => {
+  const { load, path, gap, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  writeFileSync(
+    path,
+    [sessionPrompt("corrected"), gap, sessionPrompt("newest")].join("\n"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  let finish!: () => Promise<void>;
+  await act(async () => {
+    finish = startCompaction();
+  });
+  hidden.mockReturnValue(false);
+  fireEvent(document, new Event("visibilitychange"));
+  try {
+    expect(await summary("corrected")).toBeVisible();
+  } finally {
+    await act(finish);
+  }
+});
+
+it("reads earlier rows again when a working change follows a failed Refresh", async () => {
+  const { load, path, gap, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  chmodSync(path, 0);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Refresh transcript" }),
+  );
+  await screen.findByRole("alert");
+  chmodSync(path, 0o600);
+  writeFileSync(
+    path,
+    [sessionPrompt("corrected"), gap, sessionPrompt("newest")].join("\n"),
+  );
+  const finish = startCompaction();
+  try {
+    expect(await summary("corrected")).toBeVisible();
+  } finally {
+    await act(finish);
+  }
+});
+
+it.each([
+  { file: "", reason: "file size read rejects on zero bytes" },
+  { file: '{"type":"progress"}', reason: "tail has no turns" },
+])("replaces stale rows when the $reason at work start", async ({ file }) => {
+  const { load, path, startCompaction, summary } = await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  writeFileSync(path, file);
+  const finish = startCompaction();
+  try {
+    expect(
+      await screen.findByText("No turns captured for this scope yet."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("earlier", { selector: "summary span" }),
+    ).toBeNull();
+  } finally {
+    await act(finish);
+  }
+});
+
+it("retries incomplete session discovery when work starts", async () => {
+  const { load, path, startCompaction, summary } = await openLongTranscript();
+  chmodSync(dirname(path), 0o111);
+  try {
+    await userEvent.click(load);
+    await screen.findByText(
+      /Some of this conversation’s sessions may be missing/,
+    );
+  } finally {
+    chmodSync(dirname(path), 0o700);
+  }
+  appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const finish = startCompaction();
+  try {
+    await summary("during");
+    expect(
+      screen.queryByText(/Some of this conversation’s sessions may be missing/),
+    ).toBeNull();
+  } finally {
+    await act(finish);
+  }
+});
+
+it("restores canonical turn order when a working tail's clock goes backwards", async () => {
+  const { load, path, startCompaction, summary } = await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  appendFileSync(
+    path,
+    `\n${sessionPrompt("clock rollback").replace("2026-10-09", "2026-10-08")}`,
+  );
+  const finish = startCompaction();
+  try {
+    const first = await summary("clock rollback");
+    const earlier = await summary("earlier");
+    expect(
+      first.compareDocumentPosition(earlier) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  } finally {
+    await act(finish);
+  }
+});
+
 it.each(["on open", "after preview"])(
   "shows the earlier focused turn %s",
   async (when) => {

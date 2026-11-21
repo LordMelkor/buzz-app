@@ -368,7 +368,10 @@ function host(files: Record<string, string>) {
 
 const savedPath = "./-Users-me--buzz/session-1.jsonl";
 
-function previewHost(files: Record<string, string>) {
+function previewHost(
+  files: Record<string, string>,
+  remote?: "bound" | "inspected",
+) {
   const { spawn, reads } = host(files);
   const storage = fileStore(new Map(), async () => {});
   const saved = localSessions(storage, agent);
@@ -382,6 +385,14 @@ function previewHost(files: Record<string, string>) {
     () => undefined,
     async () => null,
     storage,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () =>
+      remote === "inspected" ? { provider: "example/worker" } : undefined,
+    () => remote === "bound",
   );
   const signal = new AbortController().signal;
   return { runtime, spawn, reads, signal };
@@ -457,6 +468,41 @@ it("opens only the bound saved tail before reading canonical order across sessio
     "before",
   ]);
   expect(canonical?.more).toBe(false);
+});
+
+it.each(["bound", "inspected"] as const)(
+  "skips local file reads for a %s remote session",
+  async (placement) => {
+    const { runtime, spawn, signal } = previewHost(
+      { [savedPath]: line("user", turn("local copy")) },
+      placement,
+    );
+    await expect(
+      runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+    ).resolves.toBeUndefined();
+    expect(spawn).not.toHaveBeenCalled();
+  },
+);
+
+it("leaves a prompt without a timestamp to the full reader's preceding turn clock", async () => {
+  const { runtime, signal } = previewHost({
+    [savedPath]: [
+      line("user", turn("earlier"), { timestamp: "2026-01-03T00:00:00Z" }),
+      line("system", "x".repeat(3 << 20)),
+      line("user", turn("after the cut"), {
+        uuid: "latest",
+        timestamp: undefined,
+      }),
+    ].join("\n"),
+  });
+  await expect(
+    runtime.transcriptPreview(conversation, "~/.buzz", false, signal),
+  ).resolves.toBeUndefined();
+  const full = await runtime.transcript(conversation, "~/.buzz", false, signal);
+  expect(full?.turns.at(-1)).toMatchObject({
+    turnId: "latest",
+    startedAt: Date.parse("2026-01-03T00:00:00Z"),
+  });
 });
 
 it("leaves a visible clock rollback to canonical timestamp order", async () => {

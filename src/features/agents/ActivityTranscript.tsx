@@ -386,7 +386,7 @@ export function ActivityTranscript({
   agentKey,
   community,
 }: {
-  transcript: Transcript & { historyPreview?: true };
+  transcript: Transcript & { partial?: true };
   agentName: string;
   state: (turnId: string) => TurnState | undefined;
   /** Paging controls shown above the oldest loaded turn. */
@@ -400,7 +400,7 @@ export function ActivityTranscript({
   agentKey?: string;
   community?: string | undefined;
 }) {
-  const partial = transcript.historyPreview === true;
+  const partial = transcript.partial === true;
   const scroll = useFollowLatest(transcript, follow);
   const focused = useShowFocused(
     transcript,
@@ -674,7 +674,6 @@ function Disclosure({
 }) {
   const focused = useContext(RowContext).focused === `item:${item.id}`;
   const [visited, setVisited] = useState(focused);
-  // A focused arrival needs its body in the commit that marks and scrolls it.
   if (focused && !visited) setVisited(true);
   return (
     <details
