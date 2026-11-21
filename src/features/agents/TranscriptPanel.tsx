@@ -53,10 +53,11 @@ type Shown<T> = Readonly<{
   transcript?: T | null;
   error?: string;
 }>;
-/** A full read, or one of only the latest turns. */
-type Kind = "full" | "latest";
-const either = (a: Kind | undefined, b: Kind): Kind =>
-  a === "full" || b === "full" ? "full" : "latest";
+type Kind = "full" | "latest" | "working";
+function either(a: Kind | undefined, b: Kind) {
+  if (a === "full" || b === "full") return "full";
+  return a === "working" ? a : b;
+}
 
 /** `held` with `turns` over its end, from the first of them it holds, and
  * at most {@link TURN_LIMIT} turns; undefined when it holds none of them, or
@@ -73,18 +74,23 @@ export function withLatest<T extends Transcript>(
   const at = ids.get(turns[from]?.turnId ?? "") ?? 0;
   const kept = turns.slice(from);
   const sessions = new Set(kept.map((turn) => turn.sessionId));
-  return held.turns.slice(at).every((turn) => sessions.has(turn.sessionId))
-    ? {
-        ...held,
-        turns: [...held.turns.slice(0, at), ...kept].slice(-TURN_LIMIT),
-      }
-    : undefined;
+  if (!held.turns.slice(at).every((turn) => sessions.has(turn.sessionId)))
+    return undefined;
+  const merged = [...held.turns.slice(0, at), ...kept];
+  return {
+    ...held,
+    ...("more" in held && held.more === false && merged.length > TURN_LIMIT
+      ? { more: true }
+      : {}),
+    turns: merged.slice(-TURN_LIMIT),
+  };
 }
 
-/** `read` for `key`: in full on open, on `refresh`, and when `again` or
- * `working` changes; while working, `readLatest` (or `read` without it)
- * {@link LIVE_READ_MS}, or twice the read's duration if longer, after each
- * read finishes, and on the steps the agent reports, no sooner than
+/** `read` for `key`: in full on open, Refresh and new inputs. When work
+ * starts or stops, an opted-in settled result can use the latest turns.
+ * While working, `readLatest` (or `read` without it) runs {@link LIVE_READ_MS},
+ * or twice the read's duration if longer, after each read finishes, and on
+ * the steps the agent reports, no sooner than
  * {@link STEP_READ_MS} or that after one. Latest turns that don't continue
  * the held transcript read it in full. Automatic reads wait while the window
  * is hidden and run once it shows. One read runs at a time; asking during
@@ -96,6 +102,7 @@ export function withLatest<T extends Transcript>(
 export function useLiveTranscript<T extends Transcript>({
   read,
   readLatest,
+  latestOnWorkingChange,
   key,
   again,
   working,
@@ -109,6 +116,7 @@ export function useLiveTranscript<T extends Transcript>({
         held: readonly TranscriptTurn[],
       ) => Promise<readonly TranscriptTurn[] | undefined>)
     | undefined;
+  latestOnWorkingChange?: ((transcript: T) => boolean) | undefined;
   key: string;
   again: string;
   working: boolean;
@@ -118,6 +126,7 @@ export function useLiveTranscript<T extends Transcript>({
   const agents = useContext(AgentsContext);
   const [shown, setShown] = useState<Shown<T>>({ key });
   const held = useRef<Shown<T>>(shown);
+  const settledFullInput = useRef<string>(undefined);
   const [loading, setLoading] = useState(true);
   const latest = useRef({
     read,
@@ -175,6 +184,7 @@ export function useLiveTranscript<T extends Transcript>({
         step();
         return false;
       }
+      if (kind === "full") settledFullInput.current = undefined;
       if (auto && document.hidden) {
         owed.current = either(owed.current, kind);
         return false;
@@ -201,13 +211,19 @@ export function useLiveTranscript<T extends Transcript>({
         setLoading(true);
       const began = Date.now();
       const reading =
-        kind === "latest" && readLatest && prior
-          ? readLatest(abort.signal, prior.turns).then((turns) =>
-              turns ? withLatest(prior, turns) : undefined,
+        kind !== "full" && readLatest && prior
+          ? readLatest(abort.signal, prior.turns).then(
+              (turns) =>
+                turns && (turns.length || kind === "latest")
+                  ? withLatest(prior, turns)
+                  : undefined,
+              kind === "working" ? () => undefined : undefined,
             )
           : read(abort.signal).then((transcript) => transcript ?? null);
       const settle = (next: Omit<Shown<T>, "key">) => {
         if (abort.signal.aborted) return;
+        if (next.error !== undefined) settledFullInput.current = undefined;
+        else if (kind === "full") settledFullInput.current = again;
         running.current = undefined;
         finished.current = Date.now();
         spent.current = 2 * (finished.current - began);
@@ -257,7 +273,13 @@ export function useLiveTranscript<T extends Transcript>({
       running.current = undefined;
       queued.current = undefined;
     }
-    request(true);
+    const prior = held.current;
+    const useTail =
+      prior.key === key &&
+      settledFullInput.current === again &&
+      prior.transcript &&
+      latestOnWorkingChange?.(prior.transcript);
+    request(true, useTail ? "working" : "full");
   }, [key, again, working]);
   useEffect(() => {
     const shows = () => {
@@ -297,6 +319,7 @@ export function TranscriptPanel<T extends Transcript>({
   agent,
   read,
   readLatest,
+  latestOnWorkingChange,
   readKey,
   readAgain = "",
   working,
@@ -315,6 +338,8 @@ export function TranscriptPanel<T extends Transcript>({
     signal: AbortSignal,
     held: readonly TranscriptTurn[],
   ) => Promise<readonly TranscriptTurn[] | undefined>;
+  /** Allows a nonempty tail to update this settled result when work starts or stops. */
+  latestOnWorkingChange?: (transcript: T) => boolean;
   /** What `read` reads; another key never shows this one's result. */
   readKey: string;
   /** Inputs that only make `read` read again, keeping what it shows. */
@@ -335,6 +360,7 @@ export function TranscriptPanel<T extends Transcript>({
   const { shown, loading, refresh } = useLiveTranscript({
     read,
     readLatest,
+    latestOnWorkingChange,
     key: readKey,
     again: readAgain,
     working,

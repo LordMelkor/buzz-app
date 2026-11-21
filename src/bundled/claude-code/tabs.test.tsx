@@ -531,6 +531,10 @@ function longTranscript() {
   return {
     Activity: tab(type, 1),
     path: join(home, ".claude/projects", file),
+    fileReads: () =>
+      spawn.mock.calls
+        .map(([id]) => id)
+        .filter((id) => id === "read" || id === "read-page"),
     gap,
     startCompaction() {
       if (!type.sessionControls)
@@ -614,6 +618,90 @@ it("loads the missing history when a working session grows past the held tail", 
     vi.useRealTimers();
     await act(finish);
   }
+});
+
+async function openLongTranscript() {
+  const fixture = longTranscript();
+  const { Activity } = fixture;
+  render(<Activity agent={agent()} save={vi.fn()} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: /^View transcript/ }),
+  );
+  const load = await screen.findByRole("button", {
+    name: /load earlier activity/i,
+  });
+  const summary = (text: string) =>
+    screen.findByText(text, { selector: "summary span" });
+  return { ...fixture, load, summary };
+}
+
+it("reads only the tail at both working changes and keeps earlier turns", async () => {
+  const { load, path, fileReads, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  const earlier = await summary("earlier");
+  const newest = await summary("newest");
+  const before = fileReads().length;
+  appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const finish = startCompaction();
+  const during = await summary("during");
+  expect(new Set(fileReads().slice(before))).toEqual(new Set(["read-page"]));
+  const afterStart = fileReads().length;
+  appendFileSync(path, `\n${sessionPrompt("finished")}`);
+  await act(finish);
+  await summary("finished");
+  expect(new Set(fileReads().slice(afterStart))).toEqual(
+    new Set(["read-page"]),
+  );
+  for (const turn of [earlier, newest, during]) expect(turn).toBeVisible();
+});
+
+it("finishes a pending full Refresh when work starts", async () => {
+  const { load, path, gap, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  writeFileSync(
+    path,
+    [sessionPrompt("revised earlier"), gap, sessionPrompt("newest")].join("\n"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+  const finish = startCompaction();
+  try {
+    expect(await summary("revised earlier")).toBeVisible();
+  } finally {
+    await act(finish);
+  }
+});
+
+it("reads full history when the final tail has no overlap", async () => {
+  const { load, path, gap, fileReads, startCompaction, summary } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await summary("earlier");
+  appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const finish = startCompaction();
+  await summary("during");
+  const before = fileReads().length;
+  appendFileSync(
+    path,
+    `\n${sessionPrompt("between")}\n${gap}\n${sessionPrompt("last")}`,
+  );
+  await act(finish);
+  await summary("last");
+  expect(await summary("between")).toBeVisible();
+  expect(fileReads().slice(before)).toEqual(["read-page", "read"]);
+});
+
+it("finishes Load earlier requested during work even when the turn ends", async () => {
+  const { load, path, startCompaction, summary } = await openLongTranscript();
+  appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const finish = startCompaction();
+  await summary("during");
+  fireEvent.click(load);
+  await act(finish);
+  expect(await summary("earlier")).toBeVisible();
+  expect(load).not.toBeInTheDocument();
 });
 
 it.each(["on open", "after preview"])(

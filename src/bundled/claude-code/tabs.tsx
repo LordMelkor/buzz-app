@@ -1003,7 +1003,7 @@ export function createTabs({
       attempt: focus ? 1 : 0,
       loading: false,
     });
-    const canonical = useRef<string>(undefined);
+    const skipPreview = useRef<string>(undefined);
     if (history.input !== input || (focus && !history.attempt)) {
       setHistory({ input, attempt: focus ? 1 : 0, loading: false });
     }
@@ -1021,7 +1021,7 @@ export function createTabs({
       <TranscriptPanel
         agent={agent}
         read={async (signal) => {
-          if (!history.attempt && canonical.current !== input) {
+          if (!history.attempt && skipPreview.current !== input) {
             const tail = await runtime.transcriptPreview(
               conversation,
               workspace,
@@ -1039,7 +1039,7 @@ export function createTabs({
               signal,
             );
             signal.throwIfAborted();
-            canonical.current = input;
+            skipPreview.current = input;
             return result;
           } finally {
             if (history.loading && !signal.aborted) {
@@ -1049,6 +1049,9 @@ export function createTabs({
             }
           }
         }}
+        latestOnWorkingChange={(held) =>
+          !("historyPreview" in held) && !held.incomplete
+        }
         readLatest={async (signal, held) => {
           const turns = await runtime.latestTurns(
             conversation,
@@ -1058,12 +1061,24 @@ export function createTabs({
             held,
           );
           signal.throwIfAborted();
+          if (turns && !turns.length) return turns;
+          const from = held.findIndex(
+            (turn) => turn.turnId === turns?.[0]?.turnId,
+          );
           if (
             !turns ||
-            (turns.length &&
-              !held.some((turn) => turn.turnId === turns[0]?.turnId))
+            from < 0 ||
+            held
+              .slice(from)
+              .some((turn, index) => turn.turnId !== turns[index]?.turnId) ||
+            turns.some(
+              (turn, index) =>
+                turn.startedAt <
+                ((turns[index - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
+            )
           ) {
-            canonical.current = input;
+            skipPreview.current = input;
+            return undefined;
           }
           return turns;
         }}

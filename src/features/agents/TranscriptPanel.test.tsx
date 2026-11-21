@@ -383,10 +383,12 @@ it("swaps the latest turns over the end of the held transcript", () => {
   });
   // It holds at most TURN_LIMIT turns.
   const full = {
+    more: false,
     turns: Array.from({ length: TURN_LIMIT }, (_, i) => turn(String(i))),
   };
   const grown = withLatest(full, [turn(String(TURN_LIMIT - 1)), turn("new")]);
   expect(grown?.turns).toHaveLength(TURN_LIMIT);
+  expect(grown?.more).toBe(true);
   expect(grown?.turns.at(-1)).toEqual(turn("new"));
   // A turn it doesn't hold can't be placed.
   expect(withLatest(held, [turn("9")])).toBeUndefined();
