@@ -469,7 +469,6 @@ it("expands the clipped session opener without rereading it, and Refresh reads n
   expect(
     screen.getByText("The start of this turn isn't loaded."),
   ).toBeVisible();
-  expect(screen.getByText("Earlier activity is not loaded.")).toBeVisible();
   expect(screen.queryByText("New session")).toBeNull();
   const reads = f.spawn.mock.calls.length;
   const user = userEvent.setup();

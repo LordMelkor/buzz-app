@@ -769,9 +769,7 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
   const margins: string[] = [];
   Element.prototype.scrollIntoView = function (this: HTMLElement) {
     if (this.dataset.entry === "item:m6")
-      expect(
-        this.querySelector("[data-arrival-surface][data-arrived]"),
-      ).not.toBeNull();
+      expect(this).toHaveTextContent("Details of the linked reply");
     shown.push(this.dataset.entry ?? "");
     margins.push(this.style.scrollMarginBlockStart);
   };
@@ -863,7 +861,7 @@ it("shows the turn a message began, its prompt open, instead of the latest, once
                 id: "m6",
                 at: 7,
                 type: "message",
-                text: "Reply 6",
+                text: "Reply 6\n\nDetails of the linked reply",
                 messageId: "reply",
               },
             ],

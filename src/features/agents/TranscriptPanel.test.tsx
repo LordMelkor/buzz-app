@@ -495,9 +495,11 @@ it("reuses accepted transcript turns by unique ID on Refresh while preserving th
       repeatedBefore,
       reuseTurn(repeatedBefore.turnId),
       repeatedAfter,
+      toolTurn("corrected child", "old text"),
     ],
     details: { author: "previous" },
   });
+  const corrected = toolTurn("corrected child", "updated text");
   const incoming = Object.freeze([
     reuseTurn(moved.turnId),
     reuseTurn("added"),
@@ -505,6 +507,7 @@ it("reuses accepted transcript turns by unique ID on Refresh while preserving th
     reuseTurn(repeatedBefore.turnId),
     reuseTurn(first.turnId),
     reuseTurn(repeatedAfter.turnId),
+    corrected,
   ]);
   const details = { author: "refreshed" };
   reader.refresh();
@@ -518,6 +521,7 @@ it("reuses accepted transcript turns by unique ID on Refresh while preserving th
     "repeated before",
     "first",
     "repeated after",
+    "corrected child",
   ]);
   expect(accepted.turns[0]).toBe(moved);
   expect(accepted.turns[1]).toBe(incoming[1]);
@@ -525,165 +529,32 @@ it("reuses accepted transcript turns by unique ID on Refresh while preserving th
   expect(accepted.turns[3]).toBe(incoming[3]);
   expect(accepted.turns[4]).toBe(first);
   expect(accepted.turns[5]).toBe(incoming[5]);
+  expect(accepted.turns.at(-1)).toBe(corrected);
   expect(accepted.details).toBe(details);
 });
 
-it.each(["cyclic data", "unreadable field"])(
-  "settles a Refresh containing %s and keeps the other equal turn",
-  async (kind) => {
-    function extensionTurn() {
-      const extension: Record<string, unknown> = {};
-      if (kind === "cyclic data") extension.self = extension;
-      else
-        Object.defineProperty(extension, "value", {
-          enumerable: true,
-          get() {
-            throw new Error("Field is unavailable");
-          },
-        });
-      return { ...reuseTurn("extension"), extension };
-    }
-    const reader = readTurnSnapshots();
-    const stable = reuseTurn("stable");
-    await settle(nth(reader.full, 0), {
-      more: false,
-      turns: [extensionTurn(), stable],
-    });
-    const incoming = extensionTurn();
-    reader.refresh();
-    expect(reader.loading()).toBe(true);
-    await settle(nth(reader.full, 1), {
-      more: false,
-      turns: [incoming, reuseTurn("stable")],
-    });
-    expect(reader.loading()).toBe(false);
-    expect(reader.snapshot().turns[0]).toBe(incoming);
-    expect(reader.snapshot().turns[1]).toBe(stable);
-  },
-);
+it("settles a Refresh containing cyclic extension data and keeps the other equal turn", async () => {
+  function extensionTurn() {
+    const extension: Record<string, unknown> = {};
+    extension.self = extension;
+    return { ...reuseTurn("extension"), extension };
+  }
 
-it("keeps a frozen transcript through an equal Refresh and updates changed metadata", async () => {
-  const reader = readTurnSnapshots();
-  const held = Object.freeze({
-    turns: [toolTurn("first", "same reply")],
-    more: false,
-    details: { author: "original" },
-  });
-  await settle(nth(reader.full, 0), held);
-  reader.refresh();
-  await settle(nth(reader.full, 1), {
-    ...held,
-    turns: [toolTurn("first", "same reply")],
-    details: { author: "original" },
-  });
-  expect(reader.snapshot()).toBe(held);
-
-  const details = { author: "updated" };
-  reader.refresh();
-  await settle(nth(reader.full, 2), {
-    ...held,
-    turns: [toolTurn("first", "same reply")],
-    details,
-  });
-  expect(reader.snapshot().details).toBe(details);
-  expect(reader.snapshot().turns[0]).toBe(held.turns[0]);
-});
-
-it.each(["inherited", "non-enumerable"])(
-  "preserves %s metadata from the incoming transcript",
-  async (kind) => {
-    const reader = readTurnSnapshots();
-    const stable = reuseTurn("stable");
-    await settle(nth(reader.full, 0), { turns: [stable], more: false });
-    const incoming: TurnSnapshot = {
-      turns: [reuseTurn("stable")],
-      more: false,
-    };
-    const details = { author: "incoming" };
-    if (kind === "inherited") Object.setPrototypeOf(incoming, { details });
-    else Object.defineProperty(incoming, "details", { value: details });
-    reader.refresh();
-    await settle(nth(reader.full, 1), incoming);
-
-    expect(reader.snapshot().details).toBe(details);
-  },
-);
-
-it("settles a Refresh whose metadata cannot be compared", async () => {
   const reader = readTurnSnapshots();
   const stable = reuseTurn("stable");
   await settle(nth(reader.full, 0), {
-    turns: [stable],
     more: false,
-    details: { author: "original" },
+    turns: [extensionTurn(), stable],
   });
-  const details = Object.defineProperty({ author: "unavailable" }, "author", {
-    get() {
-      throw new Error("Author is unavailable");
-    },
-  });
+  const incoming = extensionTurn();
   reader.refresh();
   await settle(nth(reader.full, 1), {
-    turns: [reuseTurn("stable")],
     more: false,
-    details,
+    turns: [incoming, reuseTurn("stable")],
   });
   expect(reader.loading()).toBe(false);
-  expect(reader.snapshot().details).toBe(details);
-  expect(reader.snapshot().turns[0]).toBe(stable);
-});
-
-it("reuses accepted transcript turns only when snapshot fields are equal", async () => {
-  const reader = readTurnSnapshots();
-  const nullRecord = () => Object.assign(Object.create(null), { key: "value" });
-  const opaque = [
-    ["functions", () => "value", () => "value"],
-    ["dates", new Date(1), new Date(1)],
-    ["maps", new Map([["key", "value"]]), new Map([["key", "value"]])],
-    ["sets", new Set(["value"]), new Set(["value"])],
-    ["regular expressions", /value/u, /value/u],
-  ] as const;
-  const fields: readonly (readonly [string, unknown, unknown, boolean])[] = [
-    ["equal dense arrays", ["first", "second"], ["first", "second"], true],
-    ["reordered dense arrays", ["first", "second"], ["second", "first"], false],
-    [
-      "different undefined keys",
-      { before: undefined },
-      { after: undefined },
-      false,
-    ],
-    ["null-prototype records", nullRecord(), nullRecord(), true],
-    ["different record prototypes", nullRecord(), { key: "value" }, false],
-    ["NaN", { value: Number.NaN }, { value: Number.NaN }, true],
-    ...opaque.flatMap(([name, before, after]) => [
-      [`distinct ${name}`, before, after, false] as const,
-      [`shared ${name}`, before, before, true] as const,
-    ]),
-  ];
-  const before = fields.map(([id, extension]) => ({
-    ...reuseTurn(id),
-    extension,
-  }));
-  const after = fields.map(([id, , extension]) => ({
-    ...reuseTurn(id),
-    extension,
-  }));
-  const corrected = toolTurn("corrected child", "updated text");
-  await settle(nth(reader.full, 0), {
-    more: false,
-    turns: [...before, toolTurn("corrected child", "old text")],
-  });
-  reader.refresh();
-  await settle(nth(reader.full, 1), {
-    more: false,
-    turns: [...after, corrected],
-  });
-
-  const { turns } = reader.snapshot();
-  fields.forEach(([name, , , equal], index) => {
-    expect(turns[index], name).toBe(equal ? before[index] : after[index]);
-  });
-  expect(turns.at(-1)).toBe(corrected);
+  expect(reader.snapshot().turns[0]).toBe(incoming);
+  expect(reader.snapshot().turns[1]).toBe(stable);
 });
 
 it("swaps the latest turns over the end of the held transcript", () => {

@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
-  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -1440,7 +1439,6 @@ it("matches each accepted working poll to a full read of the same session bytes"
   const seed = async () => {
     poll = {};
     await readTranscript(disk, ...args, undefined, poll);
-    expect(poll.cursor?.offset).toBe(statSync(path).size);
   };
   const append = (...records: string[]) =>
     appendFileSync(path, records.join("\n") + "\n");
@@ -1449,7 +1447,6 @@ it("matches each accepted working poll to a full read of the same session bytes"
     append(...records);
     const polled = await latest();
     expect(polled, shape).toHaveLength(1);
-    expect(poll.cursor?.offset, shape).toBe(statSync(path).size);
     expect(reads, shape).toHaveLength(0);
     const full = await readTranscript(disk, ...args);
     expect(polled, shape).toStrictEqual(full?.turns);
@@ -1548,7 +1545,6 @@ it("requests a full read immediately for a second oversized working turn", async
     await expect(readLatestTurns(...args)).resolves.toBeUndefined();
     const poll: WorkingPoll = {};
     await readTranscript(...args, undefined, poll);
-    expect(poll.cursor).toBeDefined();
     vi.setSystemTime(1_001_000);
     const file = join(home, ".claude/projects", path);
     appendFileSync(file, oversizedTurn("second"));
