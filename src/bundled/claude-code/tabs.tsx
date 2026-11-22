@@ -1066,19 +1066,7 @@ export function createTabs({
           const from = held.findIndex(
             (turn) => turn.turnId === turns?.[0]?.turnId,
           );
-          if (
-            !turns ||
-            from < 0 ||
-            held
-              .slice(from)
-              .some((turn, i) => turn.turnId !== turns[i]?.turnId) ||
-            turns.some(
-              (turn, i) =>
-                turn.startedAt <
-                ((turns[i - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
-            )
-          ) {
-            // A stop can cancel this poll before the panel starts its fallback.
+          if (!turns || from < 0) {
             requireFullHistory();
             return undefined;
           }
