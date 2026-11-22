@@ -21,7 +21,7 @@ const nonIconDependencies = new Set([
   "@emoji-mart/data",
   "@fontsource-variable/inter",
   "@fontsource/jetbrains-mono",
-  "@hypothesi/tauri-mcp-server", // Native MCP client (docs/native-mcp.md).
+  "@hypothesi/tauri-mcp-server", // Native MCP client.
   "@jsquash/webp", // Lossless media encoder, not an icon catalog.
   "@modelcontextprotocol/server", // The standalone Buzz MCP server.
   "@noble/curves",

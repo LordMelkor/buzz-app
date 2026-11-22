@@ -1754,7 +1754,7 @@ export type Agents = {
    * once bundled plugins have started, the access check's list stands. */
   gatewayHarnesses(source: GatewayHarnessSource): void;
   // Bundled plugins only, like `recommend`: the building blocks for a plugin
-  // that moves agents onto Automatic (plugin-architecture.md).
+  // that moves agents onto Automatic.
   /** Whether plugin start-up is over (each plugin started, or failed), the
    * agent list is loaded and the recommended setup is final for the launch.
    * `subscribe` hears when it changes. */

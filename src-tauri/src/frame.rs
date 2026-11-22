@@ -3,9 +3,9 @@
 //! iframe that cannot reach Buzz. The app's own policy blocks inline scripts in
 //! `srcdoc` frames, and an opaque-origin frame cannot load the app's `blob:`
 //! scripts, so there is no other way to show such a document as a browser
-//! would. The page holds no state; see "Isolated frame" in
-//! `docs/plugin-architecture.md` for the contract. macOS and Linux only; see
-//! where `lib.rs` registers it.
+//! would. The page holds no state; see `Host.frameUrl` in
+//! `src/features/host/service.ts` for the plugin contract. macOS and Linux only;
+//! see where `lib.rs` registers it.
 use std::borrow::Cow;
 
 use tauri::http::{header, Method, Request, Response, StatusCode};

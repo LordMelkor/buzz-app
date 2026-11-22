@@ -292,10 +292,25 @@ export interface Host {
   /** Copies plain text as Buzz itself does: natively on macOS, where WebKit
    * often rejects `navigator.clipboard` writes. Needs no manifest grant. */
   writeClipboardText?: (text: string) => Promise<void>;
-  /** The isolated frame's URL, which a plugin can fill with an HTML document
-   * that runs its own scripts without reaching Buzz; see "Isolated frame" in
-   * docs/plugin-architecture.md. macOS and Linux desktop only; undefined on
-   * Windows and older builds. */
+  /** The isolated frame's URL (`buzz-frame://localhost/`), which a plugin can
+   * fill with a scripted HTML document without reaching Buzz. Needs no manifest
+   * grant; macOS and Linux desktop only (`undefined` on web, Windows, and older
+   * builds — on Windows Tauri serves custom schemes as `http://<scheme>.localhost`
+   * and WebView2 injects the app's init scripts and IPC invoke key into
+   * subframes).
+   *
+   * Contract: render `<iframe sandbox="allow-scripts" title="…" src={frameUrl}>`
+   * with `sandbox` required (never `allow-same-origin`) and no `allow` attribute
+   * (WebKit ignores `Permissions-Policy`, so omitting `allow` is what denies
+   * camera, microphone, location, and screen capture). Listen for a `message`
+   * event whose `source` is the frame's `contentWindow` and whose `data` is
+   * `{ type: "buzz-frame:ready" }`, then post `{ type: "buzz-frame:write", html }`
+   * with target origin `"*"`. The frame writes once; create a new frame for
+   * another document, trust no post-write messages, and handle link clicks in
+   * the plugin. To narrow its CSP, put `<meta http-equiv="Content-Security-Policy">`
+   * first in `<head>` (CSP does not govern WebRTC, so treat every written
+   * document as online). See `src-tauri/src/frame.rs` for the response headers
+   * and policy. */
   readonly frameUrl?: string | undefined;
 }
 
