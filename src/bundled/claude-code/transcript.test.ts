@@ -1418,6 +1418,36 @@ it("keeps an incomplete UTF-8 record across working polls and retries from the a
   expect(await latest(staged)).toBeUndefined();
 });
 
+it("requests a full read immediately for a second oversized working turn", async () => {
+  clock = 0;
+  const session = { ...conversation, sessionId: "consecutive-oversized" };
+  const path = "./-Users-me--buzz/consecutive-oversized.jsonl";
+  const progress = JSON.stringify({
+    type: "progress",
+    text: "x".repeat(3 << 20),
+  });
+  const oversizedTurn = (text: string) =>
+    `${line("user", prompt(text))}\n${progress}\n`;
+  const { spawn, home } = host({ [path]: oversizedTurn("first") });
+  const signal = new AbortController().signal;
+  const args = [spawn, "~/.buzz", session, true, signal] as const;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(1_000_000);
+    await expect(readLatestTurns(...args)).resolves.toBeUndefined();
+    const poll: WorkingPoll = {};
+    await readTranscript(...args, undefined, poll);
+    expect(poll.cursor).toBeDefined();
+    vi.setSystemTime(1_001_000);
+    const file = join(home, ".claude/projects", path);
+    appendFileSync(file, oversizedTurn("second"));
+    const next = await readLatestTurns(...args, undefined, {});
+    expect(next).toBeUndefined();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("reads a turn larger than the chunk in full only every 30 s, keeping what is shown between", async () => {
   clock = 0;
   const files = { [savedPath]: line("user", prompt("only")) };

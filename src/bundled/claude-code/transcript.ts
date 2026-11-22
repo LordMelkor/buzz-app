@@ -787,6 +787,7 @@ export async function readTranscript(
           turn: active,
           last: state.last,
         };
+        oversized.delete(poll.cursor.path);
       }
     }
     cut ||= file.cut;
