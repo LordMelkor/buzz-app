@@ -3,7 +3,7 @@ import { MessageComposer } from "../../src/features/messages/MessageComposer";
 import "../../src/shared/styles/globals.css";
 import { useKeyboardFocusVisibility } from "../../src/shared/design-system/useKeyboardFocusVisibility";
 import { AgentSettings } from "../../src/app/AgentSettings";
-import { StrictMode, useState, useLayoutEffect } from "react";
+import { StrictMode, useEffect, useState, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { finalizeEvent } from "nostr-tools";
 import { Context } from "@deepseek-ai/cordis";
@@ -16,6 +16,7 @@ import { SettingsCardsService } from "../../src/features/settings/service";
 import { provideNavigation } from "../../src/features/navigation/service";
 import { ConversationService } from "../../src/features/conversation/service";
 import { bundledPlugins } from "../../src/bundled";
+import { mentionQuery } from "../../src/bundled/mentions/mention-query";
 import { conversationFeatures } from "../../src/app/conversation-features";
 import { bindNames } from "../../src/features/identity-names/service";
 import { createAgentDirectory } from "../../src/features/identity-names/testing";
@@ -92,6 +93,7 @@ const secondProfile = () =>
   );
 const delayed = new URLSearchParams(location.search).has("delayed-profiles");
 const testControls = new URLSearchParams(location.search).has("test-controls");
+const supplement = new URLSearchParams(location.search).get("supplement");
 const channels = new URLSearchParams(location.search).has("channels");
 const stream = new URLSearchParams(location.search).has("stream");
 // Opt-in roster scale for local typing diagnostics; ordinary journeys keep two channels.
@@ -344,6 +346,53 @@ const plugins = createPluginManager(context, {
       ({ manifest }) =>
         channels && ["buzz.channels", "buzz.links"].includes(manifest.id),
     ),
+    ...(supplement !== null
+      ? [
+          {
+            manifest: {
+              id: "test.crew",
+              name: "Crew supplement",
+              apiVersion: 1,
+            },
+            module: {
+              inject: ["conversation"],
+              apply(ctx) {
+                ctx.conversation.registerCompletionSupplement({
+                  id: "crew",
+                  title: "Crews",
+                  order: supplement === "hold" ? -20 : 10,
+                  match: ({ text, start }) => mentionQuery(text, start),
+                  component: ({ publish }) => {
+                    useEffect(() => {
+                      if (supplement === "silent") return;
+                      return (
+                        publish({
+                          items: [
+                            {
+                              id: "crew",
+                              label: "Honey crew",
+                              edit: {
+                                mentions: [
+                                  { pubkey: first.pubkey, name: "Honey" },
+                                  { pubkey: second.pubkey, name: "Honey" },
+                                ],
+                              },
+                            },
+                          ],
+                          ...(supplement === "hold"
+                            ? { holdAutoSelect: true }
+                            : {}),
+                        }) || undefined
+                      );
+                    }, [publish]);
+                    return null;
+                  },
+                });
+              },
+            },
+          },
+        ]
+      : []),
     {
       manifest: {
         id: "test.disabled-command",

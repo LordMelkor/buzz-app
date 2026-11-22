@@ -429,6 +429,11 @@ details:not([open]) > summary .sectionChevron {
 .timelinePlaceholder {
   flex: 1;
 }
+/* The loading mark fills the timeline's slot, so it sits centered in it. */
+.timelineLoading {
+  display: flex;
+  flex-direction: column;
+}
 .panelStack {
   width: max(
     var(--split-floor, 19.75rem),

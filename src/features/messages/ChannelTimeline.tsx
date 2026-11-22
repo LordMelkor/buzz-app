@@ -1368,9 +1368,10 @@ function Timeline({
   const held = previous.indexOf(
     edges.current.containedOwners.get(heldId ?? "") ?? heldId ?? "",
   );
-  // Measured before commit: this render's rows can change the row's top.
+  // Measured before commit: this render's rows can change the row's top. A
+  // follower is never held, unless a reveal or return takes it off the end.
   const readerRow =
-    held < 0
+    held < 0 || (follow.current && !targetId && !returning)
       ? undefined
       : Array.from(
           scroller.current?.querySelectorAll<HTMLElement>(

@@ -380,7 +380,7 @@ export function registerNavigationShortcuts(
       order: HOST_SHORTCUT_ORDER.navigationBack,
       binding: { key: "[", mod: true },
       allowInEditable: true,
-      // Back closes a dialog that is its own visit (docs/navigation-history.md).
+      // Back closes a dialog that is its own visit.
       allowInVisit: true,
       when: () => navigation.snapshot().canGoBack,
       run: navigation.back,

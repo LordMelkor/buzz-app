@@ -136,7 +136,10 @@ function setup(
     hold: options.hold ?? false,
     load: true,
     // As goose lists it: a resumed session is put back on its default.
-    providers: [{ providerId: "databricks", defaultModel: "db-default" }],
+    providers: [
+      { providerId: "databricks", defaultModel: "db-default" },
+      { providerId: "databricks_v2", defaultModel: "db-v2-default" },
+    ],
     ...(options.protection && {
       history: [
         {
@@ -4018,24 +4021,82 @@ describe("goose turns through the agent gateway", () => {
     }
   });
 
-  it("forwards on goose's default provider when the agent names none", async () => {
-    const g = gateway();
-    const f = setup({
-      forwarding: g.forwarding,
-      defaultProvider: async () => "databricks",
-    });
-    try {
-      await f.deliver(root, dispatched());
-      await vi.waitFor(() => expect(g.calls).toContain("close 1"));
-      expect(g.opens).toHaveLength(1);
-      expect(f.fake.geese[0]?.env.DATABRICKS_HOST).toBe(
-        "http://127.0.0.1:9/g1",
+  it.each(["databricks", "databricks_v2"])(
+    "forwards on goose's %s default when the agent names none",
+    async (provider) => {
+      const g = gateway();
+      const f = setup({
+        forwarding: g.forwarding,
+        defaultProvider: async () => provider,
+      });
+      try {
+        await f.deliver(root, dispatched());
+        await vi.waitFor(() => expect(g.calls).toContain("close 1"));
+        expect(g.opens).toHaveLength(1);
+        expect(f.fake.geese[0]?.env).toMatchObject({
+          DATABRICKS_HOST: "http://127.0.0.1:9/g1",
+          GOOSE_PROVIDER: provider,
+          GOOSE_SUBAGENT_PROVIDER: provider,
+        });
+        expect(f.fake.geese[0]?.opened[0]?._meta).not.toHaveProperty(
+          "provider",
+        );
+        expect(f.fake.geese[0]?.configured).toEqual([]);
+        expect(f.published).toEqual([]);
+      } finally {
+        f.runtime.dispose();
+      }
+    },
+  );
+
+  it.each(["explicit", "Automatic"] as const)(
+    "forwards a %s Databricks AI Gateway model and keeps its provider for delegates",
+    async (selection) => {
+      const provider = "databricks_v2";
+      const model = "catalog.schema.model";
+      const g = gateway();
+      vi.stubEnv(
+        "VITE_BUZZ_RECOMMENDED_AGENT",
+        JSON.stringify({
+          candidates: [
+            {
+              harness: "goose",
+              provider,
+              model,
+              effort: "high",
+              label: "Model",
+            },
+          ],
+        }),
       );
-      expect(f.published).toEqual([]);
-    } finally {
-      f.runtime.dispose();
-    }
-  });
+      const f = setup({
+        forwarding: g.forwarding,
+        recommended: recommendedRun("goose", async () => true),
+      });
+      try {
+        await f.deliver(root, {
+          ...dispatched(),
+          config: {
+            ...DEFAULT_CONFIG,
+            ...(selection === "Automatic"
+              ? { preset: "recommended" }
+              : { provider, model }),
+          },
+        });
+        await vi.waitFor(() => expect(g.calls).toContain("close 1"));
+        const goose = f.fake.geese[0];
+        expect(goose?.opened[0]?._meta).toMatchObject({ provider });
+        expect(goose?.configured).toContain(`session-1 model=${model}`);
+        expect(goose?.env).toMatchObject({
+          GOOSE_SUBAGENT_PROVIDER: provider,
+          GOOSE_SUBAGENT_MODEL: model,
+        });
+      } finally {
+        f.runtime.dispose();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it.each<[string, Parameters<typeof setup>[0]]>([
     ["another provider", { provider: "openai" }],
@@ -4270,22 +4331,85 @@ describe("goose turns through the agent gateway", () => {
     }
   });
 
-  it("compacts a forwarded conversation's saved session by a turn of its own through the gateway, or refuses", async () => {
-    const blocked: GatewayRoute = {
-      kind: "blocked",
-      revision: 3,
-      gatewayOrigin: "https://gateway.example",
-      reason: "network",
-      message: "",
-    };
+  it.each(["databricks", "databricks_v2"])(
+    "compacts a forwarded %s conversation's saved session through the gateway, or refuses",
+    async (provider) => {
+      const blocked: GatewayRoute = {
+        kind: "blocked",
+        revision: 3,
+        gatewayOrigin: "https://gateway.example",
+        reason: "network",
+        message: "",
+      };
+      let route: GatewayRoute = enabled;
+      const g = gateway();
+      const forwarding = new GatewayForwarding(
+        { id: "buzz.goose", revision: "r1" },
+        { upstream: "goose", native: "goose" },
+        async () => ({ lists: ["", ""], proxied: false }),
+        g.native,
+        { routeFor: () => route, subscribeRoute: () => () => {} },
+      );
+      const f = setup({
+        forwarding,
+        provider,
+        reply: "Compaction complete",
+      });
+      const config = { ...DEFAULT_CONFIG, provider };
+      const agent = { ...f.agent, config } as unknown as Agent;
+      const place = { channelId: channel, root: root.id };
+      try {
+        await f.deliver(root, dispatched());
+        await vi.waitFor(() => expect(g.calls).toContain("close 1"));
+        await f.runtime.session(agent, place, "compact");
+        const compacting = f.fake.geese[1];
+        expect(compacting?.env.GOOSE_SUBAGENT_PROVIDER).toBe(provider);
+        expect(compacting?.loaded).toEqual(["session-1"]);
+        expect(compacting?.turns.map((turn) => turn.text)).toEqual([
+          "/compact",
+        ]);
+        // The control's own context: its thread, and never a message.
+        expect(g.opens[1]?.inference[headers.thread_id]).toBe(root.id);
+        expect(g.opens[1]?.inference).not.toHaveProperty(headers.message_id);
+        route = blocked;
+        await expect(
+          f.runtime.session(agent, place, "compact"),
+        ).rejects.toThrow(
+          "Couldn't compact through the agent gateway: Buzz couldn't reach the gateway.",
+        );
+        for (const reason of ["auth", "readiness_pending"] as const) {
+          route = { ...blocked, reason, message: `Gateway ${reason}` };
+          await expect(
+            f.runtime.session(agent, place, "compact"),
+          ).rejects.toThrow(route.message);
+          expect(f.fake.geese).toHaveLength(2);
+          expect(g.opens).toHaveLength(2);
+        }
+        route = { kind: "external", revision: 4 };
+        await expect(
+          f.runtime.session(agent, place, "compact"),
+        ).rejects.toThrow("which this agent's turns don't use now");
+        expect(f.fake.geese).toHaveLength(2);
+      } finally {
+        f.runtime.dispose();
+      }
+    },
+  );
+
+  it("keeps compacting a forwarded conversation through the gateway once a plugin's list leaves goose out", async () => {
     let route: GatewayRoute = enabled;
+    let excluded = false;
     const g = gateway();
     const forwarding = new GatewayForwarding(
       { id: "buzz.goose", revision: "r1" },
       { upstream: "goose", native: "goose" },
       async () => ({ lists: ["", ""], proxied: false }),
       g.native,
-      { routeFor: () => route, subscribeRoute: () => () => {} },
+      {
+        routeFor: () => route,
+        subscribeRoute: () => () => {},
+        excludes: (harness) => excluded && harness === "goose",
+      },
     );
     const f = setup({
       forwarding,
@@ -4298,30 +4422,34 @@ describe("goose turns through the agent gateway", () => {
     try {
       await f.deliver(root, dispatched());
       await vi.waitFor(() => expect(g.calls).toContain("close 1"));
+      // The gateway's own list leaving goose out, with no plugin's: as before.
+      route = { ...enabled, harnesses: ["codex"] };
+      await expect(f.runtime.session(agent, place, "compact")).rejects.toThrow(
+        "which this agent's turns don't use now",
+      );
+      expect(g.opens).toHaveLength(1);
+      // A plugin's list leaving it out: the saved session keeps its gateway.
+      excluded = true;
       await f.runtime.session(agent, place, "compact");
       const compacting = f.fake.geese[1];
       expect(compacting?.loaded).toEqual(["session-1"]);
       expect(compacting?.turns.map((turn) => turn.text)).toEqual(["/compact"]);
-      // The control's own context: its thread, and never a message.
-      expect(g.opens[1]?.inference[headers.thread_id]).toBe(root.id);
-      expect(g.opens[1]?.inference).not.toHaveProperty(headers.message_id);
-      route = blocked;
-      await expect(f.runtime.session(agent, place, "compact")).rejects.toThrow(
-        "Couldn't compact through the agent gateway: Buzz couldn't reach the gateway.",
+      expect(g.opens).toHaveLength(2);
+      expect(g.opens[1]?.inference[headers.launcher_session]).toBe(
+        g.opens[0]?.inference[headers.launcher_session],
       );
-      for (const reason of ["auth", "readiness_pending"] as const) {
-        route = { ...blocked, reason, message: `Gateway ${reason}` };
-        await expect(
-          f.runtime.session(agent, place, "compact"),
-        ).rejects.toThrow(route.message);
-        expect(f.fake.geese).toHaveLength(2);
-        expect(g.opens).toHaveLength(2);
-      }
-      route = { kind: "external", revision: 4 };
+      // The gateway refusing still fails, as it does for a listed harness.
+      route = {
+        kind: "blocked",
+        revision: 3,
+        gatewayOrigin: "https://gateway.example",
+        reason: "auth",
+        message: "Gateway auth",
+      };
       await expect(f.runtime.session(agent, place, "compact")).rejects.toThrow(
-        "which this agent's turns don't use now",
+        "Gateway auth",
       );
-      expect(f.fake.geese).toHaveLength(2);
+      expect(g.opens).toHaveLength(2);
     } finally {
       f.runtime.dispose();
     }
@@ -4398,13 +4526,13 @@ describe("goose turns through the agent gateway", () => {
   /** A standalone forwarded turn of the agent's. */
   const standalone = (
     f: ReturnType<typeof setup>,
-    scope: Config["scope"] = "thread",
+    config: Partial<Config> & { preset?: "recommended" } = {},
   ) =>
     f.runtime.runOnce({
       delivery: {
         agent: f.agent,
         channelId: channel,
-        config: { ...DEFAULT_CONFIG, provider: "databricks", scope },
+        config: { ...DEFAULT_CONFIG, provider: "databricks", ...config },
         current: () => true,
         ...dispatched(),
       },
@@ -4471,7 +4599,9 @@ describe("goose turns through the agent gateway", () => {
     const g = gateway();
     const f = setup({ forwarding: g.forwarding });
     try {
-      await expect(standalone(f, "community")).resolves.toMatchObject({
+      await expect(
+        standalone(f, { scope: "community" }),
+      ).resolves.toMatchObject({
         ok: false,
         error: expect.stringContaining(
           "Goose cannot use the agent gateway with Community session scope",
@@ -4481,6 +4611,33 @@ describe("goose turns through the agent gateway", () => {
       expect(f.fake.geese).toEqual([]);
     } finally {
       f.runtime.dispose();
+    }
+  });
+
+  it("uses the Automatic provider on the first standalone forwarded turn", async () => {
+    const provider = "databricks_v2";
+    const model = "catalog.schema.model";
+    const g = gateway();
+    vi.stubEnv(
+      "VITE_BUZZ_RECOMMENDED_AGENT",
+      JSON.stringify([
+        { harness: "goose", provider, model, effort: "high", label: "Model" },
+      ]),
+    );
+    const f = setup({
+      forwarding: g.forwarding,
+      recommended: recommendedRun("goose", async () => true),
+    });
+    try {
+      await expect(
+        standalone(f, { preset: "recommended", provider: "" }),
+      ).resolves.toMatchObject({ ok: true });
+      expect(g.opens).toHaveLength(1);
+      expect(f.fake.geese[0]?.env.GOOSE_SUBAGENT_PROVIDER).toBe(provider);
+      expect(f.fake.geese[0]?.configured).toContain(`session-1 model=${model}`);
+    } finally {
+      f.runtime.dispose();
+      vi.unstubAllEnvs();
     }
   });
   /** A spawn whose goose comes up only once released. */

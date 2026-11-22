@@ -1328,7 +1328,7 @@ it("keeps an agent's two communities' threads apart, each under its membership's
   await f.complete(0, "HERE");
   await vi.waitFor(() => expect(f.runtime.sessions(elsewhere)).toHaveLength(1));
   const saved = (key: string) =>
-    f.storage.get(`buzz.codex.sessions.v18:${scope}:${key}`);
+    f.storage.get(`buzz.codex.sessions.v19:${scope}:${key}`);
   expect(saved(pubkey)).toBeTruthy();
   expect(saved(elsewhere)).toBeTruthy();
   expect(f.runtime.conversations(pubkey)).toHaveLength(1);
@@ -5564,7 +5564,7 @@ it("lists saved conversations newest first from storage, and moves a started one
   const channel = JSON.stringify(["channel", "channel"]);
   const elsewhere = JSON.stringify(["unlisted", root]);
   f.storage.set(
-    `buzz.codex.sessions.v18:${scope}:${pubkey}`,
+    `buzz.codex.sessions.v19:${scope}:${pubkey}`,
     JSON.stringify({
       [channel]: { threadId: "before-timestamps", workspace: "/w" },
       [thread]: { threadId: "older", workspace: "/w", at: 1 },
@@ -5603,7 +5603,7 @@ it("lists saved conversations newest first from storage, and moves a started one
   expect(latest?.at).toBeGreaterThan(2);
   const stored = Object.keys(
     JSON.parse(
-      f.storage.get(`buzz.codex.sessions.v18:${scope}:${pubkey}`) ?? "{}",
+      f.storage.get(`buzz.codex.sessions.v19:${scope}:${pubkey}`) ?? "{}",
     ),
   );
   expect(stored.at(-1)).toBe(latest?.key);
@@ -5851,7 +5851,7 @@ it("offers the tools plugins add, runs them as the agent here, and starts a new 
     1,
   );
   const saved = JSON.parse(
-    f.storage.get(`buzz.codex.sessions.v18:${scope}:${pubkey}`) ?? "{}",
+    f.storage.get(`buzz.codex.sessions.v19:${scope}:${pubkey}`) ?? "{}",
   );
   expect(Object.values(saved)).toEqual([
     expect.objectContaining({ tools: expect.any(String) }),
@@ -7839,7 +7839,7 @@ describe("voice seats", () => {
   it("ends a seat on a thread from before sections were kept once the owner changes one, and goes on in a fresh thread", async () => {
     const f = await seated({}, (f) =>
       f.storage.set(
-        `buzz.codex.sessions.v18:${scope}:${pubkey}`,
+        `buzz.codex.sessions.v19:${scope}:${pubkey}`,
         JSON.stringify({
           [JSON.stringify(["channel", "channel"])]: {
             threadId: "kept",
@@ -8695,7 +8695,7 @@ it("retries a refused first turn but requires New when an accepted remote rollou
 it("resumes the durably saved thread even when the host cache has no thread", async () => {
   const conversation = JSON.stringify(["channel", root]);
   const key = `buzz.codex.sessions.execution.v1:${scope}:${pubkey}:${conversation}`;
-  const savedKey = `buzz.codex.sessions.v18:${scope}:${pubkey}:session:durable-session`;
+  const savedKey = `buzz.codex.sessions.v19:${scope}:${pubkey}:session:durable-session`;
   const durable = new Map([
     [key, JSON.stringify({ key: "durable-session", intent: "existing" })],
     [
@@ -8768,7 +8768,7 @@ it.each([
         JSON.stringify({ key: "durable-session", intent: "existing" }),
       ],
       [
-        `buzz.codex.sessions.v18:${scope}:${pubkey}:session:durable-session`,
+        `buzz.codex.sessions.v19:${scope}:${pubkey}:session:durable-session`,
         JSON.stringify({
           [conversation]: { threadId: "kept", workspace: "/guest/project" },
         }),
@@ -8889,7 +8889,7 @@ it("keeps restored history when the next turn is refused after a lost first resp
     `buzz.codex.sessions.execution.v1:${scope}:${pubkey}:${conversation}`,
     JSON.stringify({ key: "restored", intent: "existing" }),
   );
-  const savedKey = `buzz.codex.sessions.v18:${scope}:${pubkey}:session:restored`;
+  const savedKey = `buzz.codex.sessions.v19:${scope}:${pubkey}:session:restored`;
   f.storage.set(
     savedKey,
     JSON.stringify({
@@ -9236,7 +9236,7 @@ it("keeps thread session context and defers its admission during New", async () 
 
 describe("a thread that keeps the base sections it started with", () => {
   const conversation = JSON.stringify(["channel", root]);
-  const bindings = `buzz.codex.sessions.v18:${scope}:${pubkey}`;
+  const bindings = `buzz.codex.sessions.v19:${scope}:${pubkey}`;
   const current = composeBase({ scope: "thread", place: "thread" });
   const context = (wire: Wire | undefined) =>
     Object.values(
