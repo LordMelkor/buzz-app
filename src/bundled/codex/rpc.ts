@@ -57,6 +57,7 @@ export class AppServer {
   private process?: HostProcess;
   private failure?: Error;
   private buffer = "";
+  private newline = -1;
   private stderr = "";
   private listeners = new Set<(message: Wire) => void>();
   private readonly unconfirmedReleases = new Set<string>();
@@ -135,6 +136,7 @@ export class AppServer {
     this.closing = undefined;
     this.gone = false;
     this.buffer = this.stderr = "";
+    this.newline = -1;
     this.unconfirmedReleases.clear();
     return this.open(spawn, cwd, protectedRuntime);
   }
@@ -172,13 +174,16 @@ export class AppServer {
     // Always return to Tauri's channel handler, including malformed output or
     // a throwing consumer; otherwise the final exit event can be stranded.
     try {
+      if (this.newline < 0) {
+        const next = data.indexOf("\n");
+        if (next >= 0) this.newline = this.buffer.length + next;
+      }
       this.buffer += data;
-      let newline = this.buffer.indexOf("\n");
-      while (newline >= 0) {
-        if (newline > 4 * 1024 * 1024) throw new Oversized();
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
-        newline = this.buffer.indexOf("\n");
+      while (this.newline >= 0) {
+        if (this.newline > 4 * 1024 * 1024) throw new Oversized();
+        const line = this.buffer.slice(0, this.newline);
+        this.buffer = this.buffer.slice(this.newline + 1);
+        this.newline = this.buffer.indexOf("\n");
         if (!line.trim()) continue;
         const message: Wire = JSON.parse(line);
         const waiter =

@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { checkReplyChunking } from "../../../tests/reply-chunking";
 import type { HostProcessOptions } from "../../features/host/service";
 import { AppServer, type Wire } from "./rpc";
 function fixture() {
@@ -59,6 +60,23 @@ it("correlates out-of-order JSONL responses across chunk boundaries and rejects 
   expect(one).not.toHaveBeenCalled();
   expect(two).not.toHaveBeenCalled();
   await f.rpc.close();
+});
+it("delivers the same Codex replies at every stdout split", async () => {
+  const servers: AppServer[] = [];
+  try {
+    await checkReplyChunking(async () => {
+      const f = fixture();
+      servers.push(f.rpc);
+      await f.open();
+      const replies = Array.from({ length: 3 }, () => f.rpc.request("example"));
+      const ids = f.sent
+        .filter((wire) => wire.method === "example")
+        .map((wire) => wire.id);
+      return { replies, ids, stdout: f.raw };
+    });
+  } finally {
+    await Promise.all(servers.map((rpc) => rpc.close()));
+  }
 });
 it("contains consumer exceptions and closes malformed output while rejecting pending work", async () => {
   const f = fixture();
