@@ -51,6 +51,7 @@ type Shown<T> = Readonly<{
   key: string;
   /** null: the agent type has no transcript for it. */
   transcript?: T | null;
+  working?: boolean;
   error?: string;
 }>;
 /** A full read, or one of only the latest turns. */
@@ -214,8 +215,8 @@ export function useLiveTranscript<T extends Transcript>({
         const before = held.current;
         held.current =
           next.error !== undefined && before.key === key
-            ? { ...before, error: next.error }
-            : { key, ...next };
+            ? { ...before, working, error: next.error }
+            : { key, ...next, working };
         setShown(held.current);
         if (queued.current && request(true, queued.current)) return;
         setLoading(false);
@@ -379,7 +380,7 @@ export function TranscriptPanel<T extends Transcript>({
             agentKey={agent.key}
             agentPicture={agent.picture}
             community={agent.relay}
-            state={() => (working ? "working" : undefined)}
+            state={() => (shown.working ? "working" : undefined)}
             before={notes?.(transcript)}
           />
         ) : (

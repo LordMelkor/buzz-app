@@ -33,15 +33,15 @@ afterEach(() => {
 });
 
 /** A read whose calls each settle when the test says. */
-function reads() {
+function reads<T = string>() {
   const calls: {
     key: string;
     signal: AbortSignal;
-    resolve(value: string | undefined): void;
+    resolve(value: T | undefined): void;
     reject(error: Error): void;
   }[] = [];
   const read = (key: string) => (signal: AbortSignal) =>
-    new Promise<string | undefined>((resolve, reject) =>
+    new Promise<T | undefined>((resolve, reject) =>
       calls.push({ key, signal, resolve, reject }),
     );
   return { calls, read };
@@ -312,7 +312,11 @@ it("keeps the transcript while new read inputs are read, and ignores the read th
   });
   view.rerender({ key: "a", again: "s3", working: false });
   await settle(nth(calls, 3), "second");
-  expect(view.result.current.shown).toEqual({ key: "a", transcript: "second" });
+  expect(view.result.current.shown).toEqual({
+    key: "a",
+    transcript: "second",
+    working: false,
+  });
 });
 
 it("shows a missing transcript as null", async () => {
@@ -320,6 +324,62 @@ it("shows a missing transcript as null", async () => {
   await act(async () => nth(calls, 0).resolve(undefined));
   expect(view.result.current.shown.transcript).toBeNull();
 });
+
+const agent = { key: "agent", name: "Agent" } as Parameters<
+  typeof TranscriptPanel
+>[0]["agent"];
+
+it.each(["succeeds", "fails"])(
+  "keeps Working until the stop read %s",
+  async (result) => {
+    const { read, calls } = reads<Transcript>();
+    const panel = (working: boolean) => (
+      <TranscriptPanel
+        agent={agent}
+        read={read("session")}
+        readKey="session"
+        working={working}
+        reading="Reading…"
+        missing="Missing"
+        failed="Could not read"
+      />
+    );
+    const live: TranscriptTurn = {
+      turnId: "latest",
+      startedAt: 1000,
+      channelId: null,
+      threadRootId: null,
+      triggeringEventIds: [],
+      config: [],
+      newSession: false,
+      partial: false,
+      items: [],
+    };
+    const view = render(panel(true));
+    await act(async () => nth(calls, 0).resolve({ turns: [live] }));
+    expect(screen.getByText("Working")).toBeVisible();
+
+    view.rerender(panel(false));
+    const stop = nth(calls, 1);
+    expect(screen.getByText("Working")).toBeVisible();
+    expect(screen.queryByText("Status unknown")).toBeNull();
+    if (result === "succeeds") {
+      await act(async () =>
+        stop.resolve({ turns: [{ ...live, endedAt: 2000 }] }),
+      );
+      expect(screen.getByText("Completed")).toBeVisible();
+    } else {
+      await act(async () => stop.reject(new Error("unavailable")));
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Could not read: unavailable",
+      );
+      expect(screen.getByText("Status unknown")).toBeVisible();
+    }
+    expect(screen.queryByText("Working")).toBeNull();
+    act(() => vi.advanceTimersByTime(LIVE_READ_MS * 3));
+    expect(calls).toHaveLength(2);
+  },
+);
 
 it("keeps the shown transcript mounted while its sessions change", async () => {
   const pending: {
@@ -330,9 +390,6 @@ it("keeps the shown transcript mounted while its sessions change", async () => {
     new Promise<Transcript | undefined>((resolve, reject) =>
       pending.push({ resolve, reject }),
     );
-  const agent = { key: "agent", name: "Agent" } as Parameters<
-    typeof TranscriptPanel
-  >[0]["agent"];
   const panel = (readAgain: string) => (
     <div style={{ overflowY: "auto" }}>
       <TranscriptPanel
