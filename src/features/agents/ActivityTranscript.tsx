@@ -779,7 +779,7 @@ function Item({
           icon={<BulbIcon size={16} aria-label="Thought" />}
           label={<span className={styles.subject}>{heading}</span>}
         >
-          {body && <MemoizedReply text={body} />}
+          {body && <Reply text={body} />}
         </Disclosure>
       );
     }
@@ -810,7 +810,7 @@ function Item({
         >
           <div className={messageStyles.messageBubble} data-arrival-surface>
             <div className="text-message">
-              <MemoizedReply text={item.text} />
+              <Reply text={item.text} />
             </div>
           </div>
         </Disclosure>
@@ -875,8 +875,6 @@ function Reply({ text }: { text: string }) {
     />
   );
 }
-
-const MemoizedReply = memo(Reply);
 
 /** A file's lines; a final newline does not start another line. */
 const lines = (text: string) => text.replace(/\n$/, "").split("\n");
