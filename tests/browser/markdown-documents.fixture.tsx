@@ -17,6 +17,7 @@ import { Body as RepoBody } from "../../src/bundled/repos/RepoPage";
 import { InstructionsMarkdown } from "../../src/bundled/watching/InstructionsMarkdown";
 import "../../src/bundled/watching/AttentionPage.css";
 import { ActivityTranscript } from "../../src/features/agents/ActivityTranscript";
+import { TranscriptPanel } from "../../src/features/agents/TranscriptPanel";
 import { activityTranscript } from "../../src/features/agents/activity-transcript";
 import { createAgentMemories } from "../../src/features/agents/memory";
 import { MemoryPanel } from "../../src/features/agents/MemoryPanel";
@@ -104,6 +105,7 @@ const reply = (seq: number, text: string, messageId: string) =>
       },
     },
   });
+const working = params.has("working");
 const transcript = activityTranscript(
   [
     {
@@ -125,7 +127,9 @@ const transcript = activityTranscript(
               },
             }),
             reply(3, LONG_CODE, "m2"),
-            frame(4, "turn_completed", { outcome: "completed" }),
+            ...(working
+              ? []
+              : [frame(4, "turn_completed", { outcome: "completed" })]),
           ],
         },
       }),
@@ -145,6 +149,7 @@ const memories = createAgentMemories(
   () => true,
 );
 const memoryAgent = {
+  key: agent,
   pubkey: agent,
   name: "Ada",
   relay: "wss://current.example",
@@ -235,12 +240,25 @@ createRoot(root).render(
         />
       </section>
       <section data-screen="transcript">
-        <ActivityTranscript
-          transcript={transcript}
-          agentName="Ada"
-          state={() => "ended"}
-          follow={false}
-        />
+        {working ? (
+          <TranscriptPanel
+            agent={memoryAgent}
+            read={async () => transcript}
+            readKey="S"
+            working
+            refreshWhileWorking={false}
+            reading="Reading transcript…"
+            failed="Could not read transcript"
+            missing={null}
+          />
+        ) : (
+          <ActivityTranscript
+            transcript={transcript}
+            agentName="Ada"
+            state={() => "ended"}
+            follow={false}
+          />
+        )}
       </section>
       <section data-screen="plugin-readme">
         <PluginReadme text={SAMPLE} />
