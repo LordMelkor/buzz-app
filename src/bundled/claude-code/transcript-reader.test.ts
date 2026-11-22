@@ -216,9 +216,23 @@ it("carries rows accepted by a poll into the next working-edge tail", () => {
 });
 
 it("keeps the baseline after an aborted poll and ignores its late result", () => {
-  const stopped = drive(live, startPoll, abortPoll).state;
+  const polled = [finished, turn("unpublished turn", 4)];
+  const observed = drive(live, startPoll, {
+    type: "poll",
+    id: poll,
+    turns: polled,
+    overlap: "observe",
+  });
+  expect(observed.turns).toEqual(polled);
+  expect(observed.state.settled).toBe(live.settled);
+  const stopped = drive(observed.state, abortPoll).state;
   expect(stopped.active).toBeUndefined();
-  const late = transition(stopped, { type: "poll", id: poll, turns: tail });
+  const late = transition(stopped, {
+    type: "poll",
+    id: poll,
+    turns: observed.turns,
+    overlap: "observed",
+  });
   expect(late.ignored).toBe(true);
   expect(late.turns).toBeUndefined();
   expect(phase(drive(late.state, begin(next, false)).state)).toBe("tail");
@@ -243,14 +257,35 @@ it("does not preview again after a full read finds no transcript", () => {
 });
 
 it("keeps the full-read requirement if an invalid poll is followed by an abort", () => {
-  const rejected = drive(seeds.partial, begin(poll, false, 0, preview.turns), {
+  const observing = drive(seeds.partial, begin(poll, false, 0, preview.turns));
+  const observation = {
     type: "poll",
     id: poll,
     turns: [turn("unrelated", 4)],
+    overlap: "observe",
+  } satisfies Event;
+  const observed = transition(observing.state, observation);
+  expect(observed.turns).toBeUndefined();
+  expect(observed.state.active?.phase).toBe("poll");
+  expect(observed.state.settled).toBe(seeds.partial.settled);
+
+  const stopped = drive(observed.state, abortPoll).state;
+  const late = transition(stopped, {
+    type: "poll",
+    id: poll,
+    turns: observed.turns,
+    overlap: "observed",
   });
-  expect(rejected.turns).toBeUndefined();
-  const { state } = drive(rejected.state, abortPoll, begin(next, true));
-  expect(phase(state)).toBe("full");
+  expect(late.ignored).toBe(true);
+  expect(late.state.settled).toBe(seeds.partial.settled);
+  expect(phase(drive(late.state, begin(next, true)).state)).toBe("full");
+
+  const earlyStop = drive(observing.state, abortPoll).state;
+  const unobserved = transition(earlyStop, observation);
+  expect(unobserved.ignored).toBe(true);
+  expect(phase(drive(unobserved.state, begin(next, true)).state)).toBe(
+    "preview",
+  );
 });
 
 it.each([
