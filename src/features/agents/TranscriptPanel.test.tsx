@@ -473,6 +473,7 @@ it("reuses accepted transcript turns across a live send at the turn limit", asyn
     ...turns.slice(1).map(({ turnId }) => turnId),
     "sent",
   ]);
+  expect(accepted.more).toBe(true);
   expect(accepted.turns[0]).toBe(turns[1]);
   expect(accepted.turns.at(-2)).toBe(previousLast);
   expect(accepted.turns.at(-1)).toBe(sent);

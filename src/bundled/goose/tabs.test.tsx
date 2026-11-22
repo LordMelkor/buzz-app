@@ -22,6 +22,7 @@ import { fakeSpawn } from "./goose-testing";
 import { type Config, DEFAULT_CONFIG, type GooseRuntime } from "./runtime";
 import { GooseSetup } from "./setup";
 import { createTabs } from "./tabs";
+import { LIVE_READ_MS } from "../../features/agents/TranscriptPanel";
 import { GooseHistory } from "./transcript";
 import { localSessions } from "./sessions";
 import {
@@ -1050,6 +1051,46 @@ it("lists the agent's saved conversations and reads one's transcript by id, with
     await screen.findByText(/@Gander what's up\?/, { selector: "p" }),
   ).toBeVisible();
   expect(listings(fake)).toEqual([]);
+});
+
+it("shows the window notice when a live session grows from 50 to 51 turns", async () => {
+  const prompt = (n: number) => ({
+    role: "user",
+    created: n,
+    content: [{ type: "text", text: `Request ${n}` }],
+  });
+  const conversation = Array.from({ length: 50 }, (_, i) => prompt(i + 1));
+  const fake = fakeSpawn({
+    history: [
+      {
+        sessionId: "s1",
+        title: "Session",
+        cwd: "/w",
+        updatedAt: "",
+        conversation,
+      },
+    ],
+  });
+  const key = `chan/${ROOT}`;
+  const notice = "Showing the latest 50 turns.";
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    activity(fake, {
+      saved: [{ key, at: 1, sessions: ["s1"] }],
+      live: [{ key, at: 1, busy: true, sessionId: "s1" }],
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^View transcript/ }));
+    });
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+    expect(screen.queryByText(notice)).toBeNull();
+    conversation.push(prompt(51));
+    await act(async () => vi.advanceTimersByTimeAsync(LIVE_READ_MS));
+    expect(screen.getByText(notice)).toBeVisible();
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("finds a conversation with no saved session by its goose tags", async () => {
