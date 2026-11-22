@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -29,6 +30,7 @@ import {
   readTranscript,
   TURN_LIMIT,
   withNotices,
+  type WorkingPoll,
 } from "./transcript";
 
 const root = "c".repeat(64);
@@ -1352,6 +1354,68 @@ it("requests a full read when a clipped turn contains a delivered steer", async 
   ]);
   const latest = await readLatestTurns(spawn, "~/.buzz", session, true, signal);
   expect(latest?.map(({ turnId }) => turnId)).toEqual(["u5"]);
+});
+
+it("keeps an incomplete UTF-8 record across working polls and retries from the accepted byte", async () => {
+  clock = 0;
+  const { spawn, home } = host({
+    [savedPath]: [
+      line("user", prompt("check deployment")),
+      line("assistant", [
+        { type: "tool_use", name: "Read", id: "r", input: { path: "/log" } },
+      ]),
+      JSON.stringify({ type: "progress", text: "x".repeat(3 << 20) }),
+      "",
+    ].join("\n"),
+  });
+  const signal = new AbortController().signal;
+  const accepted: WorkingPoll = {};
+  const full = await readTranscript(
+    spawn,
+    "~/.buzz",
+    conversation,
+    true,
+    signal,
+    undefined,
+    accepted,
+  );
+  const path = join(home, ".claude/projects", savedPath);
+  const result = Buffer.from(
+    `${line(
+      "user",
+      [{ type: "tool_result", tool_use_id: "r", content: "ready ✓" }],
+      { timestamp: undefined },
+    )}\n`,
+  );
+  const split = result.indexOf("✓") + 1;
+  const latest = (poll: WorkingPoll) =>
+    readLatestTurns(
+      spawn,
+      "~/.buzz",
+      conversation,
+      true,
+      signal,
+      undefined,
+      poll,
+    );
+  appendFileSync(path, result.subarray(0, split));
+  expect(await latest({ ...accepted })).toEqual([]);
+  appendFileSync(path, result.subarray(split));
+  const staged = { ...accepted };
+  const changed = await latest(staged);
+  expect(changed?.[0]?.items.at(-1)).toMatchObject({
+    output: "ready ✓",
+    status: "completed",
+    completedAt: 2000,
+  });
+  expect(full?.turns[0]?.items.at(-1)).toMatchObject({
+    status: "in_progress",
+    output: "",
+  });
+  expect(await latest({ ...accepted })).toEqual(changed);
+  expect(await latest(staged)).toEqual([]);
+  appendFileSync(path, `${line("user", prompt("next request"))}\n`);
+  expect(await latest(staged)).toBeUndefined();
 });
 
 it("reads a turn larger than the chunk in full only every 30 s, keeping what is shown between", async () => {

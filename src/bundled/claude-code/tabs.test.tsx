@@ -756,19 +756,95 @@ it("reads canonical history when a 51st turn first appears at stop", async () =>
   expect(fileReads().slice(before)).toEqual(["read", "read-page", "read"]);
 });
 
-it("reads the final reply when an oversized turn stops", async () => {
-  const { load, path, startCompaction, summary } = await openLongTranscript();
+it("updates a tool outside the working tail and resumes polling after a late send result", async () => {
+  const { load, path, gap, fileReads, startCompaction, summary } =
+    await openLongTranscript();
   await userEvent.click(load);
   await expectFullPreviewHistory();
-  appendFileSync(
-    path,
-    `\n${sessionReply(`Long output\n${"x".repeat(3 << 20)}`)}\n${sessionReply("draft reply")}`,
-  );
+  const calls = JSON.stringify({
+    uuid: "calls",
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Read",
+          id: "r",
+          input: { file_path: "/work/sample.txt" },
+        },
+        {
+          type: "tool_use",
+          name: "mcp__buzz__send",
+          id: "s",
+          input: { text: "Sample report" },
+        },
+      ],
+    },
+  });
+  const result = (id: string, content: string, is_error = false) =>
+    JSON.stringify({
+      uuid: `result-${id}`,
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: id, content, is_error }],
+      },
+    });
+  appendFileSync(path, `\n${calls}\n${gap}\n${sessionReply("draft reply")}\n`);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const poll = async () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_READ_MS);
+    });
   const finish = startCompaction();
   try {
-    expect(await summary("draft reply")).toBeVisible();
-    appendFileSync(path, `\n${sessionReply("final oversized reply")}`);
+    await vi.waitFor(() =>
+      expectTurnStatus(
+        screen.getByText("draft reply", transcriptSummary),
+        "Working",
+      ),
+    );
+    const tool = document.querySelector<HTMLDetailsElement>(
+      '[data-entry="item:calls:0"] details',
+    );
+    if (!tool) throw new Error("Missing original tool row");
+    expect(tool).toHaveAttribute("data-status", "in_progress");
+    tool.open = true;
+    fireEvent(tool, new Event("toggle"));
+    const before = fileReads().length;
+    appendFileSync(path, `${result("r", "original output")}\n`);
+    await poll();
+    await vi.waitFor(() =>
+      expect(within(tool).getByText("original output")).toBeVisible(),
+    );
+    expect(tool).toHaveAttribute("data-status", "completed");
+    expect(fileReads().slice(before)).not.toContain("read");
+
+    appendFileSync(path, `${result("s", "channel missing", true)}\n`);
+    await poll();
+    await vi.waitFor(() =>
+      expect(
+        screen.getByText(/The message above was not posted: channel missing/),
+      ).toBeVisible(),
+    );
+    expect(
+      fileReads()
+        .slice(before)
+        .filter((id) => id === "read"),
+    ).toHaveLength(1);
+
+    const afterFallback = fileReads().length;
+    appendFileSync(path, `${sessionReply("after the late result")}\n`);
+    await poll();
+    await vi.waitFor(() =>
+      expectTurnStatus(
+        screen.getByText("after the late result", transcriptSummary),
+        "Working",
+      ),
+    );
+    expect(fileReads().slice(afterFallback)).not.toContain("read");
+    appendFileSync(path, `${sessionReply("final oversized reply")}\n`);
   } finally {
+    vi.useRealTimers();
     await act(finish);
   }
   expectTurnStatus(await summary("final oversized reply"), "Completed");

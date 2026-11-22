@@ -23,7 +23,11 @@ import {
 } from "react";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
-import { type ClaudeTranscript, TURN_LIMIT } from "./transcript";
+import {
+  type ClaudeTranscript,
+  type WorkingPoll,
+  TURN_LIMIT,
+} from "./transcript";
 import {
   TranscriptPanel,
   withLatest,
@@ -1016,7 +1020,9 @@ export function createTabs({
     const fullHistory = useRef<{
       input: string;
       loaded: boolean;
-      live?: { again: string; result: ClaudeTranscript } | undefined;
+      live?:
+        | { again: string; result: ClaudeTranscript; poll: WorkingPoll }
+        | undefined;
     }>(undefined);
     if (history.input !== input) {
       setHistory({ input, focus, attempt: focus ? 1 : 0, loading: false });
@@ -1049,6 +1055,7 @@ export function createTabs({
       held: ClaudeTranscript["turns"],
     ) {
       const intent = fullHistory.current;
+      const poll = { ...intent?.live?.poll };
       let turns: ClaudeTranscript["turns"] | undefined;
       try {
         turns = await runtime.latestTurns(
@@ -1057,6 +1064,7 @@ export function createTabs({
           working,
           signal,
           held,
+          poll,
         );
       } catch (error) {
         if (!signal.aborted && intent) intent.live = undefined;
@@ -1089,7 +1097,7 @@ export function createTabs({
       }
       if (intent?.live) {
         const result = withLatest(intent.live.result, turns);
-        intent.live = result ? { again, result } : undefined;
+        intent.live = result ? { again, result, poll } : undefined;
       }
       return turns;
     }
@@ -1118,7 +1126,8 @@ export function createTabs({
               signal.throwIfAborted();
               if (preview) return { ...preview, partial: true };
             }
-            const result = await runtime.transcript(...args);
+            const poll: WorkingPoll = {};
+            const result = await runtime.transcript(...args, poll);
             signal.throwIfAborted();
             if (fullHistory.current === intent) {
               fullHistory.current = {
@@ -1126,7 +1135,7 @@ export function createTabs({
                 loaded: Boolean(result),
                 live:
                   working && result && !result.incomplete
-                    ? { again, result }
+                    ? { again, result, poll }
                     : undefined,
               };
             }
