@@ -73,16 +73,12 @@ export function withLatest<T extends Transcript>(
   const at = ids.get(turns[from]?.turnId ?? "") ?? 0;
   const kept = turns.slice(from);
   const sessions = new Set(kept.map((turn) => turn.sessionId));
-  if (!held.turns.slice(at).every((turn) => sessions.has(turn.sessionId)))
-    return undefined;
-  const merged = [...held.turns.slice(0, at), ...kept];
-  return {
-    ...held,
-    ...("more" in held && held.more === false && merged.length > TURN_LIMIT
-      ? { more: true }
-      : {}),
-    turns: merged.slice(-TURN_LIMIT),
-  };
+  return held.turns.slice(at).every((turn) => sessions.has(turn.sessionId))
+    ? {
+        ...held,
+        turns: [...held.turns.slice(0, at), ...kept].slice(-TURN_LIMIT),
+      }
+    : undefined;
 }
 
 const dataPrototypes = new Set([Object.prototype, Array.prototype, null]);
