@@ -329,9 +329,14 @@ const agent = { key: "agent", name: "Agent" } as Parameters<
   typeof TranscriptPanel
 >[0]["agent"];
 
-it.each(["succeeds", "fails"])(
-  "keeps Working until the stop read %s",
-  async (result) => {
+it.each([
+  { result: "succeeds", late: false },
+  { result: "fails", late: false },
+  { result: "succeeds", late: true },
+  { result: "fails", late: true },
+])(
+  "shows the stop outcome when the read $result (past the hold: $late)",
+  async ({ result, late }) => {
     const { read, calls } = reads<Transcript>();
     const panel = (working: boolean) => (
       <TranscriptPanel
@@ -363,6 +368,13 @@ it.each(["succeeds", "fails"])(
     const stop = nth(calls, 1);
     expect(screen.getByText("Working")).toBeVisible();
     expect(screen.queryByText("Status unknown")).toBeNull();
+    if (late) {
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(screen.getByText("Working")).toBeVisible();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByText("Status unknown")).toBeVisible();
+      expect(screen.queryByText("Working")).toBeNull();
+    }
     if (result === "succeeds") {
       await act(async () =>
         stop.resolve({ turns: [{ ...live, endedAt: 2000 }] }),
@@ -378,6 +390,15 @@ it.each(["succeeds", "fails"])(
     expect(screen.queryByText("Working")).toBeNull();
     act(() => vi.advanceTimersByTime(LIVE_READ_MS * 3));
     expect(calls).toHaveLength(2);
+    if (late && result === "succeeds") {
+      view.rerender(panel(true));
+      await act(async () => nth(calls, 2).resolve({ turns: [live] }));
+      view.rerender(panel(false));
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(screen.getByText("Working")).toBeVisible();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByText("Status unknown")).toBeVisible();
+    }
   },
 );
 

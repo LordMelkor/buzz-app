@@ -21,6 +21,7 @@ import type { AgentViewProps } from "./service";
 export const LIVE_READ_MS = 2500;
 /** How long after a read a step the agent reports reads again. */
 export const STEP_READ_MS = 1000;
+const STOP_STATUS_HOLD_MS = 10_000;
 /** Turns a merged transcript holds at most. */
 export const TURN_LIMIT = 50;
 
@@ -342,6 +343,15 @@ export function TranscriptPanel<T extends Transcript>({
     refreshWhileWorking,
     agentKey: agent.key,
   });
+  const holding = !working && Boolean(shown.working);
+  const [holdExpired, setHoldExpired] = useState(false);
+  useEffect(() => {
+    setHoldExpired(false);
+    if (!holding) return;
+    const timer = setTimeout(() => setHoldExpired(true), STOP_STATUS_HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [holding]);
+  const isWorking = shown.working && (working || !holdExpired);
   const { transcript, error } = shown;
   return (
     <div className={activityStyles.transcript} data-transcript>
@@ -380,7 +390,7 @@ export function TranscriptPanel<T extends Transcript>({
             agentKey={agent.key}
             agentPicture={agent.picture}
             community={agent.relay}
-            state={() => (shown.working ? "working" : undefined)}
+            state={() => (isWorking ? "working" : undefined)}
             before={notes?.(transcript)}
           />
         ) : (
