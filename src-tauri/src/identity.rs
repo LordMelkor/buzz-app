@@ -969,23 +969,43 @@ pub(crate) fn sidebar_coordinate(value: &str) -> bool {
     )
 }
 
-fn valid_read_coordinate(value: &str) -> bool {
-    value.strip_prefix("read-state:").is_some_and(|slot| {
-        slot.len() == 32
-            && slot
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+/// The two exact read-state shapes: version 1 read positions and the version 2
+/// expiring unread record. Each pairs its d prefix with its own t tag.
+fn read_namespace(version: u64) -> &'static str {
+    if version == 2 {
+        "read-state-unread-v2"
+    } else {
+        "read-state"
+    }
+}
+
+/// The blob version a coordinate holds, or None when it is neither shape.
+fn read_coordinate_version(value: &str) -> Option<u64> {
+    [1, 2].into_iter().find(|&version| {
+        value
+            .strip_prefix(read_namespace(version))
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(valid_read_slot)
     })
 }
 
-fn validate_read_blob(blob: &serde_json::Value) -> Result<()> {
+fn valid_read_slot(slot: &str) -> bool {
+    slot.len() == 32
+        && slot
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Returns the blob's version, 1 or 2.
+fn validate_read_blob(blob: &serde_json::Value) -> Result<u64> {
     let contexts = blob["contexts"]
         .as_object()
         .ok_or("Unsupported read-state blob")?;
     let client = blob["client_id"]
         .as_str()
         .ok_or("Unsupported read-state blob")?;
-    if blob["v"] != 1
+    let version = blob["v"].as_u64().filter(|v| *v == 1 || *v == 2);
+    if version.is_none()
         || client.is_empty()
         || client.chars().count() > 64
         || contexts.len() > 10_000
@@ -995,6 +1015,49 @@ fn validate_read_blob(blob: &serde_json::Value) -> Result<()> {
             > 128 * 1024
     {
         return Err("Unsupported read-state blob".into());
+    }
+    Ok(version.unwrap_or(1))
+}
+
+// Buzz Thread Follow Choices: a second exact own-slot shape, checked on its own
+// so the read-state checks above stay as strict as they were.
+fn valid_follow_coordinate(value: &str) -> bool {
+    value.strip_prefix("thread-follows:").is_some_and(|slot| {
+        slot.len() == 32
+            && slot
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+fn valid_follow_key(key: &str) -> bool {
+    key.split_once(':').is_some_and(|(channel, root)| {
+        (1..=128).contains(&channel.len())
+            && channel
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            && root.len() == 64
+            && root
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+fn validate_follow_payload(payload: &serde_json::Value) -> Result<()> {
+    let threads = payload["threads"]
+        .as_object()
+        .ok_or("Unsupported thread-follows payload")?;
+    let valid = payload["v"] == 1
+        && payload["client_id"]
+            .as_str()
+            .is_some_and(|id| (1..=64).contains(&id.chars().count()))
+        && threads.iter().all(|(key, entry)| {
+            valid_follow_key(key)
+                && entry["follow"].is_boolean()
+                && entry["at"].as_u64().is_some_and(|at| at <= u32::MAX as u64)
+        });
+    if !valid {
+        return Err("Unsupported thread-follows payload".into());
     }
     Ok(())
 }
@@ -1238,14 +1301,16 @@ impl IdentityHost {
                 // Inspect raw tag arrays before deserialization; normalization must not discard duplicate selectors.
                 let tags = raw["tags"].as_array().ok_or("Invalid read-state event")?;
                 let ds: Vec<_> = tags.iter().filter(|tag| tag[0] == "d").collect();
+                let version = match ds.as_slice() {
+                    [d] => d[1].as_str().and_then(read_coordinate_version),
+                    _ => None,
+                }
+                .ok_or("Invalid read-state event")?;
                 let ts: Vec<_> = tags
                     .iter()
-                    .filter(|tag| tag[0] == "t" && tag[1] == "read-state")
+                    .filter(|tag| tag[0] == "t" && tag[1] == read_namespace(version))
                     .collect();
-                if ds.len() != 1
-                    || ts.len() != 1
-                    || !ds[0][1].as_str().is_some_and(valid_read_coordinate)
-                {
+                if ts.len() != 1 {
                     return Err("Invalid read-state event".into());
                 }
                 let event: Event =
@@ -1261,7 +1326,9 @@ impl IdentityHost {
                 }
                 let blob: serde_json::Value =
                     serde_json::from_str(&plaintext).map_err(|_| "Invalid read-state event")?;
-                validate_read_blob(&blob)?;
+                if validate_read_blob(&blob)? != version {
+                    return Err("Invalid read-state event".into());
+                }
                 result.push(serde_json::json!({"eventId": event.id.to_hex(), "blob": blob}));
             }
             Ok(serde_json::Value::Array(result))
@@ -1285,13 +1352,13 @@ impl IdentityHost {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| "System clock is unavailable")?
                 .as_secs();
-            if !valid_read_coordinate(&format!("read-state:{slot}"))
+            if !valid_read_slot(&slot)
                 || created_at > u32::MAX as u64
                 || now.abs_diff(created_at) > 60
             {
                 return Err("Invalid read-state signing intent".into());
             }
-            validate_read_blob(&blob)?;
+            let namespace = read_namespace(validate_read_blob(&blob)?);
             let plaintext =
                 serde_json::to_string(&blob).map_err(|_| "Invalid read-state signing intent")?;
             if plaintext.len() > 40 * 1024 {
@@ -1312,8 +1379,143 @@ impl IdentityHost {
                 kind: 30078,
                 content,
                 tags: vec![
-                    vec!["d".into(), format!("read-state:{slot}")],
-                    vec!["t".into(), "read-state".into()],
+                    vec!["d".into(), format!("{namespace}:{slot}")],
+                    vec!["t".into(), namespace.into()],
+                ],
+            })
+        })
+        .await
+    }
+
+    /// Decrypt only verified, self-authored thread-follows slots. An own event
+    /// whose payload can't be read decodes to `payload: null`: unknown, not absent.
+    pub(crate) async fn decode_thread_follows(
+        &self,
+        events: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        with_identity(self.clone(), move |identity| {
+            identity.restore()?;
+            let State::Ready(key) = &identity.state else {
+                return Err("Set up your identity first".into());
+            };
+            if events.len() > 16
+                || serde_json::to_vec(&events)
+                    .map_err(|_| "Thread-follows decode capacity exceeded")?
+                    .len()
+                    > 512 * 1024
+            {
+                return Err("Thread-follows decode capacity exceeded".into());
+            }
+            let secret = NostrSecretKey::from_slice(key.0.as_ref())
+                .map_err(|_| "Invalid thread-follows event")?;
+            let public = Keys::new(secret.clone()).public_key();
+            let conversation = nip44::v2::ConversationKey::derive(&secret, &public)
+                .map_err(|_| "Invalid thread-follows event")?;
+            let mut result = Vec::new();
+            for raw in events {
+                if serde_json::to_vec(&raw)
+                    .map_err(|_| "Invalid thread-follows event")?
+                    .len()
+                    > 96 * 1024
+                {
+                    return Err("Invalid thread-follows event".into());
+                }
+                let tags = raw["tags"]
+                    .as_array()
+                    .ok_or("Invalid thread-follows event")?;
+                let ds: Vec<_> = tags.iter().filter(|tag| tag[0] == "d").collect();
+                let ts: Vec<_> = tags
+                    .iter()
+                    .filter(|tag| tag[0] == "t" && tag[1] == "thread-follows")
+                    .collect();
+                if ds.len() != 1
+                    || ts.len() != 1
+                    || !ds[0][1].as_str().is_some_and(valid_follow_coordinate)
+                {
+                    return Err("Invalid thread-follows event".into());
+                }
+                let event: Event =
+                    serde_json::from_value(raw).map_err(|_| "Invalid thread-follows event")?;
+                event.verify().map_err(|_| "Invalid thread-follows event")?;
+                if event.kind.as_u16() != 30078 || event.pubkey != public {
+                    return Err("Invalid thread-follows event".into());
+                }
+                let payload = decrypt_with_conversation(&conversation, &event.content)
+                    .ok()
+                    .filter(|plaintext| plaintext.len() <= 40 * 1024)
+                    .and_then(|plaintext| {
+                        serde_json::from_str::<serde_json::Value>(&plaintext).ok()
+                    })
+                    .filter(|payload| validate_follow_payload(payload).is_ok())
+                    .unwrap_or(serde_json::Value::Null);
+                result.push(serde_json::json!({"eventId": event.id.to_hex(), "payload": payload}));
+            }
+            Ok(serde_json::Value::Array(result))
+        })
+        .await
+    }
+
+    /// Sign only bounded thread-follows intent, never caller-supplied ciphertext.
+    pub(crate) async fn sign_thread_follows(
+        &self,
+        slot: String,
+        created_at: u64,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let system_clock: fn() -> Result<u64> = || {
+            Ok(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "System clock is unavailable")?
+                .as_secs())
+        };
+        self.sign_thread_follows_at(slot, created_at, payload, system_clock)
+            .await
+    }
+
+    /// `sign_thread_follows` against `clock`, so a test can hold the instant
+    /// the 60-second window is measured from.
+    pub(crate) async fn sign_thread_follows_at(
+        &self,
+        slot: String,
+        created_at: u64,
+        payload: serde_json::Value,
+        clock: fn() -> Result<u64>,
+    ) -> Result<serde_json::Value> {
+        with_identity(self.clone(), move |identity| {
+            identity.restore()?;
+            let State::Ready(key) = &identity.state else {
+                return Err("Set up your identity first".into());
+            };
+            let now = clock()?;
+            if !valid_follow_coordinate(&format!("thread-follows:{slot}"))
+                || created_at > u32::MAX as u64
+                || now.abs_diff(created_at) > 60
+            {
+                return Err("Invalid thread-follows signing intent".into());
+            }
+            validate_follow_payload(&payload)?;
+            let plaintext = serde_json::to_string(&payload)
+                .map_err(|_| "Invalid thread-follows signing intent")?;
+            if plaintext.len() > 40 * 1024 {
+                return Err("Thread-follows publication capacity exceeded".into());
+            }
+            let secret = NostrSecretKey::from_slice(key.0.as_ref())
+                .map_err(|_| "Invalid thread-follows signing intent")?;
+            let public = Keys::new(secret.clone()).public_key();
+            let content = nostr::nips::nip44::encrypt(
+                &secret,
+                &public,
+                plaintext,
+                nostr::nips::nip44::Version::V2,
+            )
+            .map_err(|_| "Thread-follows signing failed")?;
+            key.sign(EventTemplate {
+                created_at,
+                kind: 30078,
+                content,
+                tags: vec![
+                    vec!["d".into(), format!("thread-follows:{slot}")],
+                    vec!["t".into(), "thread-follows".into()],
                 ],
             })
         })

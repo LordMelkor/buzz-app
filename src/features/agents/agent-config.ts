@@ -334,14 +334,17 @@ export function syncedSettings(
       recommended?: true;
       pluginNotes?: PluginNotes;
     }>
-  | Readonly<{ problem: string }> {
+  | Readonly<{ problem: string; typeMismatch?: true }> {
   const body = JSON.parse(content) as {
     agentType?: unknown;
     settings?: unknown;
     preset?: unknown;
   };
   if (body.agentType !== undefined && body.agentType !== agentType)
-    return { problem: "These settings are for another agent type" };
+    return {
+      problem: "These settings are for another agent type",
+      typeMismatch: true,
+    };
   const problem = settingsProblem(schema, body.settings);
   const pluginNotes = notesOf(body);
   return problem

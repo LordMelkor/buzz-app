@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { AgentHandle } from "../features/agents/service";
 import type { AgentProtection } from "../features/agent-protection/service";
-import { appClient, readFile } from "./app-client";
+import { appClient, relayKeyOf, readFile } from "./app-client";
 import type { Host } from "../features/host/service";
 import { pngChunks } from "../features/messages/image-metadata";
 
@@ -111,6 +111,23 @@ it("withholds file bytes when the protected handle retires during a read", async
   }
 });
 
+it.each(["call", "route"])(
+  "exposes %s cancellation to added tools",
+  (scope) => {
+    const route = new AbortController();
+    const call = new AbortController();
+    const client = appClient({ pubkey: "agent" } as AgentHandle, {
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+      signal: route.signal,
+      ...(scope === "call" ? { callSignal: call.signal } : {}),
+    });
+    const reason = new Error("Tool stopped");
+    (scope === "call" ? call : route).abort(reason);
+    expect(() => client.signal?.throwIfAborted()).toThrow(reason);
+  },
+);
+
 it("binds shared-tool review to native conversation context and refuses missing context", async () => {
   const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
   const agent = {
@@ -189,6 +206,24 @@ it("does not invent authority when a host has none", () => {
   });
   expect(client.relayAuthor).toBeUndefined();
   expect(client.signingAuthority).toBeUndefined();
+});
+
+it("keeps a relay with no key apart from a key it can't tell", () => {
+  const options = {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  };
+  const agent = { pubkey: "agent" } as AgentHandle;
+  expect(
+    appClient(agent, { ...options, signingAuthority: null }),
+  ).toHaveProperty("signingAuthority", null);
+  expect(
+    "signingAuthority" in
+      appClient(agent, { ...options, signingAuthority: undefined }),
+  ).toBe(false);
+  expect(relayKeyOf(undefined)).toBeUndefined();
+  expect(relayKeyOf({ workflowAuthority: () => undefined })).toBeNull();
+  expect(relayKeyOf({ workflowAuthority: () => "relay" })).toBe("relay");
 });
 
 it("withholds a query result when the owning turn ends during the read", async () => {
@@ -539,7 +574,7 @@ it("forwards workspace discovery and one-use filing only while the app client is
   const list = vi.fn(async () => [{ id: "work", name: "Work" }]);
   const prepare = vi.fn(async () => file);
   const client = appClient(
-    { soloWorkspaces: { list, prepare } } as unknown as AgentHandle,
+    { workspaces: { list, prepare } } as unknown as AgentHandle,
     {
       read: async () => new Uint8Array(),
       memories: async () => ({ entries: [], partial: false }),
@@ -548,20 +583,21 @@ it("forwards workspace discovery and one-use filing only while the app client is
       },
     },
   );
-  expect(await client.soloWorkspaces?.list()).toEqual([
+  expect(await client.workspaces?.list()).toEqual([
     { id: "work", name: "Work" },
   ]);
-  const place = await client.soloWorkspaces?.prepare("work", ["owner"], "chat");
+  const audience = { members: ["owner"], open: false };
+  const place = await client.workspaces?.prepare("work", audience, "chat");
   expect(prepare).toHaveBeenCalledExactlyOnceWith(
     "work",
-    ["owner"],
+    audience,
     "chat",
     undefined,
   );
   live = false;
   await expect(place?.("chat")).rejects.toThrow("retired");
   expect(file).not.toHaveBeenCalled();
-  await expect(client.soloWorkspaces?.list()).rejects.toThrow("retired");
+  await expect(client.workspaces?.list()).rejects.toThrow("retired");
 });
 
 it("rejects app retirement after a completed placement without undoing it", async () => {
@@ -577,7 +613,7 @@ it("rejects app retirement after a completed placement without undoing it", asyn
   });
   const client = appClient(
     {
-      soloWorkspaces: { list: async () => [], prepare: async () => file },
+      workspaces: { list: async () => [], prepare: async () => file },
     } as unknown as AgentHandle,
     {
       read: async () => new Uint8Array(),
@@ -587,7 +623,11 @@ it("rejects app retirement after a completed placement without undoing it", asyn
       },
     },
   );
-  const place = await client.soloWorkspaces?.prepare("work", ["owner"], "chat");
+  const place = await client.workspaces?.prepare(
+    "work",
+    { members: ["owner"], open: false },
+    "chat",
+  );
   const pending = place?.("chat");
   const refused = expect(pending).rejects.toThrow("retired");
   try {
@@ -607,7 +647,7 @@ it("does not expose workspace capability on unsupported handles", () => {
     appClient({} as AgentHandle, {
       read: async () => new Uint8Array(),
       memories: async () => ({ entries: [], partial: false }),
-    }).soloWorkspaces,
+    }).workspaces,
   ).toBeUndefined();
 });
 

@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { focusWithKeyboard } from "../../shared/design-system/useKeyboardFocusVisibility";
 import { readView, subscribeView, writeView } from "../../shared/view-state";
 import { contributedSidebarSectionKey } from "./sidebar-sections";
 
@@ -58,39 +59,70 @@ export function expandSidebarSection(scope: string, key: string) {
 /**
  * Show the current destination (`aria-current="page"`) in the sidebar
  * viewport. Rows hidden by a collapsed section or session list are shown
- * through the header or parent row that represents them. Returns false while
- * no current entry is laid out yet; otherwise returns the offset that shows it.
+ * through the header or parent row that represents them. Wait for a current
+ * entry with layout before choosing the target and its scroll offset.
  */
-function revealCurrent(viewport: HTMLElement): number | false {
-  const owners = [
-    ...viewport.querySelectorAll<HTMLElement>('[aria-current="page"]'),
-  ].map((entry) => {
+function revealCurrent(viewport: HTMLElement, sectionKey?: string) {
+  const section = sectionKey
+    ? viewport.querySelector<HTMLElement>(
+        `[data-sidebar-section="${CSS.escape(sectionKey)}"]`,
+      )
+    : viewport;
+  if (!section) return;
+  const current = (root: HTMLElement, within = "") => [
+    ...root.querySelectorAll<HTMLElement>(`${within}[aria-current="page"]`),
+  ];
+  let entries = current(section);
+  // A region's channel group can show its rows with a Team row instead.
+  if (!entries.length && sectionKey)
+    entries = current(viewport, "[data-team-row-channel-group] ");
+  const owners = entries.map((entry) => {
     let owner = entry;
     for (let node: HTMLElement | null = entry; node && node !== viewport; ) {
-      if (node.hidden && node.previousElementSibling instanceof HTMLElement)
-        owner = node.previousElementSibling;
+      if (node.hidden) {
+        // A card can wrap its disclosure and panel in separate containers.
+        const heading = node.id
+          ? (
+              node.closest("[data-sidebar-section]") ?? section
+            ).querySelector<HTMLElement>(
+              `:is(summary,button)[aria-controls="${CSS.escape(node.id)}"]`,
+            )
+          : undefined;
+        const proxy = heading ?? node.previousElementSibling;
+        if (proxy instanceof HTMLElement) owner = proxy;
+      }
       node = node.parentElement;
     }
-    return owner.getBoundingClientRect();
+    return { target: owner, rect: owner.getBoundingClientRect() };
   });
-  const rects = owners.filter((rect) => rect.height);
-  const rect = rects[0];
-  if (!rect) return false;
+  const laidOut = owners.filter(({ rect }) => rect.height);
+  if (!laidOut.length && sectionKey) {
+    const target = section.querySelector<HTMLElement>("summary");
+    const rect = target?.getBoundingClientRect();
+    if (target && rect?.height) laidOut.push({ target, rect });
+  }
+  const first = laidOut[0];
+  if (!first) return;
   const top = viewport.getBoundingClientRect().top;
   const bottom = top + viewport.clientHeight;
   // A visible copy (for example, a starred channel) already shows it.
-  if (rects.some((rect) => rect.top >= top && rect.bottom <= bottom))
-    return viewport.scrollTop;
+  const visible = laidOut.find(
+    ({ rect }) => rect.top >= top && rect.bottom <= bottom,
+  );
+  if (visible) return { target: visible.target, top: viewport.scrollTop };
+  const { target, rect } = first;
   // Center an offscreen entry clear of the unread edge cues; nudge a clipped
   // one only as far as needed so the row under the pointer does not jump.
-  return (
-    viewport.scrollTop +
-    (rect.bottom <= top || rect.top >= bottom
-      ? rect.top - top - (viewport.clientHeight - rect.height) / 2
-      : rect.top < top
-        ? rect.top - top
-        : rect.bottom - bottom)
-  );
+  return {
+    target,
+    top:
+      viewport.scrollTop +
+      (rect.bottom <= top || rect.top >= bottom
+        ? rect.top - top - (viewport.clientHeight - rect.height) / 2
+        : rect.top < top
+          ? rect.top - top
+          : rect.bottom - bottom),
+  };
 }
 
 /** Scrolls to `top`; returns the new offset if the viewport moved. */
@@ -115,6 +147,7 @@ export function useSidebarView(
   const savedLocation = useRef(view.location).current;
   const intent = useRef(view);
   const list = useRef<HTMLElement>(null);
+  const captureScrollAnchor = useRef<(() => void) | undefined>(undefined);
   const pending = useRef(true);
   const latestLocation = useRef(location);
   useLayoutEffect(
@@ -134,13 +167,18 @@ export function useSidebarView(
           contributionOrder: saved.contributionOrder,
         };
         setView(intent.current);
-      }),
+      }, ["channel-sidebar", "solo:collapsed-projects"]),
     [scope],
   );
   // The destination waiting for its entry to render.
-  const reveal = useRef<{ location: string; explicit?: true } | undefined>(
-    undefined,
-  );
+  const reveal = useRef<
+    | {
+        location: string;
+        explicit?: true;
+        sectionKey?: string | undefined;
+      }
+    | undefined
+  >(undefined);
   // Until the first reveal or scroll, the saved destination keeps the
   // restored position.
   const restored = useRef(view.location);
@@ -180,6 +218,7 @@ export function useSidebarView(
     if (list.current.scrollTop === 0)
       moved.current =
         scroll(list.current, intent.current.scrollTop) ?? moved.current;
+    captureScrollAnchor.current?.();
     pending.current = false;
   }, [ready]);
   // A destination without an entry (the Messages landing page before it
@@ -195,38 +234,44 @@ export function useSidebarView(
   // The entry can render after navigation (roster startup, a new DM), so
   // retry after each commit until it exists. Runs after the restore above.
   const attempt = useRef(() => {});
-  const preparations = useRef(new Set<(location: string) => boolean>());
-  const beforeReveal = useCallback((prepare: (location: string) => boolean) => {
-    preparations.current.add(prepare);
-    return () => {
-      preparations.current.delete(prepare);
-    };
-  }, []);
   // Only an explicit reveal of the current destination may reclaim the viewport.
-  const revealAgain = useCallback(() => {
+  const revealAgain = useCallback((sectionKey?: string) => {
     if (latestLocation.current === undefined) return;
-    reveal.current = { location: latestLocation.current, explicit: true };
+    reveal.current = {
+      location: latestLocation.current,
+      explicit: true,
+      sectionKey,
+    };
     attempt.current();
   }, []);
   const retryReveal = useCallback(() => {
     // Children can retry before this hook's layout effects clear an old reveal.
-    if (
-      !preserve ||
-      (reveal.current?.explicit && reveal.current.location === location)
-    )
+    const pending = reveal.current;
+    if (pending?.explicit ? pending.location === location : !preserve)
       attempt.current();
   }, [preserve, location]);
+  const adjustScrollAnchor = useCallback((top: number) => {
+    const viewport = list.current;
+    if (!viewport || pending.current || reveal.current) return;
+    moved.current = scroll(viewport, top) ?? moved.current;
+  }, []);
   useLayoutEffect(() => {
     attempt.current = () => {
       if (!ready || !reveal.current || !list.current) return;
-      for (const prepare of preparations.current)
-        if (!prepare(reveal.current.location)) return;
-      const top = revealCurrent(list.current);
-      if (top === false) return;
+      const destination = revealCurrent(
+        list.current,
+        reveal.current.sectionKey,
+      );
+      if (!destination) return;
+      const { target, top } = destination;
+      const { explicit, location } = reveal.current;
       moved.current = scroll(list.current, top) ?? moved.current;
-      intent.current = { ...intent.current, location: reveal.current.location };
+      // An already visible destination still establishes the new viewport.
+      captureScrollAnchor.current?.();
+      intent.current = { ...intent.current, location };
       reveal.current = undefined;
       restored.current = undefined;
+      if (explicit) focusWithKeyboard(target);
     };
     attempt.current();
   });
@@ -300,7 +345,8 @@ export function useSidebarView(
       toggle,
       retryReveal,
       revealAgain,
-      beforeReveal,
+      adjustScrollAnchor,
+      captureScrollAnchor,
     }),
     [
       savedLocation,
@@ -310,7 +356,7 @@ export function useSidebarView(
       toggle,
       retryReveal,
       revealAgain,
-      beforeReveal,
+      adjustScrollAnchor,
     ],
   );
 }

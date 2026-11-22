@@ -617,7 +617,7 @@ test("Share opens View only and posts a link without promoting or moving the Sol
   expect(links).toHaveLength(1);
   expect(links[0].event.tags).toContainEqual(["h", destination]);
   expect(links[0].event.tags.filter(([key]) => key === "p")).toHaveLength(0);
-  expect(links[0].event.content).toBe(`[Chat: Alpha](buzz://channel/${id})`);
+  expect(links[0].event.content).toBe(`[Alpha](buzz://channel/${id})`);
   // Reopen the same app surface immediately after sharing, without reloading
   // the page. The new access edit must use the confirmed View only snapshot.
   await row.click({ button: "right" });

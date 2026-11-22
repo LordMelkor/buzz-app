@@ -29,6 +29,7 @@ import {
 } from "./channel-labels";
 import { foldMessages } from "./fold";
 import { eventDto, hasTag, newer, tag, type RelayEvent } from "./events";
+import { USER_STATUS_KIND } from "./user-status-policy";
 import {
   LARGE_READ_DEADLINE_MS,
   type RelayReader,
@@ -47,7 +48,11 @@ import {
   type WindowCursor,
 } from "./window";
 import { ByteLru, byteSize, listByteSize, PROFILE_CACHE_BASE } from "./budget";
-import type { HeadPersistence, SavedHead } from "./persistence";
+import {
+  MAX_BYTES as MIRROR_BYTES,
+  type HeadPersistence,
+  type SavedHead,
+} from "./persistence";
 import { createMediaPreparation, saveData } from "./media";
 import { relayDebug } from "./debug";
 import { clientMetrics } from "../developer/client-metrics";
@@ -124,11 +129,18 @@ type Head = {
   events: readonly RelayEvent[];
   /** The newest membership notices among its rows, shown with them. */
   notices?: readonly RelayEvent[];
+  /** Its own read also read the newest notices, so `notices` are current.
+   * Never saved. */
+  noticesRead?: true;
   savedAt: number;
   /** When the relay read that produced it started; none for a saved head. */
   readAt?: number;
   cached: boolean;
   restored?: true;
+};
+export type ChannelMedia = {
+  forget(channelIds: readonly string[]): Promise<void>;
+  retain(channelIds: readonly string[]): Promise<void>;
 };
 export type ChannelStoreOptions = {
   profiling?: RelayProfiler;
@@ -141,7 +153,12 @@ export type ChannelStoreOptions = {
   initialChannelId?: string | undefined;
   /** Warm every roster channel's head in the background before it is opened. */
   warm?: boolean;
+  /** A reload: skips the saved startup roster, so nothing saved authorizes
+   * a channel before the relay does. */
+  revalidate?: boolean;
   persistence?: HeadPersistence;
+  /** Images saved from channels, forgotten with the channels' saved heads. */
+  channelMedia?: ChannelMedia | undefined;
   maxDiscoveryBytes?: number;
   maxHeadBytes?: number;
   maxHeads?: number;
@@ -228,13 +245,27 @@ const MAX_NOTICES = 2000;
 /** Relay query order: time descending, then ID ascending at ties. */
 const newestFirst = (a: RelayEvent, b: RelayEvent) =>
   b.created_at - a.created_at || a.id.localeCompare(b.id);
-/** Rows a page read can reach again, which notices are not. */
-const rowIds = (state: WindowState) =>
-  new Set(
+/** Where the read after a page of notices starts: null when it was the last. */
+const noticeCursor = (events: readonly RelayEvent[]): WindowCursor | null => {
+  const last = [...events].sort(newestFirst).at(-1);
+  return last && events.length >= NOTICE_PAGE_SIZE
+    ? { createdAt: last.created_at, eventId: last.id }
+    : null;
+};
+/** Rows a page read can reach again, which notices are not. Rows the window
+ * holds back (read before its first page, or below its floor) were never
+ * shown, so a catch-up has no need to reach them. */
+const rowIds = (state: WindowState) => {
+  const floor = state.floor ?? (state.snapshot.hasMore ? Infinity : -Infinity);
+  return new Set(
     state.events
-      .filter((event) => WINDOW_KINDS.includes(event.kind))
+      .filter(
+        (event) =>
+          WINDOW_KINDS.includes(event.kind) && event.created_at >= floor,
+      )
       .map((event) => event.id),
   );
+};
 
 /** Session-owned read model. Broad byte-bounded heads are separate from the small history LRU.
  * Preparing a head never mounts a timeline or evicts a subscribed history window. */
@@ -246,8 +277,18 @@ export function createChannelStore(
         /** Explicit NIP-11 self; only it may attribute messages to others. */
         archiveAuthority?: string | undefined;
         media(url: string, size?: "small"): string | undefined;
+        /** Statuses kept with the profiles: shown beside the same bylines and
+         * saved with the profile copy. */
+        statuses?: {
+          /** The display URL of an author's status image, if it has one. */
+          image(author: string): string | undefined;
+          saved(): readonly RelayEvent[];
+          restore(events: readonly RelayEvent[]): void;
+          subscribe(listener: () => void): () => void;
+        };
         /** `ids` names the channels that lost access when known; omitted means any. */
         revokeAccess(commit: () => void, ids?: readonly string[]): void;
+        previewAccessRestored?(): void;
         /** A complete roster read applied. A replica can lag, so a channel it
          * left out may still list the viewer; `unlisted` asks the writer. */
         rosterComplete?(): void;
@@ -539,18 +580,21 @@ export function createChannelStore(
       // viewer's own confirmed sends can carry rows from before the loaded
       // history. Showing one leaves a gap that a later page fills mid-list,
       // where the timeline can neither anchor the reader nor tell it from new
-      // arrivals. That page shows them instead.
+      // arrivals. That page shows them instead. Until a page sets the floor,
+      // history's extent is unknown, not unbounded: every row, read (a Huddle
+      // card, say), live or replayed, waits for the first page, so the view
+      // loads in one piece.
       const more = patch.hasMore ?? state.snapshot.hasMore;
-      const shown =
-        (floor: number | undefined) => (event: import("./events").EventData) =>
-          !channelRowKind(event.kind) ||
-          ((floor === undefined || event.created_at >= floor) &&
-            (state.ceiling === undefined || event.created_at < state.ceiling));
+      const floor = more ? (state.floor ?? Infinity) : undefined;
+      const shown = (event: import("./events").EventData) =>
+        !channelRowKind(event.kind) ||
+        ((floor === undefined || event.created_at >= floor) &&
+          (state.ceiling === undefined || event.created_at < state.ceiling));
       // Notices read beside a head wait for a page to land (see `adoptHead`).
       const notices = state.floor === undefined ? [] : state.notices.values();
       const combined = new Map(
         [...state.events, ...notices, ...state.traffic.values()]
-          .filter(shown(more ? state.floor : undefined))
+          .filter(shown)
           .map((event) => [event.id, event as import("./events").EventData]),
       );
       const ids = new Set(combined.keys());
@@ -566,12 +610,9 @@ export function createChannelStore(
           )
           .map(({ event }) => event.id),
       );
-      // Until a page sets the floor, history's extent is unknown, not
-      // unbounded: a confirmed send waits for the page that holds it.
+      // Likewise a confirmed send waits for the page that holds it.
       const own = outbox.filter(
-        ({ event }) =>
-          state.sent.has(event.id) ||
-          shown(more ? (state.floor ?? Infinity) : undefined)(event),
+        ({ event }) => state.sent.has(event.id) || shown(event),
       );
       for (const item of own)
         if (
@@ -718,23 +759,28 @@ export function createChannelStore(
     if (previous >= 0) mediaIntents.splice(previous, 1);
     mediaIntents.unshift(channelId);
     mediaIntents.length = Math.min(3, mediaIntents.length);
-    const urls = mediaIntents.flatMap(avatarUrlsFor);
+    const urls = mediaIntents.flatMap(mediaUrlsFor);
     relayDebug("media prepare", channelId.slice(0, 8), `${urls.length} urls`);
     media.prepare(urls);
   }
   /** Background head reads warm request-level avatars without displacing the
    * focused channel's intent window. */
   function prepareWarmMedia(channelId: string) {
-    media.warm(avatarUrlsFor(channelId));
+    media.warm(mediaUrlsFor(channelId));
   }
-  function avatarUrlsFor(id: string): string[] {
+  function mediaUrlsFor(id: string): string[] {
     const rows = heads.peek(id)?.rows ?? windows.get(id)?.snapshot.rows ?? [];
     const authors = rows.slice(-12).reverse().flatMap(rowProfileIds);
-    return authors.flatMap((author) => {
+    const avatars = authors.flatMap((author) => {
       const picture = directory.queries.snapshot().get(author)?.picture;
       const url = picture && transport?.media(picture, "small");
       return url ? [url] : [];
     });
+    const statuses = authors.flatMap((author) => {
+      const url = transport?.statuses?.image(author);
+      return url ? [url] : [];
+    });
+    return [...avatars, ...statuses];
   }
   async function fetchProfiles(
     rows: readonly ChannelMessage[],
@@ -743,7 +789,7 @@ export function createChannelStore(
     try {
       const ids = rows.flatMap(rowProfileIds);
       relayDebug("profiles warm", ids.length, "ids");
-      await directory.ensure(ids, "background");
+      await directory.queries.ensure(ids, "background", { withStatuses: true });
       if (!disposed && intent) prepareMedia(intent);
       // Profiles are the prerequisite for resolving a channel's avatar URLs.
       if (!disposed && warmChannelId) prepareWarmMedia(warmChannelId);
@@ -767,6 +813,12 @@ export function createChannelStore(
    * `noticeHead` is false when its newest notices are already being read. */
   function adoptHead(state: WindowState, head: Head, noticeHead = true) {
     state.events = head.events;
+    // A head read with its newest notices needs no second read of them.
+    if (head.noticesRead && state.ceiling === undefined) {
+      takeNotices(state, head.notices ?? [], null);
+      state.noticeHead = false;
+      noticeHead = false;
+    }
     for (const event of head.notices ?? []) state.notices.set(event.id, event);
     attached(state);
     moveCursor(state, head.cursor);
@@ -826,6 +878,44 @@ export function createChannelStore(
    * notices again; when those do not meet the notices held, the descent starts
    * over from them. A failed read only leaves notices out until the next page
    * or head read. */
+  /** Hold one page of a window's notices read from `cursor` (null: the
+   * newest), and move `noticeCursor` to where the next older read starts. */
+  function takeNotices(
+    state: WindowState,
+    events: readonly RelayEvent[],
+    cursor: WindowCursor | null,
+  ) {
+    if (
+      events.some(
+        (event) =>
+          event.kind !== 40099 ||
+          event.pubkey !== transport?.relayAuthor ||
+          !hasTag(event, "h", state.channelId),
+      )
+    )
+      throw new Error("Membership notices are outside their channel");
+    let known: RelayEvent | undefined;
+    for (const event of state.notices.values())
+      if (!known || newestFirst(event, known) < 0) known = event;
+    for (const event of events) state.notices.set(event.id, event);
+    const last = [...events].sort(newestFirst).at(-1);
+    const next = noticeCursor(events);
+    if (
+      cursor &&
+      next &&
+      (next.createdAt > cursor.createdAt ||
+        (next.createdAt === cursor.createdAt && next.eventId <= cursor.eventId))
+    )
+      throw new Error("Membership notices did not advance");
+    // A head read that reaches the notices held continues their descent.
+    const met =
+      known !== undefined &&
+      last !== undefined &&
+      (last.created_at < known.created_at ||
+        events.some((event) => event.id === known?.id));
+    if (cursor || !next || !met || state.noticeCursor === undefined)
+      state.noticeCursor = next;
+  }
   async function fillNotices(state: WindowState, head: boolean) {
     // Notices are read down from the head; a detached segment shows none.
     if (state.ceiling !== undefined) return;
@@ -868,40 +958,7 @@ export function createChannelStore(
           controller.signal,
         );
         if (!live(state, generation) || controller.signal.aborted) return;
-        if (
-          events.some(
-            (event) =>
-              event.kind !== 40099 ||
-              event.pubkey !== source.relayAuthor ||
-              !hasTag(event, "h", channelId),
-          )
-        )
-          throw new Error("Membership notices are outside their channel");
-        let known: RelayEvent | undefined;
-        for (const event of state.notices.values())
-          if (!known || newestFirst(event, known) < 0) known = event;
-        for (const event of events) state.notices.set(event.id, event);
-        const last = [...events].sort(newestFirst).at(-1);
-        const next =
-          last && events.length >= NOTICE_PAGE_SIZE
-            ? { createdAt: last.created_at, eventId: last.id }
-            : null;
-        if (
-          cursor &&
-          next &&
-          (next.createdAt > cursor.createdAt ||
-            (next.createdAt === cursor.createdAt &&
-              next.eventId <= cursor.eventId))
-        )
-          throw new Error("Membership notices did not advance");
-        // A head read that reaches the notices held continues their descent.
-        const met =
-          known !== undefined &&
-          last !== undefined &&
-          (last.created_at < known.created_at ||
-            events.some((event) => event.id === known?.id));
-        if (!top || !next || !met || state.noticeCursor === undefined)
-          state.noticeCursor = next;
+        takeNotices(state, events, cursor);
         if (top) keepNotices(state);
         // Read beside the head, notices wait for its rows (see `adoptHead`).
         if (state.floor === undefined) continue;
@@ -1053,28 +1110,44 @@ export function createChannelStore(
         true,
       );
       void persistence?.remove(channelId).catch(() => {});
+      void options.channelMedia?.forget([channelId]).catch(() => {});
       saveDiscovery();
     }, [channelId]);
   }
+  /** A window page. A head read also asks, in the same request, for the
+   * channel's newest membership notices, so that the head shows with them. */
   async function readPage(
     channelId: string,
     cursor: WindowCursor | null,
     settings: ReadOptions,
+    withNotices = false,
   ) {
     if (!transport) throw new Error("Relay is unavailable");
     const source = transport;
+    const filters = [windowFilter(channelId, cursor)];
+    if (withNotices && !cursor)
+      filters.push(noticeFilter(channelId, source.relayAuthor, null));
     const read = (signal?: AbortSignal) =>
-      source.read([windowFilter(channelId, cursor)], {
+      source.read(filters, {
         ...settings,
         ...(signal ? { signal } : {}),
       });
     // Head reads belong to session recovery; only manual pagination needs a
     // finite retry owner here.
-    const events = cursor
+    const received = cursor
       ? await retryRead(read, settings.signal ?? new AbortController().signal)
       : await read();
+    // Pages never hold notices (see `WINDOW_KINDS`): any are the second filter's.
+    const notices =
+      filters.length > 1
+        ? received.filter((event) => event.kind === 40099)
+        : undefined;
+    const events = notices
+      ? received.filter((event) => event.kind !== 40099)
+      : received;
     return {
       events,
+      notices,
       page: parseWindow(channelId, cursor, transport.relayAuthor, events),
     };
   }
@@ -1091,10 +1164,13 @@ export function createChannelStore(
     try {
       if (disposed || !transport || !canReadRemote(channelId))
         throw new DOMException("Stale request", "AbortError");
-      const { events, page } = await readPage(channelId, null, {
-        signal: controller.signal,
-        priority,
-      });
+      const source = transport;
+      const { events, notices, page } = await readPage(
+        channelId,
+        null,
+        { signal: controller.signal, priority },
+        true,
+      );
       if (
         disposed ||
         generation !== epoch ||
@@ -1111,8 +1187,22 @@ export function createChannelStore(
         cursor: page.cursor,
         hasMore: page.hasMore,
         events,
-        // Until a notice read replaces them, the last head's notices stand.
-        ...(retained?.notices ? { notices: retained.notices } : {}),
+        // Notices outside the channel are left to the window's own read,
+        // which rejects them (see `fillNotices`).
+        ...(notices?.every(
+          (event) =>
+            event.pubkey === source.relayAuthor &&
+            hasTag(event, "h", channelId),
+        )
+          ? // Those below its rows wait for the page that reaches them.
+            {
+              notices: notices.sort(newestFirst),
+              noticesRead: true as const,
+            }
+          : // Until a notice read replaces them, the last head's notices stand.
+            retained?.notices
+            ? { notices: retained.notices }
+            : {}),
         savedAt: now(),
         readAt: startedAt,
         cached: false,
@@ -1168,11 +1258,9 @@ export function createChannelStore(
     const besideHead = !cursor && state.ceiling === undefined;
     try {
       if (prepared && !cursor) {
-        const reading = requestHead(state.channelId, "foreground");
-        if (besideHead) void fillNotices(state, true);
-        const head = await reading;
+        const head = await requestHead(state.channelId, "foreground");
         if (!live(state, generation)) return;
-        adoptHead(state, head, !besideHead);
+        adoptHead(state, head);
         return;
       }
       const reading = readPage(state.channelId, cursor, {
@@ -1360,10 +1448,13 @@ export function createChannelStore(
       !records.some((record) => record.channelId === options.initialChannelId)
     )
       reveal?.();
+    let full = false;
     while (records.length) {
       const priorityIndex = records.findIndex(
         (record) => record.channelId === intent,
       );
+      // Once the cache is full, only a channel opened meanwhile still restores.
+      if (full && priorityIndex < 0) break;
       const [record] = records.splice(
         priorityIndex >= 0 ? priorityIndex : 0,
         1,
@@ -1503,7 +1594,14 @@ export function createChannelStore(
         // Evidence subscribers can synchronously revoke access or clear caches too.
         if (disposed || generation !== epoch || !authorized(record.channelId))
           return;
-        heads.set(record.channelId, head);
+        // Records arrive newest first, so each is less recent than every head
+        // already held. Stopping at the first that does not fit keeps the
+        // newest, and skips verifying records that would be evicted.
+        if (record.channelId === intent) heads.set(record.channelId, head);
+        else if (!heads.setOldest(record.channelId, head)) {
+          full = true;
+          continue;
+        }
         const state = windows.get(record.channelId);
         if (
           state &&
@@ -1574,6 +1672,18 @@ export function createChannelStore(
       ].slice(-PROFILE_CACHE_BASE);
     }
     const events = [...directory.recent(PROFILE_CACHE_BASE), ...savedVerified];
+    // Statuses take only the room names leave, newest first and never cut,
+    // so large tags cannot push the mirror past what the host writes.
+    let room = MIRROR_BYTES - listByteSize(events);
+    const statuses = [...(transport?.statuses?.saved() ?? [])].reverse();
+    const kept = statuses.filter((event) => {
+      // Its bytes plus the comma before it.
+      const size = listByteSize([event]) - 1;
+      if (size > room) return false;
+      room -= size;
+      return true;
+    });
+    events.push(...kept.reverse());
     // Sorted, so reads that only reorder the LRU never rewrite the mirror.
     const signature = events
       .map((event) => event.id)
@@ -1597,7 +1707,8 @@ export function createChannelStore(
       return;
     }
     try {
-      if (!Array.isArray(saved) || saved.length > 2 * PROFILE_CACHE_BASE)
+      // Names, verified names and statuses each hold up to the base count.
+      if (!Array.isArray(saved) || saved.length > 3 * PROFILE_CACHE_BASE)
         return;
       const profiles: RelayEvent[] = [];
       // Any host failure or bad record falls back to checking one by one.
@@ -1623,6 +1734,9 @@ export function createChannelStore(
       directory.restoreVerified(savedVerified);
       const names = profiles.filter((event) => event.kind === 0);
       directory.accept(names);
+      transport?.statuses?.restore(
+        profiles.filter((event) => event.kind === USER_STATUS_KIND),
+      );
       if (!options.cachedOnly && names.length)
         void directory
           .ensure(
@@ -1830,8 +1944,24 @@ export function createChannelStore(
     started?: ReadonlyMap<string, RelayEvent>,
     cached = false,
     readProof = true,
+    deferPreviewAccessRestored = false,
   ) {
     if (disposed || !transport || !discovery) return;
+    const unreadable = new Set<string>();
+    if (
+      !cached &&
+      !deferPreviewAccessRestored &&
+      transport.previewAccessRestored
+    )
+      for (const event of events) {
+        if (
+          event.pubkey !== transport.relayAuthor ||
+          (event.kind !== 39000 && event.kind !== 39002)
+        )
+          continue;
+        const id = tag(event, "d");
+        if (id && !authorized(id)) unreadable.add(id);
+      }
     if (!cached) discoveryObserved = true;
     started ??= discovery.rosterVersions();
     const accessRevision = discovery.accessRevision;
@@ -1877,13 +2007,13 @@ export function createChannelStore(
       ...heads.keys(),
       ...tails.keys(),
     ]);
-    let revoked = false;
-    for (const id of known)
-      if (!authorized(id)) {
-        revoked = true;
-        accessVersions.set(id, (accessVersions.get(id) ?? 0) + 1);
-        void persistence?.remove(id).catch(() => {});
-      }
+    const lost = [...known].filter((id) => !authorized(id));
+    const revoked = lost.length > 0;
+    for (const id of lost) {
+      accessVersions.set(id, (accessVersions.get(id) ?? 0) + 1);
+      void persistence?.remove(id).catch(() => {});
+    }
+    if (revoked) void options.channelMedia?.forget(lost).catch(() => {});
     allowed = nextAllowed;
     let appliedEpoch = epoch;
     const commit = () => {
@@ -1891,7 +2021,10 @@ export function createChannelStore(
         if (!authorized(state.channelId)) evict(state);
       for (const id of heads.keys()) if (!authorized(id)) heads.delete(id);
       for (const id of tails.keys()) if (!authorized(id)) tails.delete(id);
-      if (complete) void persistence?.retain([...nextAllowed]).catch(() => {});
+      if (complete) {
+        void persistence?.retain([...nextAllowed]).catch(() => {});
+        void options.channelMedia?.retain([...nextAllowed]).catch(() => {});
+      }
       appliedEpoch = epoch;
       const asOf = now();
       const rosterAsOf = complete ? asOf : list.rosterAsOf;
@@ -1916,7 +2049,10 @@ export function createChannelStore(
     else commit();
     // Discovery authorizes disk reuse, not speculative reads of the roster.
     // Network heads belong to explicit demand/intent and retained live catch-up.
-    if (prepared && !hydration) {
+    // Only a whole roster, saved or complete, can authorize the saved heads: a
+    // lookup for one channel would skip the rest, and the roster completing
+    // after the restore began would then discard every saved head.
+    if (prepared && !hydration && (cached || complete)) {
       const reveal = revealHydration;
       hydration = hydrate().finally(() => reveal?.());
     }
@@ -1942,6 +2078,13 @@ export function createChannelStore(
     }
     if (!cached && !disposed && readProof)
       void readCreations(events).catch(() => {});
+    if (!disposed && appliedEpoch === epoch) {
+      for (const id of unreadable) {
+        if (!authorized(id)) continue;
+        transport.previewAccessRestored?.();
+        break;
+      }
+    }
     return !disposed && appliedEpoch === epoch;
   }
   /** The viewer's signed rosters among `batch`, at most DISCOVERY_CONFIRM_LIMIT
@@ -2330,6 +2473,7 @@ export function createChannelStore(
           savedDiscovery = undefined;
           profileSave ??= setTimeout(saveProfiles, 1000);
           void persistence?.clear().catch(() => {});
+          void options.channelMedia?.retain([]).catch(() => {});
           setList({
             status: "error",
             channels: Object.freeze([]),
@@ -2473,9 +2617,12 @@ export function createChannelStore(
       )
     )
       throw new Error("Channel discovery exceeded its read budget");
+    // Capture access immediately before applying the response. A preview can
+    // become readable again through new metadata as well as a CLOSED recovery.
+    const unreadable = ids.filter((id) => !authorized(id));
     // Successful verified lookup may restore the same public version after CLOSED.
     // Missing/failed evidence leaves a suspension recoverable rather than granting access.
-    let resumed = false;
+    const resumed: string[] = [];
     for (const id of ids) {
       if (
         events.some(
@@ -2485,8 +2632,8 @@ export function createChannelStore(
             (event.kind === 39000 ||
               (event.kind === 39002 && hasTag(event, "p", transport.viewer))),
         )
-      )
-        resumed =
+      ) {
+        if (
           discovery.resume(
             id,
             events.find(
@@ -2495,7 +2642,10 @@ export function createChannelStore(
                 event.pubkey === transport.relayAuthor &&
                 tag(event, "d") === id,
             ),
-          ) || resumed;
+          )
+        )
+          resumed.push(id);
+      }
     }
     for (const id of ids) checkedMetadata.add(id);
     // A bounded exact roster fills omissions from capped discovery. Apply grants
@@ -2509,8 +2659,10 @@ export function createChannelStore(
       undefined,
       false,
       settings?.consistency !== "strong",
+      // Exact-read omissions can deny access below.
+      true,
     );
-    if (resumed) setList(list, true);
+    if (resumed.length) setList(list, true);
     // Exact viewer-scoped omission is complete for this ID, unlike a capped
     // global roster. Cached membership cannot fall back to public metadata.
     for (const id of ids) {
@@ -2539,6 +2691,7 @@ export function createChannelStore(
       } else if (!discovery.named(id))
         throw new Error("Channel metadata capacity unavailable");
     }
+    if (unreadable.some(authorized)) transport.previewAccessRestored?.();
     if (settings?.viewerLookup) transport.resolved?.(ids);
     if (settings?.consistency === "strong")
       await readCreations(
@@ -3421,7 +3574,7 @@ export function createChannelStore(
     savedVerified = [];
     savedAuthority = undefined;
     savedDiscovery = undefined;
-    await persistence?.clear().catch(() => {});
+    await persistence?.clear();
   }
   /** One background head read at a time; warm never competes with demand reads
    * for foreground slots and is dropped wholesale when the session resets. */
@@ -3666,7 +3819,9 @@ export function createChannelStore(
   }
   function restore() {
     if (!prepared || !persistence?.readStartup) return Promise.resolve();
-    startup ??= restoreStartup();
+    // A reload skips the saved roster but keeps the profile mirror, which
+    // only a restore lets it write.
+    startup ??= options.revalidate ? restoreProfiles() : restoreStartup();
     return startup;
   }
   const queries: ChannelQueries = Object.freeze({
@@ -4037,6 +4192,9 @@ export function createChannelStore(
     headMarks.set(events, mark);
     return mark;
   };
+  const unsubscribeStatuses = transport?.statuses?.subscribe(() => {
+    profileSave ??= setTimeout(saveProfiles, 1000);
+  });
   const unsubscribeProfiles = directory.queries.subscribe(() => {
     if (disposed || !transport) return;
     for (const [id, head] of heads.entries())
@@ -4339,9 +4497,13 @@ export function createChannelStore(
         visible([...state.notices.values()]).map((event) => [event.id, event]),
       );
       state.traffic.clear();
+      // Before its first page a window shows none of its rows (see
+      // `setWindow`): ready would leave it blank with no read owed. It goes
+      // idle so its next ensure() reads the page, and an open one reads it now.
+      const paged = state.floor !== undefined || !state.snapshot.hasMore;
       setWindow(state, {
         loadingOlder: false,
-        status: state.events.length ? "ready" : "idle",
+        status: paged && state.events.length ? "ready" : "idle",
       });
     }
     // Disk heads also carry profile and cross-channel auxiliary evidence. Drop
@@ -4349,6 +4511,9 @@ export function createChannelStore(
     if (hadHydration) void persistence?.retain([]).catch(() => {});
     setList(list);
     resetReferences();
+    const open = current ? windows.get(current) : undefined;
+    if (open?.snapshot.status === "idle" && authorized(open.channelId))
+      queries.ensure(open.channelId);
   }
   function dispose() {
     disposed = true;
@@ -4358,6 +4523,7 @@ export function createChannelStore(
     referenceWake = undefined;
     unsubscribeLocal?.();
     unsubscribeProfiles();
+    unsubscribeStatuses?.();
     epoch++;
     creationReads.clear();
     media.dispose();
@@ -4592,13 +4758,15 @@ export function createChannelStore(
       controllers.add(controller);
       try {
         const priority = current === channelId ? "foreground" : "background";
-        const reading = requestHead(channelId, priority);
-        // Live replay covers minutes; notices from a longer drop come by read,
-        // beside the head rather than after it.
-        void fillNotices(retained, true);
-        const head = await reading;
+        const head = await requestHead(channelId, priority);
         if (!valid())
           throw new DOMException("Stale live catch-up", "AbortError");
+        // Live replay covers minutes; notices from a longer drop come with the
+        // head, or by their own read when it had none.
+        if (head.noticesRead) {
+          takeNotices(retained, head.notices ?? [], null);
+          retained.noticeHead = false;
+        } else void fillNotices(retained, true);
         retained.restored = false;
         retained.readAt = head.readAt;
         accept(head.events);

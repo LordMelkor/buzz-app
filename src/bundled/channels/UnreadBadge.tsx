@@ -218,7 +218,7 @@ export function UnreadOptions({
             run(session.unread.markUnreadLocal({ kind: "channel", channelId }))
           }
         >
-          Mark as unread on this device
+          Mark as unread
         </Button>
       )}
       {channelId && sync.capability === "frontier-sync" && (
@@ -246,9 +246,10 @@ export function UnreadOptions({
       <details>
         <summary>Unread status</summary>
         <p>
-          Observed messages only—not exact totals. Manual unread is local to
-          this device. Older read hints can expire; this is not an everlasting
-          read receipt log.
+          Observed messages only—not exact totals. Marking a whole channel
+          unread syncs to your other devices when this relay supports it;
+          otherwise it stays on this device. Older read hints can expire; this
+          is not an everlasting read receipt log.
         </p>
         <p>
           Read sync: {sync.capability} · {sync.status}

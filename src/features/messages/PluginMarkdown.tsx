@@ -1,9 +1,8 @@
 import { useMemo } from "react";
 import {
   DOCUMENT_PROFILE,
-  DOCUMENT_RENDER_CELLS,
+  fitsDocumentRenderBudget,
 } from "../markdown/document-profile";
-import { guardDocument } from "../markdown/guard";
 import {
   MarkdownDocument,
   MarkdownSource,
@@ -13,7 +12,6 @@ import { buzzLinkTarget } from "../navigation/buzz-links";
 import type { Navigation } from "../navigation/controller";
 import type { RelaySession } from "../relay/session";
 import { splitPartition } from "../relay/partition";
-import { MAX_MARKDOWN_LENGTH } from "../relay/message-content";
 
 /** Host document rendering with optional local link handling before host navigation. */
 export type MarkdownProps = {
@@ -33,14 +31,7 @@ export function PluginMarkdown({
   openLink,
   navigation,
 }: MarkdownProps & { navigation?: Navigation | undefined }) {
-  const plain = useMemo(
-    () =>
-      !guardDocument(content, DOCUMENT_PROFILE, {
-        chars: MAX_MARKDOWN_LENGTH,
-        cells: DOCUMENT_RENDER_CELLS,
-      }),
-    [content],
-  );
+  const plain = useMemo(() => !fitsDocumentRenderBudget(content), [content]);
   return plain ? (
     <MarkdownSource content={content} />
   ) : (

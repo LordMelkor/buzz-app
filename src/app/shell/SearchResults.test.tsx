@@ -31,6 +31,7 @@ import {
   keypair,
   message,
   metadata,
+  ownedProfile,
   profile,
   roster,
   scriptedTransport,
@@ -48,8 +49,13 @@ import {
   type ReadJournal,
 } from "../../features/relay/read-state-storage";
 import type { AppServices } from "../services";
+import type {
+  DecisionRequest,
+  Decisions,
+} from "../../features/decisions/service";
 import type { SearchGroup } from "./SearchChoices";
 import { setUnreadFirstPreference } from "../../features/search/unread-first-preference";
+import { messageSortPreference } from "../../features/search/message-sort-preference";
 import { SearchResults } from "./SearchResults";
 import { useSearchMessages } from "./useSearchMessages";
 import { useSearchSettings } from "./SearchSettings";
@@ -881,14 +887,11 @@ it("counts a reply that mentions you, even muted, tiers Thread only for threads 
       mentionRoot.id,
       mentionRoot.id,
     );
-    // With no mention, it shows and opens your thread, not a newer
-    // broadcast in one you're not in.
+    // With no mention, it previews your thread, but a broadcast in a thread
+    // you're not in is ordinary channel unread, like a top-level post, so the
+    // row opens its conversation.
     fireEvent.click(row("picked") as HTMLElement);
-    expect(open).toHaveBeenLastCalledWith(
-      "picked",
-      pickedRoot.id,
-      pickedRoot.id,
-    );
+    expect(open).toHaveBeenLastCalledWith("picked");
     // A mixed row still opens its conversation.
     fireEvent.click(row("mixed") as HTMLElement);
     expect(open).toHaveBeenLastCalledWith("mixed");
@@ -1214,6 +1217,8 @@ it("shows the real read failure, retains conversation choices, and retries to an
 
 it("scopes conversation search at the relay and discards out-of-scope hits", async () => {
   vi.useFakeTimers();
+  // A saved Most recent cannot apply on a relay that does not sort.
+  localStorage.setItem("buzz-search-message-sort.v1", "newest");
   const relay = keypair();
   const viewer = keypair();
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
@@ -1278,6 +1283,7 @@ it("scopes conversation search at the relay and discards out-of-scope hits", asy
     );
     expect(changeScope).toHaveBeenCalledExactlyOnceWith();
   } finally {
+    localStorage.removeItem("buzz-search-message-sort.v1");
     cleanup();
     owner.dispose();
   }
@@ -1347,6 +1353,403 @@ it("offers more messages in overall search when the first page shows none", asyn
     expect(
       screen.queryByRole("option", { name: "Show more messages" }),
     ).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reranks message hits once the decision provider can answer, holding them once the person moves for that text", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey]),
+  ];
+  const limits: (number | undefined)[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      const read = filters.find(
+        (filter) => filter.search !== undefined && filter.kinds?.includes(9),
+      );
+      if (read) {
+        limits.push(read.limit);
+        return Promise.resolve(
+          ["one", "two", "runbook"].map((word, index) =>
+            message(
+              viewer,
+              "crew",
+              `${read.search} ${word}`,
+              1700000500 - index,
+            ),
+          ),
+        );
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  // Each call waits until the test answers it, favouring the runbook.
+  const pending: (() => void)[] = [];
+  let status = "needs-setup";
+  const listeners = new Set<() => void>();
+  const decisions = {
+    status: () => status,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    decide: (request: DecisionRequest) =>
+      new Promise((resolve) => {
+        const { candidates } = JSON.parse(request.state) as {
+          candidates: { n: number; text: string }[];
+        };
+        pending.push(() =>
+          resolve({
+            outcome: "answered",
+            backend: "test",
+            model: "test",
+            answers: Object.fromEntries(
+              candidates.map(({ n, text }) => [
+                `m${n}`,
+                {
+                  type: "yes_no",
+                  probability: text.endsWith("runbook") ? 0.9 : 0.1,
+                },
+              ]),
+            ),
+          }),
+        );
+      }),
+  } as unknown as Decisions;
+  const props = {
+    session: owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+    openNewMessage: () => {},
+    decisions,
+  };
+  // Results land, then settle long enough for the provider to be asked.
+  const search = async (query: string) => {
+    view.rerender(<SearchResults {...props} query={query} />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(pending).toHaveLength(1);
+  };
+  const answer = () => act(async () => pending.shift()?.());
+  const order = () =>
+    within(screen.getByRole("group", { name: "Messages" }))
+      .getAllByRole("option")
+      .map((row) => /(one|two|runbook)/.exec(row.textContent ?? "")?.[1]);
+  const view = render(<SearchResults {...props} query="deploy" />);
+  try {
+    // Until the provider is set up, one page reads and nothing is asked.
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(limits).toEqual([20]);
+    expect(pending).toHaveLength(0);
+
+    // Once it can answer, the same text reads more and asks once. Moving
+    // before the answer lands keeps the keyword order.
+    act(() => {
+      status = "ready";
+      for (const listener of listeners) listener();
+    });
+    await search("deploy");
+    expect(limits).toEqual([20, 60]);
+    expect(order()).toEqual(["one", "two", "runbook"]);
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
+      key: "ArrowDown",
+    });
+    await answer();
+    expect(order()).toEqual(["one", "two", "runbook"]);
+    expect(screen.queryByTitle("Reranked")).toBeNull();
+    expect(
+      screen.getByRole("group", { name: "Messages" }),
+    ).not.toHaveAccessibleDescription(/Reranked/);
+
+    // New text isn't held.
+    await search("deploys");
+    await answer();
+    expect(order()).toEqual(["runbook", "one", "two"]);
+    expect(screen.getByTitle("Reranked")).toBeInTheDocument();
+    // The mark is hidden from assistive technology; the group says it.
+    expect(
+      screen.getByRole("group", { name: "Messages" }),
+    ).toHaveAccessibleDescription(/Reranked/);
+
+    // Nor is the earlier text, once the person has typed past it.
+    await search("deploy");
+    await answer();
+    expect(order()).toEqual(["runbook", "one", "two"]);
+
+    // A provider that stops being able to answer leaves this text's hits
+    // and order; new text then reads one page.
+    const reads = limits.length;
+    act(() => {
+      status = "needs-setup";
+      for (const listener of listeners) listener();
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(limits).toHaveLength(reads);
+    expect(order()).toEqual(["runbook", "one", "two"]);
+    expect(screen.getByTitle("Reranked")).toBeInTheDocument();
+    view.rerender(<SearchResults {...props} query="deployed" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(limits.slice(reads)).toEqual([20]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each([
+  { from: "crew", to: undefined },
+  { from: undefined, to: "crew" },
+])(
+  "a move in one conversation's hits doesn't hold the rerank after the scope goes from $from to $to",
+  async ({ from, to }) => {
+    vi.useFakeTimers();
+    const relay = keypair(),
+      viewer = keypair();
+    const discovery = [
+      metadata(relay, "crew", "crew"),
+      roster(relay, "crew", [viewer.pubkey]),
+    ];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query(filters) {
+        const read = filters.find(
+          (filter) => filter.search !== undefined && filter.kinds?.includes(9),
+        );
+        if (read)
+          // Each scope finds its own hits; the provider favours the last.
+          return Promise.resolve(
+            (read["#h"]
+              ? ["one", "two", "runbook"]
+              : ["three", "four", "guide"]
+            ).map((word, index) =>
+              message(viewer, "crew", `deploy ${word}`, 1700000500 - index),
+            ),
+          );
+        return Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        );
+      },
+    });
+    const pending: (() => void)[] = [];
+    const decisions = {
+      status: () => "ready",
+      subscribe: () => () => {},
+      decide: (request: DecisionRequest) =>
+        new Promise((resolve) => {
+          const { candidates } = JSON.parse(request.state) as {
+            candidates: { n: number; text: string }[];
+          };
+          pending.push(() =>
+            resolve({
+              outcome: "answered",
+              backend: "test",
+              model: "test",
+              answers: Object.fromEntries(
+                candidates.map(({ n, text }) => [
+                  `m${n}`,
+                  {
+                    type: "yes_no",
+                    probability: /(runbook|guide)$/.test(text) ? 0.9 : 0.1,
+                  },
+                ]),
+              ),
+            }),
+          );
+        }),
+    } as unknown as Decisions;
+    const props = (channel: string | undefined) => ({
+      session: owner.session,
+      onQueryChange: () => {},
+      input: createRef<HTMLInputElement>(),
+      pages: [],
+      openConversation: () => {},
+      openNewMessage: () => {},
+      onScopeChange: () => {},
+      decisions,
+      query: "deploy",
+      ...(channel ? { scopedChannelId: channel } : {}),
+    });
+    const settle = async () => {
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+      await act(async () => vi.advanceTimersByTimeAsync(500));
+      expect(pending).toHaveLength(1);
+    };
+    const answer = () => act(async () => pending.shift()?.());
+    const order = () =>
+      within(screen.getByRole("group", { name: "Messages" }))
+        .getAllByRole("option")
+        .map(
+          (row) =>
+            /(one|two|runbook|three|four|guide)/.exec(
+              row.textContent ?? "",
+            )?.[1],
+        );
+    const view = render(<SearchResults {...props(from)} />);
+    try {
+      await settle();
+      // The field's name follows the scope.
+      fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" });
+      await answer();
+      expect(order()).toEqual(
+        from ? ["one", "two", "runbook"] : ["three", "four", "guide"],
+      );
+
+      view.rerender(<SearchResults {...props(to)} />);
+      await settle();
+      await answer();
+      expect(order()).toEqual(
+        to ? ["runbook", "one", "two"] : ["guide", "three", "four"],
+      );
+      expect(screen.getByTitle("Reranked")).toBeInTheDocument();
+      expect(
+        screen.getByRole("group", { name: "Messages" }),
+      ).toHaveAccessibleDescription(/Reranked/);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("tells the reranker which hits agents or workflows wrote, whoever owns them, and where the searcher is a member now", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair(),
+    colleague = keypair(),
+    colleagueAgent = keypair(),
+    envelopeAgent = keypair(),
+    ownAgent = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, colleague.pubkey]),
+    metadata(relay, "left", "left"),
+    roster(relay, "left", [viewer.pubkey]),
+    profile(colleague, { name: "Colleague" }),
+    await ownedProfile(colleagueAgent, colleague, "Helper"),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    archiveAuthority: relay.pubkey,
+    query(filters) {
+      if (filters.some((filter) => filter.search !== undefined))
+        return Promise.resolve([
+          message(colleague, "crew", "deploy by a person", 1700000504),
+          message(colleagueAgent, "crew", "deploy by an agent", 1700000503),
+          signed(envelopeAgent, {
+            kind: 40002,
+            created_at: 1700000502,
+            content: JSON.stringify({ content: "deploy from an envelope" }),
+            tags: [["h", "crew"]],
+          }),
+          message(ownAgent, "left", "deploy by my agent", 1700000501),
+          // Relay-signed workflow output names its owner, not as their own.
+          eventDto(
+            message(relay, "crew", "deploy by a workflow", 1700000500, [
+              ["buzz:workflow", "true"],
+              ["buzz:workflow-owner", colleague.pubkey],
+            ]),
+          ),
+        ]);
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  // The viewer's own agent has no agent profile; their library knows it.
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: ownAgent.pubkey, name: "Mine", managed: true }],
+  };
+  // After leaving a public channel, it reads publicly again while its old
+  // roster still lists the viewer (see discovery-permissions.test.ts).
+  const channels = owner.session.channels;
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    channels: {
+      ...channels,
+      get: (id: string) => {
+        const channel = channels.get?.(id);
+        if (id !== "left" || !channel) return channel;
+        const { viewerRole: _, ...left } = channel;
+        return { ...left, readOnly: true as const };
+      },
+    },
+  } as typeof owner.session;
+  const requests: DecisionRequest[] = [];
+  const decisions = {
+    status: () => "ready",
+    subscribe: () => () => {},
+    decide: async (request: DecisionRequest) => {
+      requests.push(request);
+      return { outcome: "failed", reason: "unavailable" };
+    },
+  } as unknown as Decisions;
+  render(
+    <SearchResults
+      session={session}
+      query="deploy"
+      onQueryChange={() => {}}
+      input={createRef<HTMLInputElement>()}
+      pages={[]}
+      openConversation={() => {}}
+      openNewMessage={() => {}}
+      decisions={decisions}
+    />,
+  );
+  try {
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(requests).toHaveLength(1);
+    const { candidates } = JSON.parse(requests[0]?.state ?? "{}") as {
+      candidates: {
+        text: string;
+        author: string;
+        from_agent?: true;
+        searcher_in_conversation?: true;
+      }[];
+    };
+    expect(
+      candidates.map(
+        ({ text, author, from_agent, searcher_in_conversation }) => [
+          text,
+          author,
+          from_agent,
+          searcher_in_conversation,
+        ],
+      ),
+    ).toEqual([
+      ["deploy by a person", "Colleague", undefined, true],
+      ["deploy by an agent", "Helper", true, true],
+      ["deploy from an envelope", expect.any(String), true, true],
+      ["deploy by my agent", expect.any(String), true, undefined],
+      ["deploy by a workflow", "Workflow · owned by Colleague", true, true],
+    ]);
   } finally {
     cleanup();
     owner.dispose();
@@ -1433,6 +1836,8 @@ it("sorts a conversation newest first across pages and restarts paging when the 
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Most recent" }));
     const first = await request();
     expect(first.filters).toEqual([{ ...text, search_sort: "newest" }]);
+    // The menu leaves the saved default alone.
+    expect(messageSortPreference()).toBe("relevance");
     const page1 = hits(20, 1700000100);
     const tail = page1.pop();
     assert(tail);
@@ -1527,7 +1932,16 @@ it("sorts a conversation newest first across pages and restarts paging when the 
     );
     const reset = await request();
     expect(reset.filters).toEqual([text]);
+
+    // A saved Most recent seeds each new opening; restart reads it too.
+    localStorage.setItem("buzz-search-message-sort.v1", "newest");
+    mounted.unmount();
+    render(<SearchResults {...scoped} query="sortword" />);
+    expect((await request()).filters).toEqual([
+      { ...text, search_sort: "newest" },
+    ]);
   } finally {
+    localStorage.removeItem("buzz-search-message-sort.v1");
     cleanup();
     owner.dispose();
   }
@@ -11002,6 +11416,63 @@ it("holds an early Enter while only Ask is offered, until message search answers
     expect(openAsk).not.toHaveBeenCalled();
     await act(async () => answer());
     await waitFor(() => expect(openAsk).toHaveBeenCalledOnce());
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("shows a message hit's resolved mention as a chip and keeps its highlight", async () => {
+  vi.useFakeTimers();
+  const relay = keypair();
+  const viewer = keypair();
+  const tomb = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, tomb.pubkey]),
+    profile(tomb, { name: "tomb" }),
+  ];
+  const owner = createRelaySession({
+    ...wire.transport,
+    query(filters, signal) {
+      if (filters.some((filter) => filter.search !== undefined))
+        return wire.transport.query(filters, signal);
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="getting"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openNewMessage={() => {}}
+        openConversation={() => {}}
+      />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    await act(async () =>
+      wire
+        .next()
+        .respond([
+          message(viewer, "crew", "ugh @tomb now getting errors", 1700000001, [
+            ["p", tomb.pubkey],
+          ]),
+        ]),
+    );
+    const row = screen.getByRole("option", { name: /now getting errors/ });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const chip = row.querySelector("[data-mention-kind]");
+    expect(chip).toHaveTextContent("tomb");
+    expect(chip).toHaveClass(referenceStyles.link ?? "");
+    expect(row.querySelector("mark.search-match")).toHaveTextContent("getting");
   } finally {
     cleanup();
     owner.dispose();

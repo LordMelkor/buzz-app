@@ -1,4 +1,5 @@
 import { useSoloRowActivation } from "./useSoloRowActivation";
+import { useSpringLoaded } from "../messages/spring-loaded-drag";
 import { SoloChatTitle } from "../solo/SoloChatTitle";
 import {
   type ReactNode,
@@ -39,8 +40,11 @@ import type { Navigation } from "../navigation/controller";
 import type { ChannelSummary } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import { conversationTarget, matchesConversation } from "./routes";
+import {
+  captureSidebarDeparture,
+  recoverSidebarFocus,
+} from "./sidebar-focus-recovery";
 import { soloSuccessor } from "./solo-successor";
-import type { SoloRegion } from "./solo-navigation-model";
 import type {
   SoloCardProps,
   SoloConversationLinkProps,
@@ -51,7 +55,8 @@ import styles from "./SoloDestination.module.css";
 
 export const RegionDestinationContext = createContext<
   | {
-      region: SoloRegion;
+      channels: readonly ChannelSummary[];
+      live: ReadonlySet<string>;
       session: RelaySession;
       navigator: Navigation;
       pendingClick: RefObject<ReturnType<typeof setTimeout> | undefined>;
@@ -93,10 +98,10 @@ export function RegionConversation(props: SoloConversationProps) {
     chosenItem.current = null;
   }, []);
   useLayoutEffect(() => openMenu, [openMenu]);
-  const channel = context?.region.channels.find(
+  const channel = context?.channels.find(
     (channel) => channel.id === props.channelId,
   );
-  const visible = !!channel && !!context?.region.live.has(channel.id);
+  const visible = !!channel && !!context?.live.has(channel.id);
   const [dialog, setDialog] = useState<"rename" | "settings" | "share">();
   const [error, setError] = useState<string>();
   const focusProps = useDestinationFocus(root, props.channelId, visible);
@@ -236,7 +241,6 @@ export function RegionConversation(props: SoloConversationProps) {
   };
   return (
     <div
-      ref={root}
       data-solo-destination-root={channel.id}
       {...focusProps}
       className={`${styles.destination} ${rowStyles.sidebarContents}`}
@@ -297,6 +301,7 @@ function ConversationLink(props: SoloConversationLinkProps) {
       ? state.rename
       : undefined,
   );
+  const springLoaded = useSpringLoaded(() => state?.open(), state?.selected);
   if (!state) return null;
   return (
     <NavigationItem
@@ -320,6 +325,7 @@ function ConversationLink(props: SoloConversationLinkProps) {
       multiline={!!props.multiline}
       selected={primary && state.selected}
       {...activation}
+      {...springLoaded}
     />
   );
 }
@@ -464,12 +470,15 @@ export function RecoveryDestination({ channelId }: { channelId: string }) {
   useLayoutEffect(() => {
     if (context?.current === channelId) context.retryReveal();
   });
-  const channel = context?.region.channels.find(
-    (channel) => channel.id === channelId,
-  );
+  const channel = context?.channels.find((channel) => channel.id === channelId);
+  const open = () => {
+    if (context)
+      void context.navigator.open(conversationTarget(context.scope, channelId));
+  };
+  const springLoaded = useSpringLoaded(open, context?.current === channelId);
   if (!context || !channel) return null;
   return (
-    <div ref={root} data-solo-destination-root={channelId} {...focusProps}>
+    <div data-solo-destination-root={channelId} {...focusProps}>
       <NavigationItem
         data-solo-destination-id={channelId}
         label={channel.name}
@@ -481,11 +490,8 @@ export function RecoveryDestination({ channelId }: { channelId: string }) {
             preserveUnread
           />
         }
-        onClick={() => {
-          void context.navigator.open(
-            conversationTarget(context.scope, channelId),
-          );
-        }}
+        onClick={open}
+        {...springLoaded}
       />
     </div>
   );
@@ -498,64 +504,84 @@ function useDestinationFocus(
 ) {
   const focused = useRef(false);
   const neighbors = useRef<string[]>([]);
-  useLayoutEffect(() => {
-    if (!focused.current) return;
+  const departure =
+    useRef<ReturnType<typeof captureSidebarDeparture>>(undefined);
+  const rememberNeighbors = useCallback(() => {
     const region = root.current?.closest("[data-sidebar-section]");
     if (region)
       neighbors.current = [
         ...region.querySelectorAll<HTMLElement>("[data-solo-destination-id]"),
       ].map((row) => row.dataset.soloDestinationId ?? "");
-  });
+  }, [root]);
+  const attach = useCallback(
+    (node: HTMLDivElement | null) => {
+      // The source can reorder siblings without rendering this destination.
+      if (!node && focused.current && root.current) {
+        rememberNeighbors();
+        // A roster change can detach the row before its effect cleans up.
+        const active = root.current.ownerDocument.activeElement;
+        departure.current = captureSidebarDeparture(
+          active instanceof HTMLElement && root.current.contains(active)
+            ? active
+            : root.current,
+        );
+      } else if (node) {
+        departure.current = undefined;
+      }
+      root.current = node;
+    },
+    [rememberNeighbors, root],
+  );
   useLayoutEffect(() => {
     if (!visible) return;
     const node = root.current;
     const region = node?.closest("[data-sidebar-section]");
     return () => {
-      const owner = document.activeElement?.closest(
-        "[data-solo-destination-root]",
-      );
+      const active = document.activeElement;
+      const owner = active?.closest("[data-solo-destination-root]");
       if (!node || (owner ? owner !== node : !focused.current)) return;
-      const rows = neighbors.current;
-      const index = rows.indexOf(channelId);
-      const ids = [
-        channelId,
-        ...rows.slice(index + 1),
-        ...rows.slice(0, index).reverse(),
-      ];
-      queueMicrotask(() => {
+      const departing =
+        owner === node && active instanceof HTMLElement ? active : node;
+      const position = departure.current ?? captureSidebarDeparture(departing);
+      const candidates = () => {
         if (document.activeElement !== document.body) return;
-        const candidates = [
-          ...ids.map(
-            (id) =>
-              id &&
-              document.querySelector<HTMLElement>(
-                `[data-solo-destination-id="${CSS.escape(id)}"]`,
-              ),
+        // The ref can capture the final order after this effect cleans up.
+        const rows = neighbors.current;
+        const index = rows.indexOf(channelId);
+        const ids = [
+          channelId,
+          ...rows.slice(index + 1),
+          ...rows.slice(0, index).reverse(),
+        ];
+        const section = document.querySelector(
+          `[data-sidebar-section="${CSS.escape(region?.getAttribute("data-sidebar-section") ?? "")}"]`,
+        );
+        return [
+          ...ids.map((id) =>
+            id
+              ? document.querySelector<HTMLElement>(
+                  `[data-solo-destination-id="${CSS.escape(id)}"]`,
+                )
+              : null,
           ),
-          document.querySelector<HTMLElement>(
-            `[data-sidebar-section="${CSS.escape(region?.getAttribute("data-sidebar-section") ?? "")}"] summary`,
-          ),
+          ...(section?.querySelectorAll<HTMLElement>(
+            "[data-solo-destination-id]",
+          ) ?? []),
+          section?.querySelector<HTMLElement>("summary"),
           document.querySelector<HTMLElement>("[data-solo-heading]"),
           ...document.querySelectorAll<HTMLElement>(
             '[data-sidebar-section^="solo-region:"] summary',
           ),
         ];
-        for (const candidate of candidates) {
-          if (!candidate || candidate.closest("[hidden], [inert]")) continue;
-          candidate.focus();
-          if (document.activeElement === candidate) break;
-        }
-      });
+      };
+      recoverSidebarFocus(position, candidates, { preferVisibleRows: true });
     };
   }, [root, channelId, visible]);
   return {
+    ref: attach,
     onFocusCapture() {
       focused.current = true;
-      const region = root.current?.closest("[data-sidebar-section]");
-      if (region)
-        neighbors.current = [
-          ...region.querySelectorAll<HTMLElement>("[data-solo-destination-id]"),
-        ].map((row) => row.dataset.soloDestinationId ?? "");
+      rememberNeighbors();
     },
     onBlurCapture(event: FocusEvent<HTMLDivElement>) {
       if (

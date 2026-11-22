@@ -82,7 +82,10 @@ function prompt(
   at: number,
   raw: string,
   name?: Names,
-): TranscriptItem {
+): {
+  item: Extract<TranscriptItem, { type: "prompt" }>;
+  hasMessage: boolean;
+} {
   let sections = promptSections(raw);
   const steer = sections.find((section) => section.tag === STEER);
   // An older steer wraps a whole turn.
@@ -90,19 +93,24 @@ function prompt(
     sections = promptSections(steer.body);
   const { text, author, authorPubkey } = promptMessage(sections, name);
   return {
-    id,
-    at,
-    type: "prompt",
-    text: text || raw,
-    ...(author ? { author } : {}),
-    ...(authorPubkey ? { authorPubkey } : {}),
-    sections,
-    steer: !!steer,
+    item: {
+      id,
+      at,
+      type: "prompt",
+      text: text || raw,
+      ...(author ? { author } : {}),
+      ...(authorPubkey ? { authorPubkey } : {}),
+      sections,
+      steer: !!steer,
+    },
+    hasMessage: !!(text || author || authorPubkey),
   };
 }
 
-/** Transcript lines as turns, each opened by a prompt. Claude Code's own
- * entries (metadata, subagents, attachments) are left out. */
+export { withNotices } from "../../features/agents/activity-transcript";
+
+/** Transcript lines as turns, each opened by a prompt. Claude Code records
+ * some Buzz steers as queued-command attachments within the active turn. */
 export function claudeTurns(
   file: string,
   conversation: Session,
@@ -146,22 +154,28 @@ export function claudeTurns(
       continue;
     }
     if (!entry || entry.isSidechain || entry.isMeta) continue;
-    const message = object(entry.message);
     const id = str(entry.uuid);
+    if (!id) continue;
     const at = Date.parse(str(entry.timestamp)) || last;
-    if (
-      !message ||
-      !id ||
-      (entry.type !== "user" && entry.type !== "assistant")
-    )
+    if (entry.type === "attachment") {
+      const attachment = object(entry.attachment);
+      if (attachment?.type !== "queued_command") continue;
+      const { item, hasMessage } = prompt(id, at, str(attachment.prompt), name);
+      if (item.steer && hasMessage) {
+        (turns.at(-1) ?? turn(id, at, true)).items.push(item);
+        last = at;
+      }
+      continue;
+    }
+    const message = object(entry.message);
+    if (!message || (entry.type !== "user" && entry.type !== "assistant"))
       continue;
     const results = blocks(message.content).filter(
       (block) => block.type === "tool_result",
     );
     if (entry.type === "user" && !results.length) {
-      const item = prompt(id, at, text(message.content), name);
-      const current =
-        item.type === "prompt" && item.steer ? turns.at(-1) : undefined;
+      const { item } = prompt(id, at, text(message.content), name);
+      const current = item.steer ? turns.at(-1) : undefined;
       (current ?? turn(id, at, false)).items.push(item);
       last = at;
       continue;
@@ -385,7 +399,8 @@ const oversized = new Map<string, number>();
 /** The whole turns in the last {@link LATEST_MIB} MiB of the conversation's
  * saved session, oldest first; undefined with no saved session. While a turn
  * is larger than that, none, so what is shown stays, except undefined every
- * {@link OVERSIZED_READ_MS} to read it in full. */
+ * {@link OVERSIZED_READ_MS} to read it in full. The same fallback recovers
+ * delivered steers when the window omits their turn's opening prompt. */
 export async function readLatestTurns(
   spawn: Spawn,
   workspace: SessionsPlace,
@@ -433,11 +448,22 @@ export async function readLatestTurns(
     },
     working,
     nameOf,
-  ).filter((turn) => !turn.partial);
-  if (from && turns[0]) turns[0].newSession = false;
-  if (from && !turns.length) return tooLarge();
-  oversized.delete(path);
-  return turns;
+  );
+  const first = turns[0];
+  const whole = turns.filter((turn) => !turn.partial);
+  if (
+    from &&
+    (!whole.length ||
+      (first?.partial &&
+        first.items.some((item) => item.type === "prompt" && item.steer)))
+  ) {
+    const fallback = tooLarge();
+    if (!fallback || !whole.length) return fallback;
+  } else {
+    oversized.delete(path);
+  }
+  if (from && whole[0]) whole[0].newSession = false;
+  return whole;
 }
 
 /** A session file in `~/.claude/projects`. One too large to read whole is

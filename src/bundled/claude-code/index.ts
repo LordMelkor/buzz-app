@@ -19,12 +19,15 @@ import {
 } from "../../features/agents/recommended";
 import type { AgentHandle } from "../../features/agents/service";
 import { ClaudeDefaults } from "./defaults";
+import { HARNESS } from "./attribution";
+import { routeFor, upstreamFor } from "../../features/agents/gateway/route";
 import { ClaudeRuntime, type Config, config, DEFAULT_CONFIG } from "./runtime";
 import { ClaudeSetup, withScript } from "./setup";
 import { createTabs } from "./tabs";
 import { targetKey } from "../../features/navigation/targets";
 import type { ClaudeConnection } from "./ClaudeSettings";
 import { readUsage } from "./usage";
+import { usageOn } from "../../features/agents/standalone-sessions";
 
 export { TYPE_ID };
 /** How often Buzz's copy of Claude looks for a new release. */
@@ -143,7 +146,17 @@ export const apply: PluginModule["apply"] = (ctx) => {
     undefined,
     (agent, signal, channelId) =>
       readyOwnerReads(agents.relay(agent.key), agent, signal, channelId),
+    // A session control's route, as the runner decides a turn's.
+    (key) => {
+      const route = routeFor(key);
+      return route.kind === "eligible" &&
+        route.harnesses.includes(HARNESS) &&
+        upstreamFor(HARNESS)
+        ? route
+        : undefined;
+    },
   );
+  runtime.usageOn = usageOn(ctx.settingsCards);
   /** A Claude agent is running, so Buzz's copy is needed; unknown until the
    * agents have loaded. */
   let needed: boolean | undefined;
@@ -213,8 +226,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
   });
   agents.register<Config>({
     id: TYPE_ID,
+    // Declares its harness to the gateway, which attributes its turns. Only
+    // attributes: Claude keeps its own endpoint, so the route never holds
+    // or fails a turn.
+    gateway: { harness: HARNESS, mode: "attribution" },
     execution: true,
     conversationFolders: true,
+    conversationSections: true,
+    notes: true,
+    skillFolders: ["~/.claude/skills"],
     hooks: { events: CLAUDE_HOOK_EVENTS },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
@@ -223,6 +243,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
     description:
       "Claude on this computer. Each thread it is mentioned in is one continuing session.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    settingsProposal: {
+      compactAt: "unprotected",
+      resolveRecommended: recommended.find,
+    },
     readModelSettings: (saved, context) =>
       providerDefaults.readModelSettings(saved, context),
     Create,
@@ -245,26 +269,22 @@ export const apply: PluginModule["apply"] = (ctx) => {
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
+      scope: carry.sessionScope ?? saved.scope,
       workspace: carry.workspace ?? saved.workspace,
     }),
     carry: (saved) => {
-      const { instructions, workspace } = config(saved);
+      const { instructions, workspace, scope } = config(saved);
       return {
         ...(instructions.trim() && { instructions }),
         ...(workspace !== DEFAULT_CONFIG.workspace && { workspace }),
+        ...(scope !== DEFAULT_CONFIG.scope && { sessionScope: scope }),
       };
     },
     describeMigration: (saved) => {
-      const { model, effort, scope } = config(saved);
+      const { model, effort } = config(saved);
       return [
         { id: "model", label: "Model", isOverride: Boolean(model.trim()) },
         { id: "thinking", label: "Thinking", isOverride: Boolean(effort) },
-        {
-          id: "sessions",
-          label: "Sessions",
-          isOverride: scope !== DEFAULT_CONFIG.scope,
-          unchangedKey: scope,
-        },
       ];
     },
     summary: (agent) =>
@@ -294,7 +314,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
                 ),
               ),
           );
-          return found.flat().sort((a, b) => b.lastAt - a.lastAt);
+          return (await runtime.withWakes(agent.key, found.flat())).sort(
+            (a, b) => b.lastAt - a.lastAt,
+          );
         },
       }),
     provider: {

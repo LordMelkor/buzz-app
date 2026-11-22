@@ -1,7 +1,7 @@
 import { regionLabels } from "../solo/region-labels";
 import { getEventHash, verifyEvent } from "nostr-tools";
 import type { RelayReader } from "./reader";
-import type { ChannelQueries } from "./contracts";
+import type { ChannelQueries, ChannelSummary } from "./contracts";
 import { retryRead } from "./read-retry";
 import type { RelayWriter } from "./transport";
 import type { RelayEvent } from "./events";
@@ -12,6 +12,8 @@ import {
   detailsTemplate,
   sameLabels,
   validateDetailsDraft,
+  summaryAccess,
+  type ChannelAccess,
   type ChannelDetails,
   type ChannelDetailsDraft,
 } from "./channel-details-protocol";
@@ -27,6 +29,9 @@ type ChannelNames = Pick<ChannelQueries, "get" | "subscribeList">;
 export interface ChannelDetailsCapability {
   readonly available: boolean;
   load(id: string, signal?: AbortSignal): Promise<ChannelDetails>;
+  /** Present when this capability's edit rule matches the summary's, so access
+   * can show without a read. Absent, callers read details. */
+  summaryAccess?(channel: ChannelSummary): ChannelAccess | undefined;
   save(
     base: ChannelDetails,
     draft: ChannelDetailsDraft,
@@ -176,6 +181,7 @@ export function createChannelDetails({
       return rename?.name === name ? rename.revision : undefined;
     },
     snapshot: (id: string) => attempts.get(id),
+    summaryAccess,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {

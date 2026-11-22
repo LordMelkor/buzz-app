@@ -2241,7 +2241,7 @@ it("separates identity fields from runtime settings without changing the stored 
     screen.queryByRole("button", { name: "Huddle voice" }),
   ).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Workspace")).not.toBeInTheDocument();
-  expect(screen.queryByLabelText("Sessions")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Session scope")).not.toBeInTheDocument();
   expect(screen.queryByText("Runtime diagnostics")).not.toBeInTheDocument();
   view.rerender(<Settings {...props} settingsSection="runtime" />);
   expect(
@@ -2250,7 +2250,7 @@ it("separates identity fields from runtime settings without changing the stored 
     "Determines which voice your agent speaks with in Huddles (Codex only). Codex default",
   );
   expect(screen.getByLabelText("Workspace")).toBeInTheDocument();
-  expect(screen.getByLabelText("Sessions")).toBeInTheDocument();
+  expect(screen.getByLabelText("Session scope")).toBeInTheDocument();
   expect(screen.queryByText("Runtime diagnostics")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Instructions")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
@@ -2666,7 +2666,7 @@ it.each([true, false])(
     const agent = "a".repeat(64);
     const root = "e".repeat(64);
     const place = JSON.stringify(["channel", root]);
-    const prefix = `buzz.codex.sessions.v18:test:${agent}`;
+    const prefix = `buzz.codex.sessions.v19:test:${agent}`;
     const items = new Map([
       [
         prefix,
@@ -2754,7 +2754,7 @@ it.each([false, true])(
       JSON.stringify({ key: "old-session", intent: "existing" }),
     );
     await storage.set(
-      `buzz.codex.sessions.v18:test:${agent}:session:old-session`,
+      `buzz.codex.sessions.v19:test:${agent}:session:old-session`,
       JSON.stringify({
         [place]: { threadId: "old-thread", workspace: "/guest" },
       }),
@@ -2955,6 +2955,64 @@ describe("Recommended", () => {
       await final;
       setRuntimeRecommendation(undefined);
     }
+  });
+
+  it("waits for a refresh under way instead of answering from the last check", async () => {
+    const { provider } = fixture();
+    let finish = () => {};
+    // As a refresh that finds Codex signed out, while the last check said ready.
+    vi.spyOn(provider, "check").mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            Object.assign(provider, {
+              state: {
+                ...provider.snapshot(),
+                readiness: "attention",
+                checking: false,
+                data: undefined,
+                error: "Codex needs you to sign in.",
+              },
+            });
+            resolve();
+          };
+        }),
+    );
+    Object.assign(provider, {
+      state: {
+        ...provider.snapshot(),
+        readiness: "ready",
+        checking: true,
+        data: { models: [] },
+      },
+    });
+    let answered: boolean | undefined;
+    const asked = provider.recommends(candidate).then((value) => {
+      answered = value;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(answered).toBeUndefined();
+    finish();
+    await asked;
+    expect(answered).toBe(false);
+  });
+
+  it("is unsure, rejecting, when its check failed some other way", async () => {
+    const { provider } = fixture();
+    // As after a check whose catalog read failed.
+    vi.spyOn(provider, "check").mockResolvedValue(undefined);
+    Object.assign(provider, {
+      state: {
+        ...provider.snapshot(),
+        readiness: "attention",
+        data: undefined,
+        error: "app-server exited",
+      },
+    });
+    await expect(provider.recommends(candidate)).rejects.toThrow(
+      "Codex couldn't say whether it is ready",
+    );
   });
 
   it("runs an agent on Recommended on the first candidate its catalog offers", async () => {
@@ -3640,6 +3698,53 @@ it("saves the voice against the latest synced revision", async () => {
         instructions: "Synced instructions",
       }),
       { base: { settings: "synced" } },
+    ),
+  );
+});
+
+it("blocks an unsupported proposal effort and lets the owner clear it", async () => {
+  const f = fixture();
+  const user = userEvent.setup();
+  const save = vi.fn(async () => {});
+  render(
+    <f.tabs.SettingsTab
+      {...f.props({ ...defaults, model: "model-b", effort: "xhigh" }, save)}
+      settingsHost={{ proposedModelOrEffort: true, pendingSave: save }}
+    />,
+  );
+  await screen.findByRole("combobox", { name: "Model" });
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText(/Choose a thinking level/)).toBeVisible();
+  expect(save).not.toHaveBeenCalled();
+  await user.click(
+    screen.getByRole("button", { name: "Clear model and thinking overrides" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({ model: "", effort: "" }),
+  );
+});
+
+it("saves proposed model and effort overrides for a verified execution target", async () => {
+  const binding = { provider: "test/guest" };
+  const f = fixture({ binding });
+  const save = vi.fn(async () => {});
+  const props = f.props(
+    { ...defaults, model: "target-custom-model", effort: "high" },
+    save,
+  );
+  render(
+    <f.tabs.SettingsTab
+      {...props}
+      agent={{ ...props.agent, executionBinding: binding }}
+      settingsHost={{ proposedModelOrEffort: true, pendingSave: save }}
+    />,
+  );
+  await screen.findByDisplayValue("Selected when the session starts");
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "target-custom-model", effort: "high" }),
     ),
   );
 });

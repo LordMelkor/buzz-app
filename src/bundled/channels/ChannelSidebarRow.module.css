@@ -66,7 +66,8 @@
         position: relative;
         inset-inline-end: var(--solo-row-action-size);
       }
-      & .select [class~="navigation-item-label"] {
+      /* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector; a class selector, not [class~=], because Chromium treats [class~=] as a class-attribute feature and this :has() rule would restyle every classed element in the sidebar on unread changes. */
+      & .select :global(.navigation-item-label) {
         mask-image: linear-gradient(
           to left,
           transparent var(--solo-row-action-size),
@@ -77,18 +78,23 @@
   }
 }
 .row:is(:hover, :has([data-context-menu-present])):not(
-  [data-selected]
+  [data-selected],
+  :has([data-spring-loaded="on"])
 )::before {
   background: var(--affordance-panel-hover);
 }
-.row[data-selected] {
+/* A spring-loaded file drag selects the row until it opens or blinks off. */
+.row:is([data-selected], :has([data-spring-loaded="on"])) {
   --text-row: var(--text-sidebar-selected);
   --text-subtle: var(--text-sidebar-selected);
   --text-metadata: var(--text-sidebar-selected);
   color: var(--text-sidebar-selected);
 }
-.row[data-selected]::before {
+.row:is([data-selected], :has([data-spring-loaded="on"]))::before {
   background: var(--surface-sidebar-selected);
+}
+.row:has([data-spring-loaded]) {
+  transition: none;
 }
 .row .select [data-buzz-ui][data-variant="row"] {
   background: transparent;

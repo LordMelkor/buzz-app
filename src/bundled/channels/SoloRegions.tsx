@@ -35,7 +35,6 @@ import { Button } from "../../shared/design-system/ui/Button";
 import {
   SlidersHorizontalIcon,
   DotsThreeIcon,
-  PencilSimpleIcon,
   PlusIcon,
 } from "../../shared/design-system/icons";
 import {
@@ -178,10 +177,7 @@ function RegionFrame({
   const binding = service.snapshot().binding;
   const source = region.source;
   const [actionError, setActionError] = useState(false);
-  const [revealRequest, setRevealRequest] = useState<{
-    id: string;
-    explicit: boolean;
-  }>();
+  const [revealRequest, setRevealRequest] = useState<string>();
   const root = useRef<HTMLDivElement>(null);
   const current =
     target.kind === "conversation" &&
@@ -220,40 +216,48 @@ function RegionFrame({
       source && binding ? service.presentation(source, binding) : undefined,
     [service, source, binding],
   );
-  const active = () =>
-    !!binding &&
-    service.snapshot().binding === binding &&
-    !!source &&
-    service.sources().includes(source);
-  const { toggle, retryReveal, revealAgain } = sidebar;
-  const ownsCurrent =
-    !!current && region.channels.some((channel) => channel.id === current);
+  const { retryReveal, revealAgain } = sidebar;
+  const open = !sidebar.collapsed.includes(sectionKey);
+  const { channels, live } = region;
+  const destination = useMemo(
+    () => ({
+      channels,
+      live,
+      session,
+      navigator,
+      pendingClick,
+      scope,
+      current,
+      active: () =>
+        !!binding &&
+        service.snapshot().binding === binding &&
+        !!source &&
+        service.sources().includes(source),
+      retryReveal,
+    }),
+    [
+      channels,
+      live,
+      session,
+      navigator,
+      pendingClick,
+      scope,
+      current,
+      binding,
+      service,
+      source,
+      retryReveal,
+    ],
+  );
+  const { active } = destination;
   useLayoutEffect(() => {
-    let prepared = false;
-    return sidebar.beforeReveal((location) => {
-      if (
-        prepared ||
-        !current ||
-        !ownsCurrent ||
-        location !== `conversation:${current}`
-      )
-        return true;
-      prepared = true;
-      toggle(sectionKey, true);
-      service.reveal(current, false);
-      return false; // Retry against the expanded source path after its commit.
-    });
-  }, [sidebar.beforeReveal, current, ownsCurrent, sectionKey, toggle, service]);
-  useLayoutEffect(() => {
-    if (sidebar.collapsed.includes(sectionKey)) return;
-    if (revealRequest?.explicit && revealRequest.id === current) revealAgain();
-    else retryReveal();
-    if (revealRequest) setRevealRequest(undefined);
-  });
+    if (!revealRequest) return;
+    if (revealRequest === current) revealAgain(sectionKey);
+    setRevealRequest(undefined);
+  }, [current, revealAgain, revealRequest, sectionKey]);
   const reveal = useEffectEvent((id: string, explicit: boolean) => {
     if (!region.channels.some((channel) => channel.id === id)) return false;
-    toggle(sectionKey, true);
-    setRevealRequest({ id, explicit });
+    if (explicit && id === current) setRevealRequest(id);
     return true;
   });
   useLayoutEffect(() => service.subscribeReveal(reveal, true), [service]);
@@ -322,7 +326,7 @@ function RegionFrame({
   );
   const composing = !!source?.composeWorkspaces && !!composeOrdinary;
   // The region's own create action trails its other actions. Composed
-  // workspaces show a direct create as a pencil and a create menu as actions.
+  // workspaces show a create menu as actions.
   const create = actions.find((action) => action.icon === "plus");
   const headerActions = (
     <>
@@ -334,14 +338,10 @@ function RegionFrame({
       {create && (
         <RegionAction
           action={
-            composing
+            composing && create.menu
               ? {
                   ...create,
-                  icon: create.menu ? (
-                    <DotsThreeIcon size={15} strokeWidth={2.5} />
-                  ) : (
-                    <PencilSimpleIcon size={15} />
-                  ),
+                  icon: <DotsThreeIcon size={15} strokeWidth={2.5} />,
                 }
               : create
           }
@@ -403,24 +403,13 @@ function RegionFrame({
       ))
     : body;
   return (
-    <RegionDestinationContext.Provider
-      value={{
-        region,
-        session,
-        navigator,
-        pendingClick,
-        scope,
-        current,
-        active,
-        retryReveal,
-      }}
-    >
+    <RegionDestinationContext.Provider value={destination}>
       <div ref={root}>
         <SidebarSection
           sectionKey={sectionKey}
           title={region.title}
           icon={source?.icon}
-          open={!sidebar.collapsed.includes(sectionKey)}
+          open={open}
           onToggle={(open) => sidebar.toggle(sectionKey, open)}
           move={{
             ...(!first ? { up: () => move(-1) } : {}),

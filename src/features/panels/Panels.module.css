@@ -61,7 +61,7 @@
   .frame,
   .frame:has(> [data-panel-dock]:not([hidden], [data-closing])) {
     grid-template-columns: minmax(0, 1fr);
-    overflow: hidden;
+    overflow: clip;
   }
   .dock > [data-panel-resize] {
     display: none;
@@ -94,6 +94,11 @@
 }
 html:is([data-keyboard-input], [data-sidebar-resizing])
   .splitMotion:has(> .motion) {
+  transition: none;
+}
+/* Navigation into a new destination snaps its split: content mounting in the
+   same commit measures its width before paint. */
+.splitMotion[data-instant-split]:has(> .motion) {
   transition: none;
 }
 @media (prefers-reduced-motion: reduce) {

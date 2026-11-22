@@ -1,4 +1,6 @@
+import type { SectionChoices } from "../../features/agent-harness/sections/choices";
 import { createHash } from "node:crypto";
+import { matchFilters } from "nostr-tools/filter";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "nostr-tools/utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,8 +11,10 @@ import { createAgentMemories } from "../../features/agents/memory";
 import {
   promptMessage,
   promptSections,
+  type TranscriptTurn,
 } from "../../features/agents/activity-transcript";
-import { pubkeyOf } from "../../features/agents/membership";
+import { type AgentKey, pubkeyOf } from "../../features/agents/membership";
+import { withLatest } from "../../features/agents/TranscriptPanel";
 import { ownerReads } from "../../features/agents/reads";
 import { localStore } from "../../features/agents/state";
 import {
@@ -23,6 +27,8 @@ import type {
   Delivery,
 } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
+import { VECTOR_PROFILE } from "../../features/agents/gateway/vectors";
+import { ELSEWHERE, PROTECTED, UNAPPLIED } from "./attribution";
 import type { AgentProtection } from "../../features/agent-protection/service";
 import type {
   EventData,
@@ -37,6 +43,10 @@ import {
   type AgentToolAuthority,
 } from "../../features/agents/tool-operation";
 import type { MemoryEntry } from "../../features/agents/memory";
+import {
+  STANDALONE_PREFIX,
+  standaloneSessions,
+} from "../../features/agents/standalone-sessions";
 import { CLAUDES, type FakeClaude, fakeSpawn, flush } from "./claude-testing";
 import { RESUMED_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
 import { ClaudeRuntime, config, DEFAULT_CONFIG, modelName } from "./runtime";
@@ -47,7 +57,7 @@ import {
   PROCESS_LIMIT,
   withRoom,
 } from "./sessions";
-import { BASE_PROMPT } from "../../features/agent-harness/base-prompt";
+import { composeBase } from "../../features/agent-harness/sections/compose";
 import {
   assignConversationFolder,
   conversationKey,
@@ -63,8 +73,28 @@ vi.mock("@tauri-apps/api/core", async (actual) => ({
   invoke: native.invoke,
 }));
 
+/** Transcript reads a test answers itself; others read as they do. */
+const transcriptReads = vi.hoisted(() => ({
+  full: undefined as undefined | (() => Promise<unknown>),
+  latest: undefined as undefined | (() => Promise<unknown>),
+}));
+vi.mock("./transcript", async (actual) => {
+  const real = await actual<typeof import("./transcript")>();
+  return {
+    ...real,
+    readTranscript: ((...args: Parameters<typeof real.readTranscript>) =>
+      transcriptReads.full?.() ??
+      real.readTranscript(...args)) as typeof real.readTranscript,
+    readLatestTurns: ((...args: Parameters<typeof real.readLatestTurns>) =>
+      transcriptReads.latest?.() ??
+      real.readLatestTurns(...args)) as typeof real.readLatestTurns,
+  };
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  transcriptReads.full = undefined;
+  transcriptReads.latest = undefined;
 });
 
 const self = "c".repeat(64);
@@ -107,13 +137,21 @@ function setup(
     nativeHistory?: readonly unknown[];
     /** Raw text after the history, as a line Claude is still writing. */
     nativeTail?: string;
+    /** Each Claude process's own settings env. */
+    env?: Record<string, string>;
+    /** The agent's route for a session control. */
+    gatewayRoute?: ConstructorParameters<typeof ClaudeRuntime>[14];
     resolveDirectory?: Host["resolveDirectory"];
     /** Claude processes the host runs at once before it refuses one, as it
      * refuses past its limit on all plugins' processes. */
     claudeLimit?: number;
+    /** What an earlier run of the app saved, and the Claude sessions it
+     * can resume: shared with that run's setup. */
+    data?: Map<string, string>;
+    known?: Set<string>;
   }> = {},
 ) {
-  const fake = fakeSpawn();
+  const fake = fakeSpawn(options.known, options.env);
   const running = new Set<FakeClaude>();
   const transcriptReaders: { options: unknown }[] = [];
   const spawn: typeof fake.spawn = async (id, spawnOptions) => {
@@ -242,7 +280,7 @@ function setup(
       scope: `https://agent.example:${alice}`,
     }),
   } as unknown as RelayData;
-  const data = new Map<string, string>();
+  const data = options.data ?? new Map<string, string>();
   const storage = localStore({
     get length() {
       return data.size;
@@ -269,6 +307,14 @@ function setup(
     config,
     () => added,
     options.repositories,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.gatewayRoute,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const publish = vi.fn(async (template: (typeof published)[number]) => {
@@ -1150,7 +1196,7 @@ it("gives each turn of a kept session the plugins' instructions as they are now"
   expect(second).toContain("Run dibs_watch first.");
   expect(second).not.toContain("Run dibs_check first.");
   expect(third).not.toContain("<plugin-instructions");
-  expect(BASE_PROMPT).toContain(
+  expect(composeBase({ scope: "thread" }).text).toContain(
     "a turn without any means no plugin instructions apply now",
   );
 });
@@ -1379,6 +1425,84 @@ it("refuses a synced effort its model lacks, but lets a busy turn take a steer",
   expect(prompts()).toBe(2);
   runtime.dispose();
 });
+it("keeps steering a busy turn's effort through a follow-up without a pick", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = (id: string) =>
+    message(id, "@Claude also", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+        ["p", self],
+      ],
+    });
+  const { runtime, claudes, agent } = setup([root, reply("3"), reply("4")], {
+    hold: true,
+  });
+  const run = (event: typeof root, effort?: string) =>
+    runtime.run({
+      trigger: { type: "mention", event },
+      channelId: channel,
+      agent,
+      config: DEFAULT_CONFIG,
+      ...(effort ? { effort } : {}),
+      signal: new AbortController().signal,
+      workingUntil: () => {},
+    } as unknown as Delivery);
+  const prompts = () =>
+    claudes().reduce((sum, process) => sum + process.prompts.length, 0);
+  await run(root, "high");
+  await flush(10);
+  expect(prompts()).toBe(1);
+  await run(reply("3"));
+  await flush(10);
+  expect(prompts()).toBe(2);
+  await run(reply("4"), "high");
+  await flush(10);
+  expect(prompts()).toBe(3);
+  expect(claudes()).toHaveLength(1);
+  runtime.dispose();
+});
+it("steers a follow-up's own effort into a busy turn", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude lower", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const { runtime, claudes, agent } = setup([root, reply], { hold: true });
+  const run = (event: typeof root, effort: string) =>
+    runtime.run({
+      trigger: { type: "mention", event },
+      channelId: channel,
+      agent,
+      config: DEFAULT_CONFIG,
+      effort,
+      signal: new AbortController().signal,
+      workingUntil: () => {},
+    } as unknown as Delivery);
+  const prompts = () =>
+    claudes().reduce((sum, process) => sum + process.prompts.length, 0);
+  await run(root, "high");
+  await flush(10);
+  expect(prompts()).toBe(1);
+  await run(reply, "low");
+  await flush(10);
+  expect(prompts()).toBe(2);
+  expect(claudes()).toHaveLength(1);
+  runtime.dispose();
+});
 it("checks a synced effort when a saved session resumes or a folder change relaunches it", async () => {
   const mention = (id: string, resumed?: boolean) => ({
     type: "mention" as const,
@@ -1594,6 +1718,26 @@ it("refreshes core memory after a queued community wake acquires ownership", asy
   }
 });
 
+it("tells a thread's session and a timer's run what each one is", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes } = setup([root]);
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  await deliver({ type: "mention", event: root });
+  await flush(10);
+  await deliver(timer("daily", "ops"));
+  await flush(10);
+  const [thread, standalone] = prompted();
+  expect(systemPromptOf(thread)).toContain("This session is one thread");
+  expect(systemPromptOf(standalone)).toContain(
+    "This run joins no conversation",
+  );
+});
+
 it("runs a timer on the core memory as it is then, after an ordinary turn read it", async () => {
   const root = message("2", "@Claude hi", {
     tags: [
@@ -1645,6 +1789,210 @@ it("resumes an idle session on the agent's new core memory", async () => {
   expect(second?.options.args).toContain("--resume");
   expect(systemPromptOf(second)).toContain("New rules.");
   expect(systemPromptOf(second)).not.toContain("Old rules.");
+});
+
+it("resumes an idle session on the base sections the owner chose since", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = (id: string) =>
+    message(id, "@Claude again", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+        ["p", self],
+      ],
+    });
+  const { deliver, claudes, agent, storage } = setup([root, reply("3")]);
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  let choices: SectionChoices = {};
+  Object.assign(agent, { promptSections: () => choices });
+  await deliver({ type: "mention", event: root });
+  await flush(10);
+  const [first] = prompted();
+  expect(systemPromptOf(first)).toContain("\n\n## Progress\n\n");
+  expect(systemPromptOf(first)).not.toContain("<owner-section id=");
+  const saved = () => {
+    const prompts = sessionPrompts(storage, "claude-code", self);
+    return prompts.get(prompts.sessions()[0]?.id ?? "") ?? [];
+  };
+  expect(saved().map(({ label }) => label)).toEqual([""]);
+
+  choices = {
+    owner: {
+      progress: { mode: "off" },
+      etiquette: { mode: "custom", text: "Be brief." },
+    },
+  };
+  await deliver({ type: "mention", event: reply("3") });
+  await flush(10);
+  const second = prompted()[1];
+  expect(first?.killed).toBe(true);
+  expect(second?.options.args).toContain("--resume");
+  expect(systemPromptOf(second)).not.toContain("## Progress");
+  expect(systemPromptOf(second)).toContain(
+    '\n\n## Etiquette\n<owner-section id="etiquette">\nBe brief.\n</owner-section>\n\n## ',
+  );
+  // The saved prompt shows the base the session runs on now.
+  expect(saved().map(({ label }) => label)).toEqual([
+    "",
+    expect.stringMatching(/^base \d{4}-/),
+  ]);
+  expect(saved()[1]?.text).toContain('<owner-section id="etiquette">');
+  expect(saved()[1]?.text).not.toContain("<identity>");
+
+  // The same choices keep the session and add nothing.
+  await deliver({ type: "mention", event: reply("4") });
+  await flush(10);
+  expect(second?.killed).toBe(false);
+  expect(prompted()).toHaveLength(2);
+  expect(saved()).toHaveLength(2);
+});
+
+it("shows the base sections chosen since on a session that resumes after the app starts again", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude again", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const known = new Set<string>();
+  const before = setup([root, reply], { known });
+  await before.deliver({ type: "mention", event: root });
+  await flush(10);
+  const saved = () => {
+    const prompts = sessionPrompts(before.storage, "claude-code", self);
+    return prompts.get(prompts.sessions()[0]?.id ?? "") ?? [];
+  };
+  expect(saved().map(({ label }) => label)).toEqual([""]);
+
+  // The app starts again on what it saved, and the owner has chosen since.
+  const after = setup([root, reply], { data: before.data, known });
+  Object.assign(after.agent, {
+    promptSections: (): SectionChoices => ({
+      owner: { etiquette: { mode: "custom", text: "Be brief." } },
+    }),
+  });
+  await after.deliver({ type: "mention", event: reply });
+  await flush(10);
+  const [resumed] = after.claudes().filter((process) => process.prompts.length);
+  expect(resumed?.options.args).toContain("--resume");
+  expect(systemPromptOf(resumed)).toContain('<owner-section id="etiquette">');
+  expect(saved().map(({ label }) => label)).toEqual([
+    "",
+    expect.stringMatching(/^base \d{4}-/),
+  ]);
+  expect(saved()[1]?.text).toContain('<owner-section id="etiquette">');
+});
+
+it("builds a conversation's prompt with the sections of the plugin that manages it", async () => {
+  const start = (id: string) =>
+    message(id, "@Claude hi", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    });
+  const managedRoot = start("2");
+  const otherRoot = start("5");
+  const reply = message("3", "@Claude again", {
+    tags: [
+      ["h", channel],
+      ["e", managedRoot.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, agent } = setup([managedRoot, otherRoot, reply]);
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  let managed: SectionChoices = {
+    plugin: {
+      id: "example.plugin",
+      sections: { "working-location": "Work in the task's folder." },
+    },
+  };
+  Object.assign(agent, {
+    promptSections: (channelId?: string, root?: string) =>
+      channelId === channel && root === managedRoot.id ? managed : {},
+  });
+  const wrapper =
+    '## Working location\n<plugin-section id="working-location" plugin="example.plugin">\nWork in the task\'s folder.\n</plugin-section>';
+  await deliver({ type: "mention", event: managedRoot });
+  await flush(10);
+  await deliver({ type: "mention", event: otherRoot });
+  await flush(10);
+  const [here, there] = prompted();
+  expect(systemPromptOf(here)).toContain(wrapper);
+  expect(systemPromptOf(here)).not.toContain(
+    "Make file changes on a new branch",
+  );
+  // Another conversation of the same agent has the default rule.
+  expect(systemPromptOf(there)).not.toContain("<plugin-section id=");
+  expect(systemPromptOf(there)).toContain("Make file changes on a new branch");
+
+  // The plugin clears its sections: the idle session resumes on the default.
+  managed = {};
+  await deliver({ type: "mention", event: reply });
+  await flush(10);
+  const again = prompted()[2];
+  expect(here?.killed).toBe(true);
+  expect(there?.killed).toBe(false);
+  expect(again?.options.args).toContain("--resume");
+  expect(systemPromptOf(again)).not.toContain("<plugin-section id=");
+});
+
+it("tells a Solo chat whose plugin gives the working location to read its Canvas's folders", async () => {
+  const { deliver, claudes, agent } = setup([], {
+    solo: new Set([channel]),
+    canvas: {
+      content: workspaceCanvas({
+        folders: ["~/Development/app"],
+        worktree: { location: "~/Development/trees", baseBranch: "main" },
+        canvas: "Use the design system.",
+      }),
+    },
+  });
+  Object.assign(agent, {
+    // A Solo chat is one conversation, with no thread root.
+    promptSections: (channelId?: string, root?: string): SectionChoices =>
+      channelId === channel && !root
+        ? {
+            plugin: {
+              id: "example.plugin",
+              sections: { "working-location": "Work in the task's folder." },
+            },
+          }
+        : {},
+  });
+  await deliver({
+    type: "mention",
+    event: message("1", "@Claude go", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    }),
+  });
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  expect(systemPromptOf(claude)).toContain(
+    '<plugin-section id="working-location" plugin="example.plugin">',
+  );
+  const turn = claude?.prompts[0];
+  expect(turn).toContain(
+    "These folders hold code that is relevant to this chat: `~/Development/app`, `~/Development/trees`. They are for reading.",
+  );
+  expect(turn).toContain("## Project folders\n\n- `~/Development/app`");
+  expect(turn).not.toContain("create a new worktree");
 });
 
 it("starts each session from the host's core memory, reading only recent notes from the relay", async () => {
@@ -1917,6 +2265,50 @@ it("resumes an idle session at a newly saved effort", async () => {
   runtime.dispose();
 });
 
+it("resumes an idle session at a newly saved compaction threshold", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude again", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const { runtime, claudes, agent } = setup([root, reply]);
+  const run = (event: typeof root, compactAt?: string) => {
+    const config = { ...DEFAULT_CONFIG, ...(compactAt && { compactAt }) };
+    runtime.sync([{ key: self, pubkey: self, config } as Agent]);
+    return runtime.run({
+      trigger: { type: "mention", event },
+      channelId: channel,
+      agent,
+      config,
+      signal: new AbortController().signal,
+      workingUntil: () => undefined,
+    } as unknown as Delivery);
+  };
+  await run(root);
+  await flush(10);
+  const first = claudes().find((process) => process.prompts.length);
+  expect(first?.options.env).not.toHaveProperty(
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+  );
+  await run(reply, "400000");
+  await flush(10);
+  const second = claudes().filter((process) => process.prompts.length)[1];
+  expect(first?.killed).toBe(true);
+  expect(second?.options.args).toContain("--resume");
+  expect(second?.options.env).toMatchObject({
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: "400000",
+  });
+  runtime.dispose();
+});
+
 it("resumes an idle session with new credentials", async () => {
   const root = message("2", "@Claude hi", {
     tags: [
@@ -2153,6 +2545,11 @@ it.each(["live", "reload", "legacy"])(
       const previous = f;
       f = setup();
       for (const [key, value] of previous.data) {
+        // A conversation's folder record is no session.
+        if (key.includes("conversation-folder")) {
+          f.data.set(key, value);
+          continue;
+        }
         const saved = JSON.parse(value);
         // Older versions saved only the channel's single `seen` timestamp.
         if (mode === "legacy")
@@ -2306,6 +2703,96 @@ it("takes a plugin's wake in its thread's session, as the plugin's and not a mes
   expect(prompt).toContain(`Thread root: ${root.id}`);
   expect(prompt).not.toContain("<buzz-event");
   expect(prompt).not.toContain(WAKE_ID);
+});
+
+it("restores direct and nested task corrections for a rooted wake", async () => {
+  const root = message("1", "Source requirements");
+  const child = (id: string, parent: string, content: string) =>
+    message(id, content, {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "root"],
+        ["e", parent, "", "reply"],
+      ],
+    });
+  const anchor = child("2", root.id, "Start task");
+  const direct = child("3", anchor.id, "DIRECT_CORRECTION");
+  const nested = child("4", direct.id, "NESTED_CORRECTION");
+  const unrelated = child("5", root.id, "UNRELATED_DISCUSSION");
+  const { deliver, read, claudes } = setup();
+  read.mockImplementation(async (filters) =>
+    [root, anchor, direct, nested, unrelated].filter((event) =>
+      matchFilters(
+        filters as unknown as Parameters<typeof matchFilters>[0],
+        event,
+      ),
+    ),
+  );
+  await deliver(pluginWake(anchor.id), {
+    routeConversation: async () => ({
+      root: root.id,
+      parent: anchor.id,
+      turnContext: "CURRENT_TASK_INSTRUCTIONS",
+    }),
+  });
+  await vi.waitFor(() =>
+    expect(claudes().some((process) => process.prompts.length)).toBe(true),
+  );
+  const prompt = claudes().find((process) => process.prompts.length)
+    ?.prompts[0];
+  expect(prompt).toContain("DIRECT_CORRECTION");
+  expect(prompt).toContain("NESTED_CORRECTION");
+  expect(prompt).toContain("CURRENT_TASK_INSTRUCTIONS");
+  expect(prompt).not.toContain("UNRELATED_DISCUSSION");
+});
+
+it("stops a routed community wake before Claude receives its prompt", async () => {
+  const f = setup();
+  const root = "1".repeat(64);
+  const parent = "2".repeat(64);
+  let reachAdmission!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    reachAdmission = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const config = { ...DEFAULT_CONFIG, scope: "community" as const };
+  const routeConversation = async () => ({ root, parent });
+  const prompts = () => f.claudes().flatMap((process) => process.prompts);
+  await f.deliver(pluginWake(parent), { config, routeConversation });
+  await Promise.all(f.workingUntil.mock.calls.map(([done]) => done));
+  const firstPrompts = prompts();
+  expect(firstPrompts.length).toBeGreaterThan(0);
+  f.interruptible.mockClear();
+  f.workingUntil.mockClear();
+  const running = f.deliver(pluginWake(parent), {
+    config,
+    routeConversation,
+    prepareSession: async () => {
+      reachAdmission();
+      await gate;
+      return undefined;
+    },
+  });
+  try {
+    await entered;
+    const stop = f.interruptible.mock.calls[0]?.[0];
+    if (!stop) throw new Error("Expected a request stop control");
+    const stopping = expect(stop()).resolves.toBeUndefined();
+    release();
+    await Promise.all([running, stopping]);
+    const outcomes = await Promise.all(
+      f.workingUntil.mock.calls.map(([done]) => done),
+    );
+    expect(prompts()).toEqual(firstPrompts);
+    expect(outcomes).toContainEqual({ ok: false, stopped: true });
+  } finally {
+    release();
+    await Promise.allSettled([running]);
+    f.runtime.dispose();
+  }
 });
 
 it("reports a failed wake at its thread's root, never at the wake's own id", async () => {
@@ -2755,8 +3242,60 @@ it("runs a timer as a one-off turn that is never saved", async () => {
   expect(runtime.sessions(self)).toEqual([]);
 });
 
+it("records a one-off turn's session but not its timer while Usage is off, and counts it once Usage is on", async () => {
+  const { deliver, claudes, runtime, storage } = setup();
+  await standaloneSessions(storage, "claude-code", self, () => 0).add(
+    "old",
+    "timer/daily",
+  );
+  const sessionOf = (index: number) => {
+    const args =
+      claudes().filter((process) => process.prompts.length)[index]?.options
+        .args ?? [];
+    return args[args.indexOf("--session-id") + 1] ?? "";
+  };
+  await deliver(timer("daily", "ops"));
+  await flush(10);
+  const off = sessionOf(0);
+  expect(off).toBeTruthy();
+  // Its session is the agent's, as on main; what was past keeping is gone.
+  expect(runtime.sessionPlaces(self, "~/.buzz")).toEqual([
+    { place: "~/.buzz", saved: [], standalone: [off] },
+  ]);
+  const kept = storage
+    .keys()
+    .filter((key) => key.startsWith(STANDALONE_PREFIX))
+    .flatMap((key) => JSON.parse(storage.get(key) ?? "").sessions);
+  expect(kept).toEqual([[off, expect.any(Number)]]);
+  // Turned on, Usage counts the earlier turn, under no routine, and keeps
+  // the key of each turn from then on.
+  runtime.usageOn = () => true;
+  await deliver(timer("weekly", "ops"));
+  await flush(10);
+  const on = sessionOf(1);
+  expect(on).toBeTruthy();
+  expect(runtime.sessionPlaces(self, "~/.buzz")).toEqual([
+    { place: "~/.buzz", saved: [], standalone: [off, on] },
+  ]);
+  const usage = (id: string) => ({
+    id,
+    revision: id,
+    gaps: [],
+    startedAt: 1,
+    lastAt: 2,
+    observations: [],
+  });
+  await expect(
+    runtime.withWakes(self, [usage(off), usage(on)]),
+  ).resolves.toEqual([
+    usage(off),
+    { ...usage(on), wake: "timer/weekly", revision: expect.any(String) },
+  ]);
+});
+
 it("records a one-off turn's session as the agent's, for its usage", async () => {
   const { deliver, claudes, runtime, storage } = setup();
+  runtime.usageOn = () => true;
   await deliver(timer("daily", "ops"));
   await flush(10);
   const claude = claudes().find((process) => process.prompts.length);
@@ -2776,6 +3315,30 @@ it("records a one-off turn's session as the agent's, for its usage", async () =>
   expect(prompts.sessions().map(({ id }) => id)).not.toContain(session);
   expect(runtime.sessionPlaces(self, "~/.buzz")).toEqual([
     { place: "~/.buzz", saved: [], standalone: [session] },
+  ]);
+});
+
+it("tells which timer a one-off turn's session was started for, and no other session's", async () => {
+  const { deliver, claudes, runtime } = setup();
+  runtime.usageOn = () => true;
+  await deliver(timer("daily", "ops"));
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  const args = claude?.options.args ?? [];
+  const session = args[args.indexOf("--session-id") + 1] ?? "";
+  const usage = (id: string) => ({
+    id,
+    revision: id,
+    gaps: [],
+    startedAt: 1,
+    lastAt: 2,
+    observations: [],
+  });
+  await expect(
+    runtime.withWakes(self, [usage(session), usage("a conversation's")]),
+  ).resolves.toEqual([
+    { ...usage(session), wake: "timer/daily", revision: expect.any(String) },
+    usage("a conversation's"),
   ]);
 });
 
@@ -3984,6 +4547,383 @@ it("drops a mention stopped while queued behind an Attention refresh", async () 
   }
 });
 
+const gatewayIdentity = {
+  community_id: "11111111-2222-4333-8444-555555555555",
+  human_pubkey: alice,
+  agent_pubkey: self,
+};
+const eligible = {
+  kind: "eligible",
+  revision: 2,
+  gatewayOrigin: "https://gateway.example",
+  identity: gatewayIdentity,
+  profile: VECTOR_PROFILE,
+  harnesses: ["claude-code"],
+} as const;
+const { headers: roles } = VECTOR_PROFILE;
+/** A person's own gateway setup, as the tray app writes it. */
+const onGateway = {
+  ANTHROPIC_BASE_URL: "https://gateway.example/pass-through/anthropic",
+  ANTHROPIC_CUSTOM_HEADERS: "x-keep: configured",
+};
+/** The runner's frozen `gateway` for a turn caused by `message`. */
+const dispatched = (message: string | null) =>
+  ({
+    gateway: {
+      route: eligible,
+      turn: { channel_id: null, message_id: message, thread_id: null },
+      upstream: { base: "/claude" },
+    },
+  }) as unknown as Partial<Delivery>;
+/** A header's value in Claude's newline-separated custom headers. */
+const header = (headers: string | undefined, name: string) =>
+  headers
+    ?.split("\n")
+    .find((line) => line.startsWith(`${name}: `))
+    ?.slice(name.length + 2);
+/** A thread's root and a reply in it, for a second turn in one conversation. */
+const threadPair = () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude also", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  return { root, reply };
+};
+const settled = (f: ReturnType<typeof setup>) =>
+  Promise.all(f.workingUntil.mock.calls.map(([done]) => done));
+
+it("attributes each new turn, keeps a steer on its turn, and keeps the Buzz session", async () => {
+  const f = setup([], { env: onGateway, hold: true });
+  const { root, reply } = threadPair();
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await vi.waitFor(() => expect(f.claudes()[0]?.prompts).toHaveLength(1));
+  const claude = f.claudes()[0];
+  if (!claude) throw new Error("Expected Claude");
+  // Steered into the running turn: no new attribution.
+  await f.deliver({ type: "mention", event: reply }, dispatched(reply.id));
+  await vi.waitFor(() => expect(claude.prompts).toHaveLength(2));
+  claude.finish();
+  await settled(f);
+  const next = message("4", "@Claude more", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  claude.hold = false;
+  await f.deliver({ type: "mention", event: next }, dispatched(next.id));
+  await vi.waitFor(() => expect(claude.prompts).toHaveLength(3));
+  await settled(f);
+  const [first, steered, third] = claude.headers;
+  expect(header(first, roles.message_id)).toBe(root.id);
+  expect(steered).toBe(first);
+  expect(header(third, roles.message_id)).toBe(next.id);
+  for (const headers of claude.headers)
+    expect(headers?.split("\n")[0]).toBe("x-keep: configured");
+  // One process, one Buzz session saved beside its harness session.
+  expect(f.claudes()).toHaveLength(1);
+  const session = header(first, roles.launcher_session);
+  expect(header(third, roles.launcher_session)).toBe(session);
+  const [saved] = localSessions(f.runtime["storage"], self)
+    .list()
+    .map(([, saved]) => saved);
+  expect(saved?.gateway).toMatchObject({ client_session_id: session });
+  f.runtime.dispose();
+});
+
+it("resumes a stopped session on its Buzz session, and New session starts another", async () => {
+  const f = setup([], { env: onGateway });
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  const turn = async (id: string) => {
+    const event = message(id, "@Claude again", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+        ["p", self],
+      ],
+    });
+    await f.deliver({ type: "mention", event }, dispatched(event.id));
+    await settled(f);
+    const claude = f.claudes().at(-1);
+    return header(claude?.headers.at(-1), roles.launcher_session);
+  };
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  const first = header(f.claudes()[0]?.headers[0], roles.launcher_session);
+  // Its process stopped: the next turn resumes the session in a new one.
+  f.claudes()[0]?.exit(0);
+  await flush();
+  await expect(turn("3")).resolves.toBe(first);
+  expect(f.claudes().at(-1)?.options.args).toContain("--resume");
+  await f.runtime.session(agent, place, "new");
+  const rotated = await turn("4");
+  expect(rotated).toMatch(/^[0-9a-f-]{36}$/);
+  expect(rotated).not.toBe(first);
+  f.runtime.dispose();
+});
+
+it("restores the person's own headers for a turn the gateway doesn't attribute", async () => {
+  const f = setup([], { env: onGateway });
+  const { root, reply } = threadPair();
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  // Blocked or pending: the runner sends it without `gateway`.
+  await f.deliver({ type: "mention", event: reply }, {
+    gatewayFallback: { reason: "network", notice: "Ran without it." },
+  } as unknown as Partial<Delivery>);
+  await settled(f);
+  const [claude] = f.claudes();
+  expect(claude?.prompts).toHaveLength(2);
+  expect(header(claude?.headers[0], roles.message_id)).toBe(root.id);
+  expect(claude?.headers[1]).toBe("x-keep: configured");
+  f.runtime.dispose();
+});
+
+it("runs a turn unattributed, with a notice, off the gateway or when Claude refuses the headers", async () => {
+  const spy = (f: ReturnType<typeof setup>) =>
+    vi.spyOn(
+      f.runtime as unknown as { noted: (...args: unknown[]) => void },
+      "noted",
+    );
+  const { root, reply } = threadPair();
+  const off = setup([], { env: { ANTHROPIC_BASE_URL: "https://api.example" } });
+  const offNoted = spy(off);
+  await off.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(off);
+  expect(off.claudes()[0]?.headers).toEqual([undefined]);
+  expect(offNoted).toHaveBeenCalledWith(self, expect.any(String), ELSEWHERE);
+  off.runtime.dispose();
+
+  const f = setup([], { env: onGateway });
+  const noted = spy(f);
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  const [claude] = f.claudes();
+  if (!claude) throw new Error("Expected Claude");
+  claude.refuseEnv = true;
+  await f.deliver({ type: "mention", event: reply }, dispatched(reply.id));
+  await settled(f);
+  // The conversation goes on in the same process and session.
+  expect(claude.prompts).toHaveLength(2);
+  expect(f.claudes()).toHaveLength(1);
+  expect(noted).toHaveBeenLastCalledWith(self, expect.any(String), UNAPPLIED);
+  await expect(f.workingUntil.mock.calls.at(-1)?.[0]).resolves.toMatchObject({
+    ok: true,
+  });
+  f.runtime.dispose();
+});
+
+it("attributes a compaction under the control's own context, and never refuses one", async () => {
+  let route: typeof eligible | undefined = eligible;
+  const f = setup([], { env: onGateway, gatewayRoute: () => route });
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  const idle = () =>
+    vi.waitFor(() => expect(f.runtime.sessionState(agent, place)).toBe("idle"));
+  await idle();
+  await f.runtime.session(agent, place, "compact");
+  const [claude] = f.claudes();
+  expect(claude?.prompts.at(-1)).toBe("/compact");
+  const compacted = claude?.headers.at(-1);
+  // The control's channel isn't a UUID here, so only its thread is sent;
+  // it never carries a message.
+  expect(header(compacted, roles.thread_id)).toBe(root.id);
+  expect(header(compacted, roles.message_id)).toBeUndefined();
+  expect(header(compacted, roles.launcher_session)).toBe(
+    header(claude?.headers[0], roles.launcher_session),
+  );
+  // Flag off, blocked or pending: it compacts on the person's own headers.
+  route = undefined;
+  await idle();
+  await f.runtime.session(agent, place, "compact");
+  expect(claude?.prompts.at(-1)).toBe("/compact");
+  expect(claude?.headers.at(-1)).toBe("x-keep: configured");
+  f.runtime.dispose();
+});
+
+it("sends no /compact when Interrupt comes while a compaction's attribution reads settings", async () => {
+  const f = setup([], { env: onGateway, gatewayRoute: () => eligible });
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  const idle = () =>
+    vi.waitFor(() => expect(f.runtime.sessionState(agent, place)).toBe("idle"));
+  await idle();
+  const [claude] = f.claudes();
+  if (!claude) throw new Error("No Claude");
+  const prompts = claude.prompts.length;
+  const reads = () =>
+    claude.received.filter(
+      (sent) =>
+        (sent.request as { subtype?: string } | undefined)?.subtype ===
+        "get_settings",
+    ).length;
+  const before = reads();
+  claude.withhold = "get_settings";
+  const compacting = f.runtime.session(agent, place, "compact").then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.waitFor(() => expect(reads()).toBeGreaterThan(before));
+  await f.runtime.session(agent, place, "interrupt");
+  claude.withhold = undefined;
+  claude.answerLate();
+  expect(await compacting).toMatchObject({
+    message: "Session action interrupted",
+  });
+  await flush();
+  expect(claude.prompts).toHaveLength(prompts);
+  expect(
+    claude.received.some(
+      (sent) =>
+        sent.type === "user" && JSON.stringify(sent).includes("/compact"),
+    ),
+  ).toBe(false);
+  // The session is free again: the next compaction runs.
+  await idle();
+  await f.runtime.session(agent, place, "compact");
+  expect(claude.prompts.at(-1)).toBe("/compact");
+  f.runtime.dispose();
+});
+
+it("attributes a standalone wake on a fresh Buzz session it never saves", async () => {
+  const f = setup([], { env: onGateway });
+  const config = DEFAULT_CONFIG;
+  f.runtime.sync([{ pubkey: self, config } as Agent]);
+  const turn = () =>
+    f.runtime.runOnce({
+      delivery: { agent: f.agent, config, ...dispatched(null) },
+      key: "watch",
+      signal: new AbortController().signal,
+      prompt: () => "check the build",
+    } as unknown as Parameters<typeof f.runtime.runOnce>[0]);
+  await expect(turn()).resolves.toMatchObject({ ok: true });
+  await expect(turn()).resolves.toMatchObject({ ok: true });
+  const sessions = f
+    .claudes()
+    .filter((claude) => claude.prompts.length)
+    .map((claude) => header(claude.headers[0], roles.launcher_session));
+  expect(sessions).toHaveLength(2);
+  expect(sessions[0]).toMatch(/^[0-9a-f-]{36}$/);
+  expect(sessions[0]).not.toBe(sessions[1]);
+  expect(localSessions(f.runtime["storage"], self).list()).toEqual([]);
+  f.runtime.dispose();
+});
+
+it("keeps community wake attribution on the shared session and reports a fallback", async () => {
+  const f = setup([], { env: onGateway });
+  const noted = vi.spyOn(
+    f.runtime as unknown as { noted: (...args: unknown[]) => void },
+    "noted",
+  );
+  const config = { ...DEFAULT_CONFIG, scope: "community" as const };
+  f.runtime.sync([{ pubkey: self, config } as Agent]);
+  const turn = (route: Partial<Delivery>) =>
+    f.runtime.runOnce({
+      delivery: { agent: f.agent, config, current: () => true, ...route },
+      key: "watch",
+      signal: new AbortController().signal,
+      prompt: () => "check the build",
+    } as unknown as Parameters<typeof f.runtime.runOnce>[0]);
+  try {
+    const notice = "Ran without gateway attribution: access check pending";
+    await expect(turn(dispatched(null))).resolves.toMatchObject({ ok: true });
+    await expect(
+      turn({ gatewayFallback: { reason: "readiness_pending", notice } }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(turn(dispatched(null))).resolves.toMatchObject({ ok: true });
+
+    const workers = f.claudes().filter((claude) => claude.prompts.length);
+    expect(workers).toHaveLength(1);
+    const [first, ordinary, last] = workers[0]?.headers ?? [];
+    const session = header(first, roles.launcher_session);
+    expect(session).toMatch(/^[0-9a-f-]{36}$/);
+    expect(ordinary).toBe(onGateway.ANTHROPIC_CUSTOM_HEADERS);
+    expect(header(last, roles.launcher_session)).toBe(session);
+    expect(noted).toHaveBeenCalledExactlyOnceWith(
+      self,
+      expect.any(String),
+      notice,
+    );
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("keeps a protected agent's pinned launch unattributed, saying so", async () => {
+  const f = setup([], { env: onGateway, nativeHistory: [] });
+  const noted = vi.spyOn(
+    f.runtime as unknown as { noted: (...args: unknown[]) => void },
+    "noted",
+  );
+  const protection = {
+    key: "policy",
+    stateKey: "revision",
+    processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+    assertAvailable() {},
+    check: vi.fn<AgentProtection["check"]>().mockResolvedValue(),
+    spawn: async () => {
+      throw new Error("Unused protected runtime");
+    },
+  };
+  const root = message("1", "Howzit");
+  await f.deliver({ type: "mention", event: root }, {
+    agent: { ...f.agent, protection },
+    ...dispatched(root.id),
+  } as unknown as Partial<Delivery>);
+  await vi.waitFor(() =>
+    expect(f.claudes().some((worker) => worker.prompts.length)).toBe(true),
+  );
+  const worker = f.claudes().find((candidate) => candidate.prompts.length);
+  try {
+    expect(worker?.options.args).toContain("--setting-sources");
+    expect(
+      worker?.received.some(
+        (message) =>
+          (message.request as { subtype?: string } | undefined)?.subtype ===
+          "apply_flag_settings",
+      ),
+    ).toBe(false);
+    expect(worker?.headers).toEqual(["x-keep: configured"]);
+    expect(noted).toHaveBeenCalledWith(self, expect.any(String), PROTECTED);
+  } finally {
+    worker?.finish();
+    await f.runtime.retire(self);
+  }
+});
+
 it.each(["host", "self", "background"] as const)(
   "revokes a native Claude operation proof when its %s turn ends during a read",
   async (turn) => {
@@ -4156,6 +5096,54 @@ describe("a conversation given its own folder", () => {
       "Your persistent workspace is at `/Users/me/.buzz`, not in your working directory",
     );
     expect(published).toEqual([]);
+  });
+
+  it("refuses a folder once the conversation's first session started in the workspace", async () => {
+    const { deliver, claudes, data } = setup([root, mention], {
+      resolveDirectory: folders(),
+    });
+    await deliver({ type: "mention", event: mention });
+    await flush(10);
+    expect(claudes().find((process) => process.prompts.length)).toBeDefined();
+    await expect(assign(data, "/repos/worktree")).rejects.toThrow(
+      "already started in the agent's workspace",
+    );
+  });
+
+  it("tells a Solo chat that works there to read its Canvas's folders, not to make a worktree", async () => {
+    const { deliver, claudes, data } = setup([], {
+      resolveDirectory: folders(),
+      solo: new Set([channel]),
+      canvas: {
+        content: workspaceCanvas({
+          folders: ["~/Development/app"],
+          worktree: { location: "~/Development/trees", baseBranch: "main" },
+          canvas: "Use the design system.",
+        }),
+      },
+    });
+    await assign(data, "/repos/worktree", channel);
+    await deliver({
+      type: "mention",
+      event: message("1", "@Claude go", {
+        tags: [
+          ["h", channel],
+          ["p", self],
+        ],
+      }),
+    });
+    await flush(10);
+    const claude = claudes().find((process) => process.prompts.length);
+    expect(claude?.options.cwd).toBe("/repos/worktree");
+    expect(systemPromptOf(claude)).toContain(
+      "This conversation has its own folder, and it is your working directory.",
+    );
+    const turn = claude?.prompts[0];
+    expect(turn).toContain(
+      "These folders hold code that is relevant to this chat: `~/Development/app`, `~/Development/trees`. They are for reading.",
+    );
+    expect(turn).toContain("## Project folders\n\n- `~/Development/app`");
+    expect(turn).not.toContain("create a new worktree");
   });
 
   it("starts a protected agent there, contained as in its workspace", async () => {
@@ -4347,6 +5335,71 @@ describe("a conversation given its own folder", () => {
       fake.processes.filter((process) => process.id === "workspace"),
     ).toHaveLength(2);
   });
+});
+
+it("keeps a turn's notice under its prompt when a live refresh replaces the turns a full read showed", async () => {
+  const f = setup([]);
+  const agent = f.agent.key as AgentKey;
+  const conversation = { agent, channelId: channel, root: "r" } as never;
+  const turn = (reply: string): TranscriptTurn =>
+    ({
+      turnId: "t1",
+      channelId: channel,
+      threadRootId: "r",
+      triggeringEventIds: [],
+      sessionId: "s1",
+      newSession: true,
+      config: [],
+      startedAt: 1,
+      partial: false,
+      items: [
+        { id: "u1", at: 1, type: "prompt", text: "hi" },
+        { id: "a1", at: 2, type: "text", text: reply },
+      ],
+    }) as unknown as TranscriptTurn;
+  const notice = "Ran without gateway attribution: a reason.";
+  (
+    f.runtime as unknown as {
+      noted(agent: AgentKey, uuid: string, notice: string): void;
+    }
+  ).noted(agent, "u1", notice);
+  const notices = (turns: readonly TranscriptTurn[] | undefined) =>
+    (turns ?? []).flatMap((t) =>
+      t.items.filter((item) => item.type === "status" && item.text === notice),
+    );
+  transcriptReads.full = async () => ({ turns: [turn("working")] });
+  const full = await f.runtime.transcript(
+    conversation,
+    "~/.buzz",
+    true,
+    new AbortController().signal,
+  );
+  expect(notices(full?.turns)).toHaveLength(1);
+  transcriptReads.latest = async () => [turn("done")];
+  const latest = await f.runtime.latestTurns(
+    conversation,
+    "~/.buzz",
+    true,
+    new AbortController().signal,
+    full?.turns ?? [],
+  );
+  const merged = full && latest && withLatest(full, latest);
+  expect(notices(merged?.turns)).toHaveLength(1);
+  const items = merged?.turns[0]?.items ?? [];
+  expect(items.map((item) => item.id)).toEqual(["u1", "u1:notice", "a1"]);
+  // A prompt that first arrives in a live update shows its notice too.
+  expect(
+    notices(
+      await f.runtime.latestTurns(
+        conversation,
+        "~/.buzz",
+        true,
+        new AbortController().signal,
+        [],
+      ),
+    ),
+  ).toHaveLength(1);
+  f.runtime.dispose();
 });
 
 it.each([

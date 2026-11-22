@@ -111,7 +111,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       if (nativeIdentityEnabled()) handoff(false);
     };
   });
-  // The account's community list follows this sign-in; see docs/communities.md.
+  // The account's community list follows this sign-in.
   // Where no sign-in is possible, no owner runs, so the rail has no sync to
   // report on.
   if (loginAvailable)

@@ -90,13 +90,23 @@ test("a Solo chat alone with an agent tags it while a background read-state snap
     exact: true,
   });
   try {
-    const started = page.waitForResponse(
-      (response) =>
+    // Startup takes two snapshots: read state's foreground read and own
+    // follow state's background recovery. Let both finish before the gap, so
+    // the held snapshot is the one read state takes after it.
+    let startup = 0;
+    const started = Promise.withResolvers();
+    const count = (response) => {
+      if (
         query(response.request()) &&
-        isSnapshot(response.request().postDataJSON()),
-    );
+        isSnapshot(response.request().postDataJSON()) &&
+        ++startup === 2
+      )
+        started.resolve();
+    };
+    page.on("response", count);
     await page.goto(app.origin);
-    await started;
+    await started.promise;
+    page.off("response", count);
     await expect(row).toBeVisible();
     gapped = true;
     inventoryAnswered = false;

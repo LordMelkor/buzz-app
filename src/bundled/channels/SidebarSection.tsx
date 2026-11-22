@@ -274,7 +274,8 @@ export function SidebarSection({
                                 </MenuGroupLabel>
                                 {channels.rows.map((channel) => {
                                   const select = () => {
-                                    onToggle(true);
+                                    if (channel.channelType !== "solo")
+                                      onToggle(true);
                                     channels.select(channel.id);
                                     setMenuOpen(false);
                                   };

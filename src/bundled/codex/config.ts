@@ -2,6 +2,7 @@ import {
   sessionScope,
   type SessionScope,
 } from "../../features/agent-harness/session-scope";
+import { compactAt } from "../../features/agents/compact-at";
 import { PRESET } from "../../features/agents/recommended";
 
 export type Config = {
@@ -16,6 +17,9 @@ export type Config = {
    * instead of turning them off. This device's only, as Apps follow its
    * Codex sign-in; never for protected agents. */
   apps?: true;
+  /** The context size, in tokens, its threads compact at, when below
+   * Codex's own; unset is Codex's default. This device's only. */
+  compactAt?: string;
   /** On Recommended, whose model and thinking level runs replace these. */
   preset?: typeof PRESET;
 };
@@ -70,6 +74,9 @@ export function config(raw: unknown): Config {
         : defaults.workspace,
     scope: sessionScope(value.scope),
     ...(value.apps === true ? { apps: true as const } : {}),
+    ...(compactAt(value.compactAt)
+      ? { compactAt: value.compactAt as string }
+      : {}),
     ...(value.preset === PRESET ? { preset: PRESET } : {}),
   };
 }

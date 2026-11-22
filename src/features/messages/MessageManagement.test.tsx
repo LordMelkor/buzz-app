@@ -876,14 +876,14 @@ it("keeps showing Follow thread when the choice cannot be saved", async () => {
       await screen.findByRole("menuitem", { name: "Follow thread" }),
     );
     expect(setItem).toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save thread follow. Try again.",
+    );
   } finally {
     setItem.mockRestore();
   }
   expect(h.owner.session.unread.following("room", h.original.id)).toBe(false);
   expect(savedFollows()).toEqual([]);
-  expect(screen.getByRole("alert")).toHaveTextContent(
-    "Could not save thread follow. Try again.",
-  );
   fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
   fireEvent.click(
     await screen.findByRole("menuitem", { name: "Follow thread" }),

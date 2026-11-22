@@ -1,7 +1,7 @@
 import type { Node as EditorNode } from "prosemirror-model";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { expect, it } from "vitest";
-import { composerCodeBlockExit } from "./composer-blocks";
+import { composerBlockPrefix, composerCodeBlockExit } from "./composer-blocks";
 import {
   projectComposerDocument,
   composerSchema as schema,
@@ -21,6 +21,17 @@ function at(node: EditorNode, head: number, anchor = head) {
     selection: TextSelection.create(node, anchor, head),
   });
 }
+
+it("opens an editable heading only for a document's plain line prefix", () => {
+  for (const line of ["# ", "###### ", "####### ", "x # ", "\\# "]) {
+    const state = at(doc.create(null, prose(line)), line.length + 1);
+    const result = composerBlockPrefix(state, " ", "document");
+    expect(result?.doc.firstChild?.attrs.level).toBe(
+      line === "# " ? 1 : line === "###### " ? 6 : undefined,
+    );
+    expect(composerBlockPrefix(state, " ", "chat")).toBeUndefined();
+  }
+});
 
 it.each([
   ["empty", ""],

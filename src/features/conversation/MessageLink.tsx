@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useConversationPresentation } from "./ConversationPresentation";
 import {
   useContext,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -21,11 +22,8 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import {
   BrowserIcon,
-  ChatCircleIcon,
   CopyIcon,
-  CaretRightIcon,
   ThreadIcon,
-  LockIcon,
 } from "../../shared/design-system/icons";
 import { ToastNotice } from "../../shared/design-system/ui/Toast";
 import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
@@ -36,8 +34,9 @@ import {
 } from "../messages/composer-session";
 import { parseBuzzLink, isBuzzLink } from "../navigation/buzz-links";
 import { safeLinkUrl } from "../relay/message-content";
+import { canonicalDetailsName } from "../relay/channel-details-protocol";
 import {
-  LinkChannelPrivateContext,
+  LinkChannelKindContext,
   LinkDescriptionContext,
   LinkAccessibleNameContext,
   LinkInteractiveContext,
@@ -98,6 +97,7 @@ export function MessageLink({
   scope,
   interactive = true,
   channelPrivate = false,
+  channelSolo = false,
 }: {
   url: string;
   children?: ReactNode;
@@ -112,6 +112,8 @@ export function MessageLink({
   scope?: string | undefined;
   interactive?: boolean;
   channelPrivate?: boolean;
+  /** The joined list holds the destination as a Solo chat, confirmed or not. */
+  channelSolo?: boolean;
 }) {
   const active = useConversationPresentation();
   const renderers = useSyncExternalStore(
@@ -136,25 +138,27 @@ export function MessageLink({
   const parsed = internal ? parseBuzzLink(url) : null;
   const destination = parsed?.format === "legacy" ? parsed : undefined;
   const host = fullSession(session);
-  // Channel-only links name a channel the reader may not have joined. A
-  // composer decoration is the writer's own draft: it never looks one up.
+  // Any Buzz link names a channel the reader may not have joined. A composer
+  // decoration is the writer's own draft: it never looks one up.
+  const lookedUp = interactive ? destination?.channelId : undefined;
+  // Only a channel-only link presents the channel itself; a message or thread
+  // link keeps its own text and preview, and uses the answer only to stay
+  // inert while the channel is withheld.
   const referenced =
-    interactive &&
-    destination &&
-    !destination.messageId &&
-    !destination.threadRootId
-      ? destination.channelId
+    destination && !destination.messageId && !destination.threadRootId
+      ? lookedUp
       : undefined;
-  const reference = useChannelReference(host?.channels, referenced);
+  const reference = useChannelReference(host?.channels, lookedUp);
   // Subscribe to the session's presentation, including chosen-name provenance.
   // A string snapshot stays stable when unrelated channel activity changes.
+  const channels = session?.channels;
   const chatName = useSyncExternalStore(
-    host?.channels.subscribeList ?? subscribe,
+    channels?.subscribeList ?? subscribe,
     () => {
       if (!destination || destination.messageId || destination.threadRootId)
         return "";
-      const channel = host?.channels
-        .list()
+      const channel = channels
+        ?.list()
         .channels.find((item) => item.id === destination.channelId);
       return channel?.channelType === "solo" && !channel.cached
         ? soloChatLinkName(channel)
@@ -162,24 +166,64 @@ export function MessageLink({
     },
     () => "",
   );
-  // Authored Session labels survive access loss; they are presentation only.
-  const sentChatName = label?.match(/^(?:Session|Chat)(?::| ·)\s+(.+)$/s)?.[1];
-  const chatChip = !!(
-    destination &&
-    !destination.messageId &&
-    !destination.threadRootId &&
-    (chatName ||
-      (reference.state === "found" && reference.channelType === "solo") ||
-      (reference.state !== "found" && sentChatName))
-  );
-  const chipName =
-    chatName || sentChatName || destination?.channelId.slice(0, 8);
-  const chatLabel = chatChip ? `Chat: ${chipName}` : undefined;
-  const named = namedChannel(reference);
+  const named = referenced ? namedChannel(reference) : undefined;
   const withheld = reference.state === "withheld";
-  // The authored label is message text, so it stays; the lock marks it. A raw
-  // destination has no name to show.
-  const shown = withheld && label === undefined ? "Private channel" : children;
+  const withheldChannel = withheld && !!referenced;
+  // A card focused while the lookup was pending stops being a link once the
+  // channel is withheld, and its focused node is replaced: return focus to
+  // the link the reader came from.
+  const cardFocused = useRef(false);
+  useLayoutEffect(() => {
+    if (!withheld || !cardFocused.current) return;
+    cardFocused.current = false;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body)
+      trigger.current?.focus({ preventScroll: true });
+  }, [withheld]);
+  const soloChat =
+    !!chatName ||
+    (!!referenced &&
+      reference.state === "found" &&
+      reference.channelType === "solo");
+  const channelKind = withheldChannel
+    ? "private"
+    : soloChat
+      ? "chat"
+      : channelPrivate || named?.private
+        ? "private"
+        : "channel";
+  const channelName = withheldChannel
+    ? undefined
+    : (directoryLabel ?? (named ? `#${named.name}` : undefined));
+  // The `#` completion writes a channel's name of the moment as its Markdown
+  // link's text. Text that is only `#` and a channel name, which may hold
+  // spaces, therefore follows the channel's current name once known, as a
+  // profile link follows its person's. `#name` prose has no children: its
+  // author wrote that name. A listed channel whose metadata has not arrived
+  // is called by the start of its ID, which is no name to show instead, and
+  // a Solo chat's title is not a channel name. The length is checked first:
+  // it keeps the canonical-name scan, quadratic in whitespace, off an
+  // arbitrary label.
+  const written =
+    !channelSolo &&
+    channelName?.startsWith("#") &&
+    channelName !== `#${destination?.channelId.slice(0, 8)}` &&
+    typeof children === "string" &&
+    children.startsWith("#")
+      ? children.slice(1)
+      : "";
+  const current =
+    written &&
+    [...written].length <= 120 &&
+    written === canonicalDetailsName(written)
+      ? channelName
+      : undefined;
+  // Any other authored label is message text, so it stays; the lock marks it.
+  // A raw destination has no name to show.
+  const shown =
+    withheldChannel && label === undefined
+      ? "Private channel"
+      : (current ?? children);
   // A raw message destination names its author once read; a draft never reads.
   const byline = useLinkedMessageByline(
     interactive && label === undefined && children === undefined
@@ -189,10 +233,11 @@ export function MessageLink({
     destination?.messageId,
   );
   const display =
+    current ??
     label ??
-    byline ??
-    directoryLabel ??
-    (named ? `#${named.name}` : withheld ? "Private channel" : undefined);
+    (withheldChannel
+      ? "Private channel"
+      : (byline ?? (chatName || undefined) ?? channelName));
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLAnchorElement>();
   const [copying, setCopying] = useState(false);
@@ -290,72 +335,36 @@ export function MessageLink({
   };
   const anchor = (entry?: Contribution<LinkRenderer>) => {
     const Content = entry?.component;
-    const content =
-      chatChip && destination ? (
-        <span className={styles.soloChip}>
-          <span className={styles.soloIcon}>
-            <ChatCircleIcon size={16} aria-hidden="true" />
-          </span>
-          <span className={styles.soloPrefix}>Chat:</span>
-          <span className={styles.soloName}>{chipName}</span>
-          {withheld ? (
-            <LockIcon
-              className={styles.soloLock}
-              size={12}
-              aria-hidden="true"
-            />
-          ) : reference.state === "found" ? (
-            <CaretRightIcon size={16} aria-hidden="true" />
-          ) : null}
-        </span>
-      ) : Content ? (
-        <Content url={url} />
-      ) : (
-        (shown ?? display ?? url)
-      );
+    const content = Content ? <Content url={url} /> : (shown ?? display ?? url);
     // Selection copy reads the authored label; empty marks a raw destination.
     const element = interactive ? (
       <a
         ref={trigger}
         href={url}
-        aria-label={
-          chatLabel
-            ? withheld
-              ? `${chatLabel}, unavailable`
-              : `Open ${chatLabel}`
-            : (accessibleName ?? display)
-        }
+        aria-label={accessibleName ?? display}
         aria-description={
-          chatChip && withheld
-            ? "Chat unavailable. You don’t have access, or it no longer exists."
-            : description
+          // A withheld message link has no title; its preview says why.
+          description ??
+          (withheld && !referenced ? previewFailures.withheld : undefined)
         }
         aria-disabled={withheld || undefined}
-        data-link-label={label ?? ""}
+        data-link-label={current ?? label ?? ""}
         data-panel-target={panelTarget ? url : undefined}
-        data-solo-link={chatChip ? "" : undefined}
         title={
-          chatLabel
-            ? withheld
-              ? `${chatLabel}. Chat unavailable. You don’t have access, or it no longer exists.`
-              : chatLabel
-            : withheld
-              ? previewFailures.withheld
-              : !preview && !named
-                ? url
-                : undefined
+          withheld && !preview
+            ? previewFailures.withheld
+            : !preview && !named
+              ? url
+              : undefined
         }
-        className={chatChip ? styles.soloLink : entry?.className}
+        className={entry?.className}
         data-link-renderer={entry?.key}
         {...navigation}
       >
         {content}
       </a>
     ) : (
-      <span
-        className={chatChip ? styles.soloLink : entry?.className}
-        data-link-renderer={entry?.key}
-      >
+      <span className={entry?.className} data-link-renderer={entry?.key}>
         {content}
       </span>
     );
@@ -431,9 +440,26 @@ export function MessageLink({
     const linked = root ? (
       <PreviewCard
         trigger={menuTrigger}
+        // A withheld destination's card only explains why; it isn't a link
+        // until a recheck admits the reader.
         {...(controls
           ? { actionRef: offeredAction }
-          : { link: <a href={url} {...navigation} /> })}
+          : withheld
+            ? {}
+            : {
+                link: (
+                  <a
+                    href={url}
+                    {...navigation}
+                    onFocus={() => {
+                      cardFocused.current = true;
+                    }}
+                    onBlur={() => {
+                      cardFocused.current = false;
+                    }}
+                  />
+                ),
+              })}
         open={previewOpen && !!card && !menuOpen}
         onOpenChange={(next) => {
           if (next) lift.current = previewGap;
@@ -463,8 +489,9 @@ export function MessageLink({
         <MenuPopup size="compact" anchor={menuAnchor} finalFocus={trigger}>
           {thread ? (
             <MenuItem
+              disabled={withheld}
               onClick={() => {
-                if (!active) return;
+                if (!active || withheld) return;
                 // The host records the focused link as the tab's return target.
                 if (trigger.current?.isConnected)
                   trigger.current.focus({ preventScroll: true });
@@ -535,9 +562,7 @@ export function MessageLink({
     </>
   );
   return (
-    <LinkChannelPrivateContext
-      value={channelPrivate || withheld || !!named?.private}
-    >
+    <LinkChannelKindContext value={channelKind}>
       <LinkLabelContext value={display}>
         <LinkContentContext value={shown}>
           <LinkInteractiveContext value={interactive}>
@@ -557,6 +582,6 @@ export function MessageLink({
           </LinkInteractiveContext>
         </LinkContentContext>
       </LinkLabelContext>
-    </LinkChannelPrivateContext>
+    </LinkChannelKindContext>
   );
 }

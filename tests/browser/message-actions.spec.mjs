@@ -294,7 +294,7 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   });
   await hoverMessage(row);
   await copyLink.click();
-  await root.hover();
+  await page.mouse.move(0, 0);
   await expect(actions).toHaveCSS("opacity", "0");
   // Tab only exercises the keyboard path if focus is still on Copy link, so
   // it lands on the row's next control. Copy link is briefly disabled while
@@ -347,6 +347,11 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   await expect(trigger).not.toBeFocused();
   await page.mouse.move(0, 0);
   await expect(actions).toHaveCSS("opacity", "0");
+  // Copy feedback overlays the thread; let it expire with the pointer outside
+  // before exercising the message controls beneath it.
+  await expect(
+    page.getByRole("region", { name: "App notifications" }).getByRole("dialog"),
+  ).toHaveCount(0);
   await hoverMessage(root);
   await root.getByRole("button", { name: "Add reaction", exact: true }).click();
   await page.locator('em-emoji-picker input[type="search"]').fill("thumbsup");

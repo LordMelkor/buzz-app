@@ -1244,7 +1244,9 @@ it("keeps hosted instructions on cancellation and resets a confirmed discard", a
   expect(runtime.closest(".buzz-settings-group")).toHaveTextContent(
     "Workspace",
   );
-  expect(runtime.closest(".buzz-settings-group")).toHaveTextContent("Sessions");
+  expect(runtime.closest(".buzz-settings-group")).toHaveTextContent(
+    "Session scope",
+  );
   expect(screen.queryByRole("button", { name: /^Model:/ })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "Thinking" })).toBeNull();
   await user.click(screen.getByRole("tab", { name: "Identity" }));

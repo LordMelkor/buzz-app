@@ -33,6 +33,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AssistantEntry,
   createRegistry,
+  DEFAULT_COMPACTION_POLICY,
   defineDoc,
   defineExtension,
   defineTool,
@@ -567,6 +568,42 @@ const UNRUN = new Set([
 ]);
 /** Messages that arrive while Pi works join its run at the next boundary. */
 const SETTINGS = { steeringMode: "all" };
+/** An agent's compaction at `tokens`, for every model `models` lists, so a
+ * run resumed on any of them has it: a compaction starts in the background
+ * there, or as early as Pi's own would. */
+export class Compaction {
+  tokens;
+  overrides;
+  constructor(models) {
+    this.models = models;
+  }
+  /** Compacts at `tokens`, or Pi's default when unset. */
+  use(tokens) {
+    if (tokens === this.tokens) return;
+    this.tokens = tokens;
+    this.overrides = undefined;
+  }
+  /** Pi's settings, read at each use. */
+  settings() {
+    const { tokens } = this;
+    if (!tokens) return SETTINGS;
+    const { reserveTokens, backgroundTokens } = DEFAULT_COMPACTION_POLICY;
+    this.overrides ??= Object.fromEntries(
+      this.models()
+        .filter(({ contextWindow }) => contextWindow > 0)
+        .map(({ provider, id, contextWindow }) => [
+          `${provider}/${id}`,
+          {
+            backgroundTokens: Math.max(
+              backgroundTokens,
+              contextWindow - reserveTokens - tokens,
+            ),
+          },
+        ]),
+    );
+    return { ...SETTINGS, compaction: { modelOverrides: this.overrides } };
+  }
+}
 /** Pi's own default thinking level, for a model that thinks. */
 const THINKING = "medium";
 /** A lock left by a host that was killed is taken over after this long. */
@@ -1264,6 +1301,15 @@ export function serve({
       install(createToolSearchExtension());
       for (const extension of packages.extensions) install(extension);
       const storage = await openNodeSqliteStorage(path);
+      const compaction = new Compaction(() =>
+        models.getProviders().flatMap((provider) =>
+          models.getModels(provider.id).map((model) => ({
+            provider: provider.id,
+            id: model.id,
+            contextWindow: model.contextWindow,
+          })),
+        ),
+      );
       harness = await Harness.open(
         storage,
         {
@@ -1271,7 +1317,7 @@ export function serve({
             ? protectModels(routed, inspect, conversationFor)
             : routed,
           registry,
-          settings: SETTINGS,
+          settings: () => compaction.settings(),
           telemetry: requestTelemetry(),
           // Its tools' commands, and only theirs, act as this agent.
           env: ({ cwd }) => {
@@ -1293,6 +1339,7 @@ export function serve({
         harness,
         storage,
         registry,
+        compaction,
         install,
         conversations,
         release,
@@ -1994,8 +2041,15 @@ export function serve({
     if (Object.keys(change).length)
       await conversation.configure(change, context);
     if (refresh) {
-      const prompt = await refresh();
+      const prompt = await refresh(!!steers);
       if (!prompt) return;
+      // Built past any wait: a new run takes the instructions current now,
+      // which its prompt's Canvas reads too. A steer keeps its run's.
+      if (!steers && prompt.instructions !== undefined)
+        await conversation.configure(
+          { instructions: prompt.instructions },
+          context,
+        );
       turn = { ...turn, ...prompt };
     }
     if (withdrawn?.()) return;
@@ -2163,9 +2217,11 @@ export function serve({
         : { ok: true, message: `Connected to ${model.modelId}` };
     },
     /** Opens the agent's storage, once, with its Buzz tools as they are now. */
-    async open({ agent, tools, hint, credential }) {
+    async open({ agent, tools, hint, credential, compactAt }) {
       if (credential) credentials.set(agent, credential);
       const opened = await opening(agent);
+      // Before anything resumes a run left unfinished.
+      opened.compaction.use(compactAt);
       const listed = JSON.stringify([tools, hint]);
       if (opened.tools !== listed) {
         opened.install(buzz(opened, tools, hint));
@@ -2296,6 +2352,8 @@ export function serve({
         throw error;
       }
       if (gatewayTurn) opened.recorded.keys.add(key);
+      // Before this turn waits on a run it resumes.
+      opened.compaction.use(turn.compactAt);
       const prior = opened.queues.get(key);
       const delivered = (async () => {
         await prior?.catch(() => undefined);
@@ -2355,13 +2413,31 @@ export function serve({
           return submitted;
         };
         const prompt = refresh
-          ? () => call("prompt", { agent, request: turn.request })
+          ? (steers) => call("prompt", { agent, request: turn.request, steers })
           : undefined;
         let bound;
         try {
           // A `new` session a host stopped partway through is done first.
           if (opened.recorded.resets.has(key))
             await resetPending(opened, conversation, key);
+          // A request Pi has already is answered by its own submission, in
+          // the mode it ran in: asked again, it binds and configures nothing,
+          // and its prompt is not built again, so notes it would take stay
+          // for the next turn. Its run, continuing, reads the memory and
+          // messages it was given.
+          const held = await opened.storage.submissionByRequest(
+            conversation.id,
+            turn.request,
+            context,
+          );
+          if (held) {
+            opened.cores.set(conversation.id, turn.core?.text);
+            opened.contexts.set(conversation.id, tools);
+            return placed({
+              submission: held.id,
+              conversation: conversation.id,
+            });
+          }
           // An ordinary turn, in a conversation with no gateway work, runs
           // as on main.
           if (
@@ -2394,22 +2470,6 @@ export function serve({
             if (!submitted) return false;
             if (session !== undefined) Object.assign(submitted, { session });
             return placed(submitted);
-          }
-          // A request Pi has already is answered by its own submission, in
-          // the mode it ran in: asked again, it binds and configures nothing.
-          // Its run, continuing, reads the memory and messages it was given.
-          const held = await opened.storage.submissionByRequest(
-            conversation.id,
-            turn.request,
-            context,
-          );
-          if (held) {
-            opened.cores.set(conversation.id, turn.core?.text);
-            opened.contexts.set(conversation.id, tools);
-            return placed({
-              submission: held.id,
-              conversation: conversation.id,
-            });
           }
           bound = await bind(opened, turn, {
             key,
@@ -2490,6 +2550,7 @@ export function serve({
      * requests, and no Activity. */
     async once({ agent, gatewayTurn, ...turn }) {
       const opened = await agentOf(agent);
+      opened.compaction.use(turn.compactAt);
       const conversation = await opened.harness.createConversation(
         { ownership: { kind: "ownerless" } },
         context,

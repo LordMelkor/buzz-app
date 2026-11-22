@@ -18,7 +18,7 @@ export function MessageListRow({
   sender: ReactNode;
   source: ReactNode;
   time: ReactNode;
-  preview: string;
+  preview: ReactNode;
   previewId?: string | undefined;
   unread?: boolean;
 } & Omit<

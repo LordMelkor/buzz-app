@@ -36,18 +36,12 @@ on another computer.
 
 ### 3. Join a community
 
-Open your invite link and choose **Accept invite in Buzz**, or paste the link
-into the **Join a community** screen and click **Join**. If the link opens
-Buzz 0.X instead, paste it. Already a member from Buzz 0.X? Paste the
-community's address, such as `https://feedback.communities.buzz.xyz`. Add more
-communities later from the community button in the top-right corner →
-**Join a community**.
+Open an invite link and choose **Accept invite in Buzz**, or paste it into
+**Join a community**. Already in a community from Buzz 0.X? Paste its address.
 
-**No invite?** Paste the Buzz feedback community's invite,
-`https://feedback.communities.buzz.xyz/invite/v2.25_y9TSEwLpbhuk22iYuq_xW6AELuvyN-jTmnFHwdJ0`,
-create one with **Create a community** (or at [buzz.xyz](https://buzz.xyz)), or
-[run your own relay](https://github.com/block/buzz#i-want-my-own-hosted-relay)
-from block/buzz.
+**No invite?** Join the [Buzz community](https://buzz.communities.buzz.xyz/invite/v2.EeLHaUAe23P7qK0NuWnsdfnH-6L0wJLDnnzpFzrG7rQ),
+start one with **Create a community** (or at [buzz.xyz](https://buzz.xyz)), or
+[run your own relay](https://github.com/block/buzz#i-want-my-own-hosted-relay).
 
 ![The Join a community screen](docs/assets/readme/join-community.png)
 
@@ -122,7 +116,7 @@ Some parts change less than others:
 - **Likely to break:** reading relay data, anything added to conversations or
   the sidebar, agent hooks, and UI added to pages Buzz owns.
 
-See [plugin architecture](docs/plugin-architecture.md) to build one.
+See [plugins](docs/plugins.md) to build one.
 
 ## Build from source
 
@@ -134,17 +128,16 @@ bin/just desktop
 
 Hermit in `bin/` pins every tool. Desktop builds also need the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). See
-[contributing](docs/contributing.md) for development setup, live relay
-development, testing and hooks, and [plugin architecture](docs/plugin-architecture.md)
+[contributing](CONTRIBUTING.md) for development setup, live relay
+development, testing and hooks, and [plugins](docs/plugins.md)
 to build plugins.
 
 ## Project resources
 
-- [Contributing](docs/contributing.md)
-- [Plugin architecture and the `buzzodz` CLI](docs/plugin-architecture.md)
+- [Contributing](CONTRIBUTING.md)
+- [Plugins](docs/plugins.md)
 - [Contextual identity names: cross-client spec and fixtures](src/bundled/identity-naming/README.md)
 - [Mention rules: cross-client spec and fixtures](src/bundled/mentions/README.md)
-- [Buzz feedback community invite](https://feedback.communities.buzz.xyz/invite/v2.25_y9TSEwLpbhuk22iYuq_xW6AELuvyN-jTmnFHwdJ0)
 - [@buzzdotxyz on X](https://x.com/buzzdotxyz)
 - [Project leads](CODEOWNERS)
 - [Governance](GOVERNANCE.md)

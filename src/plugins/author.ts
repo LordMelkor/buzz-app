@@ -30,8 +30,18 @@ export type {
   PageSidebarProps,
   Pages,
 } from "../features/pages/service";
+export type { Seen } from "../features/seen/service";
 export type { Backdrop, Backdrops } from "../features/backdrops/service";
+export type { Notices } from "../features/notices/service";
 export type { SubjectLift } from "../features/messages/subject-lift";
+export type {
+  PluginButtonProps,
+  PluginDialogProps,
+  PluginFieldProps,
+  PluginInputProps,
+  PluginSwitchProps,
+  PluginUi,
+} from "../features/plugin-ui/contract";
 export type {
   SidebarRow,
   SidebarRowSortMode,
@@ -73,6 +83,11 @@ export type {
 } from "../bundled/channels/ChannelGeneralAccess";
 export type { MemberChange } from "../features/channel-members/administration-protocol";
 export type {
+  DocumentEditorProps,
+  DocumentEditorHandle,
+  DocumentEditorSelection,
+} from "../features/messages/DocumentEditor";
+export type {
   ConversationWorkspaceProps,
   PageTabTarget,
   PageTabOptions,
@@ -105,6 +120,8 @@ export type {
   MessageRenderer,
   MessageAction,
   IdentityMark,
+  OutgoingMessage,
+  SendGate,
   TargetOpener,
 } from "../features/conversation/contracts";
 export type { RelayData, RelaySnapshot } from "../features/relay/service";
@@ -182,6 +199,7 @@ export type {
   AgentSession,
   AgentSessions,
   Delivery,
+  GatewayHarnessSource,
   ModelSettings,
   NoteChange,
   PluginNote,

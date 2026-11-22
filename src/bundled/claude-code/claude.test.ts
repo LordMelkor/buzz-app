@@ -5,6 +5,7 @@ import type { AgentHandle } from "../../features/agents/service";
 import { ClaudeProcess, stepLabel } from "./claude";
 import {
   backgroundTasks,
+  type FakeClaude,
   fakeSpawn,
   flush,
   sessionState,
@@ -59,6 +60,20 @@ it("starts Claude as the SDK does and initializes it with the system prompt", as
   });
   expect(claude.sessionId).toBe("new-session");
   expect(claude.started).toBe(false);
+});
+
+it.each([
+  [undefined, undefined],
+  [200000, "200000"],
+])("starts Claude compacting at %s tokens", async (compactAt, window) => {
+  const { spawn, processes } = fakeSpawn();
+  await ClaudeProcess.start(spawn, {
+    ...launch,
+    ...(compactAt && { compactAt }),
+  });
+  expect(processes[0]?.options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(
+    window,
+  );
 });
 
 it("resumes a session on the system prompt it is launched with, not the one it saved", async () => {
@@ -882,6 +897,125 @@ it("allows tool use and acknowledges hooks it is asked about", async () => {
     },
   ]);
 });
+
+it("cancels a Buzz tool still running when its turn settles, failed or not, and serves the next turn's", async () => {
+  const { spawn, processes } = fakeSpawn();
+  const signals: AbortSignal[] = [];
+  let called = () => {};
+  const tools = vi.fn(
+    (_conversation: unknown, _message: unknown, signal: AbortSignal) => {
+      signals.push(signal);
+      called();
+      return new Promise<never>(() => {});
+    },
+  );
+  const claude = await ClaudeProcess.start(spawn, {
+    ...launch,
+    sessionId: "s1",
+    tools,
+  });
+  const fake = processes[0];
+  if (!fake) throw new Error("no process");
+  fake.hold = true;
+  const call = (id: string) => {
+    const reached = new Promise<void>((resolve) => {
+      called = resolve;
+    });
+    fake.emit({
+      type: "control_request",
+      request_id: id,
+      request: {
+        subtype: "mcp_message",
+        server_name: "buzz",
+        message: { jsonrpc: "2.0", id: 3, method: "tools/call" },
+      },
+    });
+    return reached;
+  };
+  const taken = (text: string) => {
+    let submitted = () => {};
+    const written = new Promise<void>((resolve) => {
+      submitted = resolve;
+    });
+    return { settled: claude.send(text, { submitted }), written };
+  };
+  const failed = taken("first");
+  await failed.written;
+  await call("r1");
+  expect(signals).toHaveLength(1);
+  expect(signals[0]?.aborted).toBe(false);
+  fake.finish({ error: "Credit balance is too low" });
+  await expect(failed.settled).resolves.toMatchObject({ ok: false });
+  expect(signals[0]?.aborted).toBe(true);
+  const ok = taken("second");
+  await ok.written;
+  await call("r2");
+  expect(signals).toHaveLength(2);
+  expect(signals[1]?.aborted).toBe(false);
+  fake.finish();
+  await expect(ok.settled).resolves.toEqual({ ok: true });
+  expect(signals[1]?.aborted).toBe(true);
+});
+
+it.each([
+  [
+    "reports its state",
+    (fake: FakeClaude) => sessionState(fake, "running"),
+    (fake: FakeClaude) => sessionState(fake, "idle"),
+  ],
+  [
+    "is too old to report its state",
+    () => {},
+    (fake: FakeClaude) =>
+      fake.emit({ type: "result", subtype: "success", is_error: false }),
+  ],
+])(
+  "cancels a Buzz tool called in a turn of its own when that turn ends, on a claude that %s",
+  async (_, start, end) => {
+    const { spawn, processes } = fakeSpawn();
+    const signals: AbortSignal[] = [];
+    let called = () => {};
+    const tools = vi.fn(
+      (_conversation: unknown, _message: unknown, signal: AbortSignal) => {
+        signals.push(signal);
+        called();
+        return new Promise<never>(() => {});
+      },
+    );
+    await ClaudeProcess.start(spawn, {
+      ...launch,
+      sessionId: "s1",
+      tools,
+    });
+    const fake = processes[0];
+    if (!fake) throw new Error("no process");
+    const call = (id: string) => {
+      const reached = new Promise<void>((resolve) => {
+        called = resolve;
+      });
+      fake.emit({
+        type: "control_request",
+        request_id: id,
+        request: {
+          subtype: "mcp_message",
+          server_name: "buzz",
+          message: { jsonrpc: "2.0", id: 3, method: "tools/call" },
+        },
+      });
+      return reached;
+    };
+    start(fake);
+    await call("r1");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+    end(fake);
+    expect(signals[0]?.aborted).toBe(true);
+    start(fake);
+    await call("r2");
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+  },
+);
 
 it("cancels a Buzz tool that is still running when its process stops", async () => {
   const { spawn, processes } = fakeSpawn();

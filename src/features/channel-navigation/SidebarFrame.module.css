@@ -30,13 +30,18 @@
   min-height: 0;
 }
 @media (hover: hover) and (pointer: fine) {
-  .sidebar [data-icon-variant="ghost"]:hover:not([data-disabled]) {
+  .sidebar
+    [data-icon-variant="ghost"]:hover:not(
+      [data-disabled],
+      [data-sidebar-floating-action] *
+    ) {
     background: var(--affordance-panel-hover);
   }
 }
 .sidebar
   [data-icon-variant="ghost"]:is(:active, [aria-expanded="true"]):not(
-    [data-disabled]
+    [data-disabled],
+    [data-sidebar-floating-action] *
   ) {
   background: var(--affordance-panel-hover);
 }
@@ -167,11 +172,34 @@
   ) {
   --text-standard: var(--text-row-selected);
 }
-/* Room for a floating sidebar action (MessagesSidebar's New menu). */
-.sidebar:has([data-sidebar-floating-action]) .channelList {
-  padding-block-end: calc(
+/* The New button and list share a leading edge. Reserve its size and a gap. */
+.sidebar:has([data-sidebar-floating-action]) {
+  --sidebar-floating-action-clearance: calc(
     var(--size-control) +
-    var(--space-2) +
+    var(--space-2)
+  );
+}
+/* Let the pinned header scroll when it would squeeze the floating row. */
+.sidebar:has([data-sidebar-floating-action]) .sidebarFilter {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 1;
+  min-block-size: 0;
+}
+.sidebar:has([data-sidebar-floating-action]) .sidebarBody {
+  min-block-size: var(--sidebar-floating-action-clearance);
+}
+.sidebar:has([data-share-action-row="stacked"]) .sidebarBody {
+  --sidebar-stacked-cue-height: max(24px, var(--space-5));
+  min-block-size: calc(2 * var(--sidebar-stacked-cue-height) + var(--space-2));
+}
+.sidebar:has([data-sidebar-floating-action]) .channelListFrame {
+  min-height: 0;
+}
+/* Put the clearance on the rows so the scrollport can shrink in a short drawer. */
+.sidebar:has([data-sidebar-floating-action]) .channelListContent {
+  padding-block-end: calc(
+    var(--sidebar-floating-action-clearance) +
     var(--space-3)
   );
 }

@@ -99,7 +99,7 @@ function gitSizeRecoveryHint(message: string) {
   }
 }
 
-function importLocation(
+export function importLocation(
   preview: Pick<ImportPreview, "source" | "commit">,
   path: string | undefined,
 ) {
@@ -675,6 +675,15 @@ export function PluginImport({
         result && updateId
           ? {
               ...result,
+              warnings: savedSource
+                ? result.warnings.filter((warning) =>
+                    warning.startsWith(
+                      savedSource.path === "."
+                        ? "Selected folder:"
+                        : `${savedSource.path}:`,
+                    ),
+                  )
+                : result.warnings,
               candidates: result.candidates.filter(
                 (item) =>
                   item.manifest.id === updateId &&

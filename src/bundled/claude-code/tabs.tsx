@@ -5,7 +5,10 @@ import { formatItemTimestamp } from "../../shared/datetime";
 import { useClockFormat } from "../../shared/clock-preference";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
-import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
+import {
+  AgentSaveButton,
+  ClearModelOverrides,
+} from "../../features/agents/AgentSaveButton";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
 // Claude's provider controls, New agent choices, and agent settings.
 import {
@@ -26,6 +29,8 @@ import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { Accordion } from "../../shared/design-system/ui/Accordion";
 import { ModelPicker } from "../../features/agents/ModelPicker";
 import { AISettings, runsOnDetails } from "../../features/agents/AISettings";
+import { CompactionField } from "../../features/agents/Compaction";
+import { withCompactAt } from "../../features/agents/compact-at";
 import {
   candidatesFor,
   followRecommended,
@@ -1220,8 +1225,32 @@ export function createTabs({
       // A Custom agent's save drops a mark left from before, which a later
       // blank synced model would otherwise turn back on.
       const config = onRecommended(next) ? next : offRecommended(next);
-      submitted(config);
       try {
+        if (
+          settingsHost?.proposedModelOrEffort &&
+          (config.model || config.effort)
+        ) {
+          const models = remote ? [] : await setup.catalog();
+          const id = config.model || providerDefaults.model || "default";
+          if (
+            !models.some(
+              (model) => model.value === id || model.resolvedModel === id,
+            )
+          )
+            throw new Error(
+              "Choose an available Claude model or clear the model and thinking overrides.",
+            );
+          if (
+            config.effort &&
+            !createEffortsFor(id, models).some(
+              (level) => level.id === config.effort,
+            )
+          )
+            throw new Error(
+              "Choose a thinking level this Claude model supports or use Default.",
+            );
+        }
+        submitted(config);
         // This draft incorporates the current props; revise that exact snapshot.
         // The host routes staged provider changes through pendingSave instead.
         await save(config, { base: agent.configBase ?? {} });
@@ -1260,6 +1289,10 @@ export function createTabs({
           : config.scope === "channel"
             ? "One session per channel"
             : "One session per thread";
+      if (group === "compactAt")
+        return config.compactAt
+          ? `${Number(config.compactAt) / 1000}K tokens`
+          : "Harness default";
       return config[group];
     };
     const conflict = (group: SettingGroup) =>
@@ -1430,7 +1463,16 @@ export function createTabs({
                   {modelControl}
                 </>
               )}
+              <CompactionField
+                value={agent.protection ? "" : draft.compactAt}
+                {...(agent.protection && {
+                  description: "Protected agents never compact automatically.",
+                })}
+                disabled={saving || !!agent.protection}
+                onChange={(value) => setDraft(withCompactAt(draft, value))}
+              />
             </SettingsGroup>
+            {conflict("compactAt")}
             <div className="grid gap-2">
               {conflict("instructions")}
               <AgentInstructions
@@ -1467,7 +1509,8 @@ export function createTabs({
             <div className="grid gap-2">
               {conflict("scope")}
               <Select
-                label="Sessions"
+                label="Session scope"
+                description="Choose how your agent uses sessions to keep context."
                 variant="preference"
                 value={draft.scope}
                 groups={SCOPES}
@@ -1481,6 +1524,15 @@ export function createTabs({
             </div>
           </>
         )}
+        {settingsHost?.proposedModelOrEffort &&
+          (draft.model || draft.effort) && (
+            <ClearModelOverrides
+              disabled={saving}
+              onClick={() =>
+                setDraft(offRecommended({ ...draft, model: "", effort: "" }))
+              }
+            />
+          )}
         <AgentSaveButton
           form={form}
           saving={saving}

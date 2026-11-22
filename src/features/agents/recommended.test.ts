@@ -8,6 +8,7 @@ import {
   parseRecommended,
   candidatesFor,
   pickRecommended,
+  pickRecommendedSurely,
   recommendedCandidates,
   recommendedSetup,
   RETRY_MS,
@@ -288,6 +289,41 @@ it("skips a harness whose check hangs, after a bounded wait", async () => {
   }
 });
 
+it("is unsure, not skipping, when a check ahead of the pick hangs or fails", async () => {
+  vi.useFakeTimers();
+  try {
+    recommend(CODEX, GOOSE);
+    const goose = harness("goose", true);
+    const hung = {
+      id: "codex",
+      title: "Codex",
+      recommends: () => new Promise<boolean>(() => {}),
+    };
+    const picked = pickRecommendedSurely([hung, goose]);
+    await vi.advanceTimersByTimeAsync(CHECK_MS);
+    expect(await picked).toBe("unsure");
+    const failing = {
+      id: "codex",
+      title: "Codex",
+      recommends: () => Promise.reject(new Error("offline")),
+    };
+    expect(await pickRecommendedSurely([failing, goose])).toBe("unsure");
+    // A clear no moves on, as `pickRecommended` does.
+    expect(
+      await pickRecommendedSurely([harness("codex", false), goose]),
+    ).toMatchObject({ type: goose });
+    // Nothing after the pick is asked.
+    expect(
+      await pickRecommendedSurely([harness("codex", true), failing]),
+    ).toMatchObject({ type: { id: "codex" } });
+    expect(await pickRecommendedSurely([harness("goose", false)])).toBe(
+      undefined,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("finds again after RETRY_MS when a failed check cut the finding short", async () => {
   vi.useFakeTimers();
   try {
@@ -429,6 +465,33 @@ it("ignores an invalid list set at run time, keeping the last good one", () => {
   } finally {
     setRuntimeRecommendation(undefined);
     vi.unstubAllEnvs();
+  }
+});
+
+it("waits for a plugin's setup before an Automatic agent's harness pick", async () => {
+  recommend(CODEX);
+  let give!: (setup: unknown) => void;
+  const ready = awaitRecommendation(
+    () =>
+      new Promise((resolve) => {
+        give = resolve;
+      }),
+  );
+  try {
+    // Both are ready: without the wait, the build's list would pick Codex.
+    const codex = harness("codex", true);
+    const goose = harness("goose", true);
+    const picking = pickRecommendedSurely([codex, goose]);
+    await Promise.resolve();
+    expect(codex.recommends).not.toHaveBeenCalled();
+    give({ candidates: [GOOSE] });
+    await ready;
+    expect(await picking).toMatchObject({ type: goose, candidate: GOOSE });
+    expect(codex.recommends).not.toHaveBeenCalled();
+  } finally {
+    give(undefined);
+    await ready;
+    setRuntimeRecommendation(undefined);
   }
 });
 

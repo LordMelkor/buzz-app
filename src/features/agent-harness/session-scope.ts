@@ -64,7 +64,7 @@ export function sessionSource(
 }
 
 type Policy = {
-  topLevel: boolean;
+  solo: boolean;
   handed: Promise<unknown>;
   settled: Promise<unknown>;
   cancel(): void;
@@ -87,7 +87,7 @@ export function standaloneTurn<T>(
     return run(lifetime);
   });
   const policy = {
-    topLevel: false,
+    solo: false,
     handed: done,
     settled: done.catch(() => undefined),
     cancel: () => cancel.abort(),
@@ -127,7 +127,7 @@ export async function communityTurn<T>(
     return result;
   });
   const policy = {
-    topLevel: false,
+    solo: false,
     handed: done,
     settled: done.catch(() => undefined),
     cancel: () => {

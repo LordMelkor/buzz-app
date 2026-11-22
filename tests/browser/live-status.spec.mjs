@@ -172,6 +172,20 @@ for (const target of ["alpha", "profiles"]) {
         await expect(warning).toHaveCount(0);
       }
     }
+    if (target === "alpha") {
+      const header = page.locator(".shell-header");
+      await header.evaluate((node) => node.classList.add("shell-header-mac"));
+      await expect
+        .poll(() =>
+          page
+            .locator(".buzz-toast")
+            .evaluate((node) => node.getBoundingClientRect().top),
+        )
+        .toBe(12);
+      await header.evaluate((node) =>
+        node.classList.remove("shell-header-mac"),
+      );
+    }
     // The notice keeps showing while the retried REQ waits for EOSE, and it
     // floats above the composer without covering Send.
     for (const width of [390, 800, 1440]) {
@@ -386,7 +400,7 @@ test.describe("public preview recovery", () => {
       // No click: a scheduled retry reads the head again.
       await expect.poll(() => retryRequested, { timeout: 20_000 }).toBe(true);
       await expect(
-        history.getByText("Loading messages…", { exact: true }),
+        history.getByRole("status").filter({ hasText: "Loading messages…" }),
       ).toBeVisible();
       releaseHead();
       await expect(history.locator("[data-message-scroller]")).toBeVisible();

@@ -1517,6 +1517,7 @@ function memorySearch() {
     );
   return {
     bindings,
+    shortcuts,
     navigate,
     field,
     closed,
@@ -1648,6 +1649,51 @@ it("moves through results with the person's own keys, saved, alongside the arrow
     await userEvent.keyboard("j");
     expect(t.field()).toHaveValue("j");
   } finally {
+    localStorage.removeItem(SHORTCUT_BINDINGS_KEY);
+    Reflect.deleteProperty(navigator, "platform");
+    await t.dispose();
+  }
+});
+
+it("lets an app shortcut that runs inside search keep a chord the field's Control keys use", async () => {
+  // Not a Mac, so Mod is Control and a rebind can land on Control+P.
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    value: "Linux x86_64",
+  });
+  const t = memorySearch();
+  const find = vi.fn();
+  const remove = t.shortcuts.registerHost({
+    id: "test-find",
+    title: "Find on screen",
+    binding: { key: "f", mod: true, shift: true },
+    allowInEditable: true,
+    allowInModal: true,
+    run: find,
+  });
+  try {
+    await t.open();
+    const rows = await t.recentRows();
+    // Control+N and Control+P step while no shortcut claims them.
+    await userEvent.keyboard("{Control>}n{/Control}{Control>}n{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[1]?.id);
+    await userEvent.keyboard("{Control>}p{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+    // From a row that could step back, the rebound Control+P only finds.
+    await userEvent.keyboard("{Control>}n{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[1]?.id);
+    act(() => t.bindings.set("test-find", { key: "p", mod: true }));
+    expect(fireEvent.keyDown(t.field(), { key: "p", ctrlKey: true })).toBe(
+      false,
+    );
+    expect(find).toHaveBeenCalledOnce();
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[1]?.id);
+    // Search Buzz's own Control+K runs nothing inside search, so it steps.
+    await userEvent.keyboard("{Control>}k{/Control}");
+    expect(t.field()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+    expect(find).toHaveBeenCalledOnce();
+  } finally {
+    remove();
     localStorage.removeItem(SHORTCUT_BINDINGS_KEY);
     Reflect.deleteProperty(navigator, "platform");
     await t.dispose();

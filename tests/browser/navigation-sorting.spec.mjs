@@ -1,4 +1,5 @@
 import { test, expect } from "./fixture.mjs";
+import { animationsSettled } from "./animations.mjs";
 import { open } from "./timeline.mjs";
 import { openPage } from "./navigation.mjs";
 import { openChannelDetails } from "./channel-details.mjs";
@@ -1132,6 +1133,10 @@ test("retires Recent failures on A–Z and recovers selected ordering on retry",
     await expect.poll(order).toEqual(alphaOrder);
 
     await failRecent(2);
+    const toast = notifications.locator("[data-sonner-toast]");
+    await expect(toast).toHaveAttribute("data-mounted", "true");
+    await animationsSettled(toast, { subtree: true });
+    await notifications.getByRole("dialog").hover();
     await notifications
       .getByRole("button", { name: "Dismiss notification" })
       .click();

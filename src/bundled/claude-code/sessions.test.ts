@@ -6,7 +6,11 @@ import {
   flush,
   sessionState,
 } from "./claude-testing";
-import type { Spawn, ToolServer } from "./claude";
+import type { ClaudeProcess, Spawn, ToolServer } from "./claude";
+import {
+  VECTOR_BINDING,
+  VECTOR_PROFILE,
+} from "../../features/agents/gateway/vectors";
 import {
   AgentSessions,
   IDLE_MS,
@@ -46,15 +50,19 @@ function sessions(
     spare: Spare;
     tools: ToolServer;
     started: (sessionId: string, systemPrompt: string) => void;
+    /** Each process's own settings env. */
+    env: Record<string, string>;
+    resumed: (sessionId: string, systemPrompt: string) => void;
     agent: Readonly<{ pubkey: string; relay: string }>;
     /** The host refuses every process, as at its process limit. */
     full: boolean;
     room: () => Promise<boolean>;
   }> = {},
 ) {
-  const fake = fakeSpawn(options.known);
+  const fake = fakeSpawn(options.known, options.env);
   const store = options.store ?? memoryStore();
   let model = "opus";
+  let sections = "default";
   let ids = 0;
   const spawn = (id: string, spawnOptions?: object) => {
     if (options.full) return Promise.reject(PROCESS_LIMIT);
@@ -90,8 +98,10 @@ function sessions(
       };
     },
     fingerprint: () => model,
+    sections: () => sections,
     newId: () => `new-${++ids}`,
     ...(options.started ? { started: options.started } : {}),
+    ...(options.resumed ? { resumed: options.resumed } : {}),
   });
   const claudes = () =>
     fake.processes.filter((process) => process.id === "claude");
@@ -103,6 +113,9 @@ function sessions(
     live: () => claudes().filter((process) => !process.killed),
     setModel: (next: string) => {
       model = next;
+    },
+    setSections: (next: string) => {
+      sections = next;
     },
   };
 }
@@ -167,6 +180,20 @@ it("starts a new conversation on the shared spare and warms another", async () =
   expect(used?.prompts).toEqual(["hello"]);
   expect(store.get("c/root")).toMatchObject({ id: "spare-1", seen: 10 });
   expect(pool.snapshot()).toEqual([{ key: "c/root", busy: false }]);
+});
+
+it("hands over no spare started with another compaction threshold", async () => {
+  const { spare, claudes } = withSpare();
+  spare.warm({ cwd: "/work", model: "opus" });
+  await flush();
+  await expect(
+    spare.take({ cwd: "/work", model: "opus", compactAt: 200000 }),
+  ).resolves.toBeUndefined();
+  spare.warm({ cwd: "/work", model: "opus", compactAt: 200000 });
+  await flush();
+  expect(claudes().at(-1)?.options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(
+    "200000",
+  );
 });
 
 it("hands the spare's tools to the agent that takes it", async () => {
@@ -518,7 +545,8 @@ it("resumes a saved conversation after its process stops", async () => {
   vi.useFakeTimers();
   const store = memoryStore();
   const started = vi.fn();
-  const { pool, claudes } = sessions({ store, started });
+  const again = vi.fn();
+  const { pool, claudes } = sessions({ store, started, resumed: again });
   await pool.deliver("c/root", "first", 1);
   const first = claudes()[0];
   vi.advanceTimersByTime(IDLE_MS + 1);
@@ -530,8 +558,10 @@ it("resumes a saved conversation after its process stops", async () => {
   expect(resumed?.options.args).toContain("new-1");
   expect(resumed?.prompts).toEqual(["later"]);
   expect(store.get("c/root")).toMatchObject({ id: "new-1", seen: 5 });
-  // Only the new session tells what it started with; the resume does not.
+  // Only the new session tells what it started with; the resume tells what
+  // it was resumed with.
   expect(started.mock.calls).toEqual([["new-1", "prompt", undefined]]);
+  expect(again.mock.calls).toEqual([["new-1", "prompt"]]);
 });
 
 it("offers the conversation used longest ago that is doing nothing, to stop", async () => {
@@ -720,6 +750,45 @@ it("applies new settings over background work once no reply is running", async (
   expect(claudes().at(-1)?.options.args).toEqual(
     expect.arrayContaining(["--resume", "new-1", "--model", "sonnet"]),
   );
+});
+
+it("keeps background work through a section change until a new turn needs the new prompt", async () => {
+  const { pool, claudes, setSections } = sessions({ hold: true });
+  const first = pool.deliver("c/root", "start a build", 1);
+  await flush();
+  const [process] = claudes();
+  backgroundTasks(process, {});
+  // A plugin changes the conversation's sections while the reply runs.
+  setSections("plugin");
+  process?.finish();
+  await first;
+  pool.reconfigure();
+  await flush();
+  expect(process?.killed).toBe(false);
+  // Once the work ends, the process waits for the next turn.
+  backgroundTasks(process);
+  await flush();
+  expect(process?.killed).toBe(false);
+  const again = pool.deliver("c/root", "again", 2);
+  await flush();
+  expect(process?.killed).toBe(true);
+  expect(claudes().at(-1)?.options.args).toEqual(
+    expect.arrayContaining(["--resume", "new-1"]),
+  );
+  claudes().at(-1)?.finish();
+  await again;
+});
+
+it("gives an idle session new sections as its reply ends", async () => {
+  const { pool, claudes, setSections } = sessions({ hold: true });
+  const first = pool.deliver("c/root", "hello", 1);
+  await flush();
+  const [process] = claudes();
+  setSections("plugin");
+  process?.finish();
+  await first;
+  await flush();
+  expect(process?.killed).toBe(true);
 });
 
 it("starts over when a saved session no longer loads", async () => {
@@ -1433,6 +1502,60 @@ it("releases a conversation handover when its refresh fails", async () => {
   } finally {
     f.pool.dispose();
   }
+});
+
+it("attributes a new conversation on the adopted spare and saves its binding beside the session", async () => {
+  const { pool, spare, store, claudes } = withSpare({
+    env: {
+      ANTHROPIC_BASE_URL: "https://gateway.example/ai-gateway/anthropic",
+      ANTHROPIC_CUSTOM_HEADERS: "x-keep: configured",
+    },
+  });
+  spare.warm({ cwd: "/work", model: "opus" });
+  await flush();
+  const seen: unknown[] = [];
+  const attribute = vi.fn(async (process: ClaudeProcess, saved: unknown) => {
+    seen.push(saved);
+    await process.attribute({
+      origin: "https://gateway.example",
+      profile: VECTOR_PROFILE,
+      headers: { [VECTOR_PROFILE.headers.launcher_client]: "client-a" },
+    });
+    return VECTOR_BINDING;
+  });
+  await pool.deliver("c/root", "hello", 10, { attribute });
+  const [used] = claudes();
+  // The spare was warmed before any agent; its own headers are read at the
+  // first attribution, so nothing of another conversation carries over.
+  expect(used?.headers).toEqual([
+    "x-keep: configured\nx-gw-launcher-client: client-a",
+  ]);
+  expect(store.get("c/root")).toMatchObject({
+    id: "spare-1",
+    gateway: VECTOR_BINDING,
+  });
+  // The next turn is given the binding saved beside its session.
+  await pool.deliver("c/root", "again", 11, { attribute });
+  expect(seen).toEqual([undefined, VECTOR_BINDING]);
+});
+
+it("gives a resumed session only the binding saved beside it", async () => {
+  const store = memoryStore();
+  store.set("c/root", {
+    id: "old",
+    seen: 1,
+    gateway: VECTOR_BINDING,
+    at: 1,
+  });
+  const { pool } = sessions({ known: new Set(["old"]), store });
+  const attribute = vi.fn(async () => undefined);
+  await pool.deliver("c/root", "hello", 10, { attribute });
+  expect(attribute).toHaveBeenCalledWith(expect.anything(), VECTOR_BINDING);
+  // New session forgets it with the harness session.
+  await pool.forget("c/root");
+  await pool.deliver("c/root", "fresh", 11, { attribute });
+  expect(attribute).toHaveBeenLastCalledWith(expect.anything(), undefined);
+  expect(store.get("c/root")?.gateway).toBeUndefined();
 });
 
 it("retains a missing remote session until the owner starts a new session", async () => {

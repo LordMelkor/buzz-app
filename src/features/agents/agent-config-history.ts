@@ -14,6 +14,7 @@ import {
   type Expected,
   type SnapshotRead,
 } from "./agent-config-artifacts";
+import type { ConfigHistory } from "./service";
 
 /** Revisions per page: well under the relay's 1,000 so each "Load older"
  * stays a short list. The offset ceiling is the relay's (`buzz-core`
@@ -299,6 +300,17 @@ export function revisionProblem(
     settings.schema,
   );
   return "problem" in checked ? checked.problem : undefined;
+}
+
+export function incompatibleSettings(history: ConfigHistory | undefined) {
+  const track = history?.sides.find(({ side }) => side === "settings");
+  return Boolean(
+    !history?.settingsProblem &&
+      history?.settings &&
+      track?.head &&
+      artifactOp(track.head) !== "delete" &&
+      revisionProblem(track.expected, track.head, history.settings),
+  );
 }
 
 const ENVELOPE = new Set(["ar", "d", "h", "type", "title", "op", "prev"]);

@@ -26,6 +26,7 @@ import {
   READ_STATE_TIMESTAMP_REFUSAL,
   type ReadStateHost,
   type ReadStateSigning,
+  type ThreadFollowsSigning,
 } from "./read-state-host";
 import {
   parseReadSnapshot,
@@ -145,7 +146,10 @@ export interface ReadTransport {
   readonly channelLifecycle?: RelayWriter;
   /** Name/about/private-only metadata writer, separate from lifecycle and outbox. */
   readonly channelDetails?: RelayWriter;
-  readonly memberAdministration?: RelayWriter;
+  readonly memberAdministration?: RelayWriter & {
+    /** NIP-11 advertises `buzz-solo-member-role` for kind:9050 updates. */
+    readonly soloMemberRoleUpdates?: true;
+  };
   /** NIP-AR kind-45010 config artifacts only; never supplied to the outbox. */
   readonly configArtifacts?: RelayWriter;
   /** Narrow NIP-IA 9035/9036 signer/publisher; never supplied to the message outbox. */
@@ -256,15 +260,17 @@ export interface ReadTransport {
     signal: AbortSignal,
     priority: "foreground" | "background",
   ): Promise<RelayEvent[]>;
-  /** Display URL for a media URL, or undefined when this transport cannot fetch it. */
-  media(url: string, size?: "small"): string | undefined;
+  /** Display URL for a media URL, or undefined when this transport cannot
+   * fetch it. `channel` names the channel whose message shows it. */
+  media(url: string, size?: "small", channel?: string): string | undefined;
 }
 /** Third-party https images load directly; relay-hosted media needs a signed read. */
 export function mediaUrl(
   url: string,
-  relayProxy: ((url: string) => string) | undefined,
+  relayProxy: ((url: string, channel?: string) => string) | undefined,
   relayOrigin: string | undefined,
   size?: "small",
+  channel?: string,
 ): string | undefined {
   if (url.startsWith("data:")) return avatarSource(url);
   if (url.startsWith(`${relayOrigin}/media/`)) {
@@ -278,7 +284,7 @@ export function mediaUrl(
             "/$1.thumb.webp",
           )
         : still;
-    return relayProxy?.(media);
+    return relayProxy?.(media, channel);
   }
   return /^https:\/\//.test(url) ? url : undefined;
 }
@@ -289,8 +295,9 @@ export interface Signer {
   request(url: string, body: string, signal?: AbortSignal): Promise<Response>;
   /** Native hosts sign and send `PUT /upload` for these exact bytes. */
   upload?(file: File, signal: AbortSignal): Promise<Response>;
-  /** Native hosts serve relay `/media/` URLs through an authenticated proxy. */
-  media?(url: string): string;
+  /** Native hosts serve relay `/media/` URLs through an authenticated proxy,
+   * and save images by the channel that shows them. */
+  media?(url: string, channel?: string): string;
   /** Native hosts check incoming signatures with libsecp256k1, off the main thread. */
   verifySignatures?: SignatureVerifier;
 }
@@ -560,6 +567,7 @@ export async function connectBrokerTransport(
     sidebarMuteWrites?: boolean;
     channelKit?: boolean;
     channelIdentity?: boolean;
+    soloMemberRoleUpdates?: boolean;
     searchSort?: boolean;
     artifactSync?: boolean;
     sidebarPreferenceWrites?: boolean;
@@ -1013,6 +1021,56 @@ export async function connectBrokerTransport(
               });
               await acceptReadStatePublish(response, event.id);
             },
+            async decodeFollows(
+              events: readonly RelayEvent[],
+              signal: AbortSignal,
+            ) {
+              const response = await fetch(
+                `${endpoint}/thread-follows-decode`,
+                {
+                  method: "POST",
+                  credentials: "same-origin",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(events),
+                  signal,
+                },
+              );
+              if (!response.ok)
+                throw new Error(
+                  `Thread-follows decode failed (${response.status})`,
+                );
+              return response.json();
+            },
+            async signFollows(
+              intent: ThreadFollowsSigning,
+              signal: AbortSignal,
+            ) {
+              const response = await fetch(`${endpoint}/thread-follows-sign`, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(intent),
+                signal,
+              });
+              if (!response.ok)
+                throw new Error(
+                  `Thread-follows signing failed (${response.status})`,
+                );
+              return eventDto(await response.json());
+            },
+            async publishFollows(event: RelayEvent, signal: AbortSignal) {
+              const response = await fetch(
+                `${endpoint}/thread-follows-publish`,
+                {
+                  method: "POST",
+                  credentials: "same-origin",
+                  headers: publicationHeaders(),
+                  body: JSON.stringify(event),
+                  signal,
+                },
+              );
+              await acceptReadStatePublish(response, event.id);
+            },
           },
         }
       : {}),
@@ -1153,7 +1211,14 @@ export async function connectBrokerTransport(
       ? { channelDetails: routeWriter("channel-details") }
       : {}),
     ...(session.memberAdministration === true
-      ? { memberAdministration: routeWriter("member-administration") }
+      ? {
+          memberAdministration: {
+            ...routeWriter("member-administration"),
+            ...(session.soloMemberRoleUpdates === true
+              ? { soloMemberRoleUpdates: true as const }
+              : {}),
+          },
+        }
       : {}),
     ...(session.channelLifecycle === true
       ? { channelLifecycle: routeWriter("channel-lifecycle") }
@@ -1549,8 +1614,8 @@ export async function connectSignedTransport(
     relayHttpUrl: httpOrigin,
     viewer,
     relayAuthor,
-    media: (url, size) =>
-      mediaUrl(url, signer.media?.bind(signer), httpOrigin, size),
+    media: (url, size, channel) =>
+      mediaUrl(url, signer.media?.bind(signer), httpOrigin, size, channel),
     writer: {
       sign: (event) => signer.signEvent(event),
       async publish(event, signal) {
@@ -1563,7 +1628,7 @@ export async function connectSignedTransport(
             profiling,
             event.id,
             principal().api,
-            "foreground",
+            event.kind === ARTIFACT_KIND ? "artifact" : "foreground",
             false,
             refusalText,
           ).catch((error) => {
@@ -1631,7 +1696,7 @@ async function signedPost(
   profiling: RelayProfiler,
   id: string,
   admission: Parameters<typeof admittedApiRequest>[0],
-  priority: "foreground" | "background" = "foreground",
+  priority: Parameters<typeof admittedApiRequest>[3] = "foreground",
   optionalPresence = false,
   reason?: (body: unknown, status: number) => string | undefined,
 ) {
@@ -1648,7 +1713,7 @@ async function signedPost(
         signer.request(url, body, signal),
       );
     });
-  });
+  }, priority);
 }
 export async function acceptReadStatePublish(response: Response, id: string) {
   if (!response.ok) {

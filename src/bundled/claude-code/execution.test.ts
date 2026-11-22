@@ -8,6 +8,7 @@ import type { AgentExecution } from "../../features/agents/execution";
 import { ClaudeProcess } from "./claude";
 import { executionSpawn } from "./execution";
 import { ClaudeRuntime, DEFAULT_CONFIG, HANDOVER_MS } from "./runtime";
+import { VECTOR_PROFILE } from "../../features/agents/gateway/vectors";
 import { localStore } from "../../features/agents/store";
 import { fileStore } from "../../features/agents/state";
 import type {
@@ -91,7 +92,7 @@ const log = (value) => appendFileSync('wire.jsonl',JSON.stringify(value)+'\\n');
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(0); }
 if (process.env.ANTHROPIC_API_KEY !== 'guest-test-sign-in' || process.env.CLAUDECODE) process.exit(2);
 const send = (wire) => console.log(JSON.stringify({...wire,session_id:session}));
-log({launch:process.argv});
+log({launch:process.argv,window:process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW});
 const result = () => send({type:'result', subtype:'success', session_id:'session-1'});
 createInterface({input:process.stdin}).on('line', (line) => {
   const wire = JSON.parse(line);
@@ -186,6 +187,23 @@ it("carries Claude tools, hooks and Stop over guest stdio with guest authenticat
     await claude.interrupt();
     await expect(held).resolves.toMatchObject({ ok: true, stopped: true });
     await expect(claude.send("read again")).resolves.toEqual({ ok: true });
+  } finally {
+    await claude.kill();
+    await claude.exited;
+    await cleanup();
+  }
+});
+
+it("compacts a guest's Claude at the agent's threshold", async () => {
+  const { guest, directory, wires, cleanup } = await guestFixture();
+  const claude = await ClaudeProcess.start(executionSpawn(guest), {
+    cwd: directory,
+    systemPrompt: "test",
+    compactAt: 150000,
+  });
+  try {
+    await claude.models();
+    expect((await wires()).find((wire) => wire.launch)?.window).toBe("150000");
   } finally {
     await claude.kill();
     await claude.exited;
@@ -304,6 +322,7 @@ async function remoteFixture(readyReads?: ClaudeReady) {
     content = "hello",
     signal = new AbortController().signal,
     channel = "room",
+    gateway?: Delivery["gateway"],
   ) => {
     const event = {
       id: "c".repeat(64),
@@ -319,6 +338,7 @@ async function remoteFixture(readyReads?: ClaudeReady) {
       channelId: channel,
       trigger: { type: "mention", event },
       signal,
+      ...(gateway ? { gateway } : {}),
       workingUntil: (work: Promise<unknown>) => {
         handovers++;
         waits.push(work);
@@ -580,6 +600,95 @@ it("gives a workflow mention held behind remote compaction a fresh hand-over dea
     f.finish();
     await f.cleanup();
   }
+});
+
+it("leaves a remote agent's Claude settings alone on an eligible gateway turn and its compaction", async () => {
+  const f = await remoteFixture();
+  // A route that would attribute the same agent's local process.
+  const gateway = {
+    route: {
+      kind: "eligible",
+      revision: 2,
+      gatewayOrigin: "https://gateway.example",
+      identity: {
+        community_id: "11111111-2222-4333-8444-555555555555",
+        human_pubkey: f.agent.owner,
+        agent_pubkey: f.agent.pubkey,
+      },
+      profile: VECTOR_PROFILE,
+      harnesses: ["claude-code"],
+    },
+    turn: { channel_id: null, message_id: "c".repeat(64), thread_id: null },
+    upstream: { base: "/claude" },
+  } as unknown as Delivery["gateway"];
+  try {
+    await f.deliver("hello", undefined, "room", gateway);
+    await f.runtime.session(f.agent, { channelId: "room" }, "compact");
+    const wires = await f.wires();
+    const settings = wires.filter((wire) => {
+      const request = wire.request as { subtype?: string } | undefined;
+      return (
+        wire.type === "control_request" &&
+        (request?.subtype === "get_settings" ||
+          request?.subtype === "apply_flag_settings")
+      );
+    });
+    expect(settings).toEqual([]);
+    // The turn and its compaction still ran remotely.
+    expect(
+      wires.some(
+        (wire) =>
+          wire.type === "user" &&
+          (wire.message as { content?: unknown }).content === "/compact",
+      ),
+    ).toBe(true);
+    expect(f.local).not.toHaveBeenCalled();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("says in a remote agent's transcript error that it isn't attributed, only where the gateway would", async () => {
+  const agent = "a".repeat(64);
+  const conversation = {
+    agent,
+    channelId: "room",
+    root: null,
+  } as unknown as Parameters<ClaudeRuntime["transcript"]>[0];
+  const remote = (route?: unknown) =>
+    new ClaudeRuntime(
+      { spawn: vi.fn() },
+      () => undefined,
+      async () => null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({ provider: "test/remote" }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => route as never,
+    );
+  const read = (runtime: ClaudeRuntime) =>
+    runtime.transcript(
+      conversation,
+      "/work",
+      false,
+      new AbortController().signal,
+    );
+  await expect(read(remote({ kind: "eligible" }))).rejects.toThrow(
+    new Error(
+      "Transcripts are unavailable for remote Claude agents. They aren't attributed in the agent gateway yet.",
+    ),
+  );
+  // Without a route, as with the gateway off, the message is unchanged.
+  await expect(read(remote())).rejects.toThrow(
+    new Error("Transcripts are unavailable for remote Claude agents."),
+  );
 });
 
 it("interrupts remote work with a stale binding cache and no relay scope", async () => {

@@ -1,3 +1,4 @@
+import { ARTIFACT_KIND } from "../agents/agent-config-artifacts";
 import { getLogger, setLogLevel } from "../developer/logging";
 import {
   verifyEvent,
@@ -178,9 +179,10 @@ describe("native live verification", () => {
     const host = gate();
     const h = setup(["a"], undefined, undefined, undefined, host.check);
     const delivered: string[] = [];
-    h.callbacks.receive.mockImplementation(([event], provenance) =>
-      delivered.push(`${event?.content}:${provenance?.phase}`),
-    );
+    h.callbacks.receive.mockImplementation((events, provenance) => {
+      for (const event of events)
+        delivered.push(`${event.content}:${provenance?.phase}`);
+    });
     h.callbacks.established.mockImplementation((channel) => {
       if (channel === "a") delivered.push("EOSE");
     });
@@ -221,6 +223,81 @@ describe("native live verification", () => {
       h.owner.dispose();
     }
   });
+
+  it.each(["same-channel", "mixed-channel"])(
+    "preserves session order and provenance for a 120-event %s replay",
+    async (scenario) => {
+      const host = gate();
+      const h = setup([], undefined, undefined, undefined, host.check);
+      const relay = keypair();
+      const wire = scriptedTransport(h.key.pubkey, relay.pubkey);
+      const session = createRelaySession({
+        ...wire.transport,
+        subscribe(callbacks) {
+          h.callbacks.receive.mockImplementation(callbacks.receive);
+          h.callbacks.state.mockImplementation(callbacks.state);
+          return h.owner;
+        },
+      });
+      const replay = vi.fn();
+      session.session.subscribeLive(replay, { replay: true });
+      try {
+        h.callbacks.receive(
+          ["a", "b"].map((id) => roster(relay, id, [h.key.pubkey])),
+        );
+        h.callbacks.receive.mockClear();
+        await h.first.auth();
+        const routes = ["a", "b"].map((id) => {
+          const route = h.first
+            .requests()
+            .find((request) => scopeOf(request).includes(id));
+          assert.exists(route);
+          return route[1];
+        });
+        const events = Array.from({ length: 120 }, (_, index) =>
+          message(
+            h.key,
+            scenario === "mixed-channel" && index % 2 ? "b" : "a",
+            `replayed ${index}`,
+            1700000120 - index,
+          ),
+        );
+        const frames = events.map((event, index) =>
+          h.first.receive([
+            "EVENT",
+            routes[scenario === "mixed-channel" ? index % 2 : 0],
+            event,
+          ]),
+        );
+        const eose = [...new Set(routes)].map((id) =>
+          h.first.receive(["EOSE", id]),
+        );
+        await vi.waitFor(() => expect(host.check).toHaveBeenCalledOnce());
+        host.release();
+        await Promise.all([...frames, ...eose]);
+
+        const calls = h.callbacks.receive.mock.calls;
+        if (scenario === "same-channel")
+          expect(calls.length).toBeLessThanOrEqual(12);
+        expect(
+          replay.mock.calls.flatMap(([batch]) =>
+            batch.events.map(({ id }: VerifiedEvent) => id),
+          ),
+        ).toEqual(events.map(({ id }) => id));
+        for (const [batch] of replay.mock.calls) {
+          expect(batch.replay).toBe(true);
+          for (const event of batch.events)
+            expect(event.tags).toContainEqual(["h", batch.channelId]);
+        }
+        expect(h.callbacks.established).toHaveBeenCalledWith(
+          expect.arrayContaining(["a", "b"]),
+        );
+      } finally {
+        host.release();
+        session.dispose();
+      }
+    },
+  );
 
   it.each(["retire", "disconnect", "dispose"])(
     "discards native results after %s",
@@ -4477,6 +4554,43 @@ it("fills three publication slots at one clock instant and refills on matching O
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("publishes a message while artifact updates occupy their reserved slots", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const results: Promise<unknown>[] = [];
+  try {
+    assert.exists(h.owner.publish);
+    const signal = new AbortController().signal;
+    const artifacts = Array.from({ length: 3 }, (_, index) =>
+      signed(h.key, { kind: ARTIFACT_KIND, content: String(index), tags: [] }),
+    );
+    const publish = h.owner.publish;
+    results.push(...artifacts.map((event) => publish(event, signal)));
+    await h.first.auth();
+    const writes = () =>
+      h.first.sent
+        .filter((frame) => frame[0] === "EVENT")
+        .map((frame) => (frame[1] as { id: string }).id);
+    expect(writes()).toEqual(artifacts.slice(0, 2).map((event) => event.id));
+    const chat = message(h.key, "a", "priority message", 1700000000);
+    const sentChat = publish(chat, signal);
+    results.push(sentChat);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writes().at(-1)).toEqual(chat.id);
+    await h.first.receive(["OK", chat.id, true, ""]);
+    await sentChat;
+    expect(writes()).toHaveLength(3);
+    await h.first.receive(["OK", artifacts[0]?.id, true, ""]);
+    expect(writes().at(-1)).toEqual(artifacts[2]?.id);
+    for (const event of artifacts.slice(1))
+      await h.first.receive(["OK", event.id, true, ""]);
+    await Promise.all(results);
+  } finally {
+    h.owner.dispose();
+    await Promise.allSettled(results);
+  }
+});
+
 it("presence and ordinary publications correlate independently and share only real cooldown", async () => {
   vi.useFakeTimers();
   const h = setup([]);
@@ -6354,8 +6468,10 @@ it.each(["complete", "cut", "closed", "renewed"] as const)(
         expect(reads).not.toContainEqual([
           expect.objectContaining({ kinds: [39002] }),
         ]);
+        // The head read carries the channel's newest notices.
         expect(reads).toContainEqual([
           expect.objectContaining({ "#h": ["a"], top_level: true }),
+          expect.objectContaining({ "#h": ["a"], kinds: [40099] }),
         ]);
       }
     } finally {

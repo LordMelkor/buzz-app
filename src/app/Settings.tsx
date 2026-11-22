@@ -72,6 +72,7 @@ import {
   type PluginInstallRequests,
 } from "../plugins/installer";
 import { PluginReadme } from "./PluginReadme";
+import performanceDiagnosticsManifest from "../bundled/performance-diagnostics/manifest.json";
 import { bundledReadmes } from "../bundled/readmes";
 import { bundledIcons } from "../bundled/icons";
 import type { Identity } from "../features/identity/service";
@@ -90,6 +91,7 @@ import type { ShortcutBindings } from "../features/shortcuts/preferences";
 import { ShortcutSettings } from "./ShortcutSettings";
 import { DeveloperSettings } from "./DeveloperSettings";
 import { AgentSettings } from "./AgentSettings";
+import { pluginSection as replaceableSection } from "../features/agent-harness/sections";
 import type { SettingsCards } from "../features/settings/service";
 import { OwnedContribution } from "../plugins/OwnedContribution";
 import type { Updates } from "../features/updates/updates";
@@ -152,6 +154,25 @@ function isEssentialPlugin(plugin: PluginInfo) {
   );
 }
 
+/** The names of the plugins that are on and can replace `section` of the
+ * agents' base instructions in the chats they manage. Safe mode pauses the
+ * external ones. */
+export const sectionPlugins = (
+  plugins: readonly PluginInfo[],
+  section: string,
+  externalPaused = false,
+) =>
+  plugins
+    .filter(
+      (plugin) =>
+        plugin.enabled &&
+        !(externalPaused && plugin.source === "external") &&
+        plugin.manifest.host?.agentPromptSections?.some(
+          (id) => replaceableSection(id)?.id === section,
+        ),
+    )
+    .map((plugin) => plugin.manifest.name);
+
 function comparePlugins(a: PluginInfo, b: PluginInfo) {
   return (
     Number(isRequiredPlugin(b)) - Number(isRequiredPlugin(a)) ||
@@ -167,6 +188,12 @@ function groupPlugins(plugins: readonly PluginInfo[]) {
   const other: PluginInfo[] = [];
   const core: PluginInfo[] = [];
   for (const plugin of plugins) {
+    // Diagnostics are offered through agent requests in this panel.
+    if (
+      plugin.source === "bundled" &&
+      plugin.manifest.id === performanceDiagnosticsManifest.id
+    )
+      continue;
     if (isCorePlugin(plugin)) {
       core.push(plugin);
       continue;
@@ -1492,6 +1519,13 @@ export function Settings({
           <AgentSettings
             agents={agents}
             active={selected === "agents"}
+            sectionPlugins={(section) =>
+              sectionPlugins(
+                catalog?.plugins ?? [],
+                section,
+                externalPluginsPaused,
+              )
+            }
             navigation={navigation}
             onProvider={onProvider}
           />
@@ -1613,7 +1647,7 @@ export function Settings({
         )}
         {developerMode && (
           <div hidden={selected !== "developer"}>
-            <DeveloperSettings relay={communities.relay} />
+            <DeveloperSettings />
           </div>
         )}
         <div hidden={selected !== "plugins"}>

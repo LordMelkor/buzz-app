@@ -13,8 +13,13 @@ import { CodexSetup, explainTurn, reviewHome, withScript } from "./setup";
 import { CodexProvider, createTabs } from "./tabs";
 import { readUsage } from "./usage";
 import { reviewModel } from "./security-review";
-import { followRecommended } from "../../features/agents/recommended";
+import {
+  candidatesFor,
+  followRecommended,
+  recommendationReady,
+} from "../../features/agents/recommended";
 import { AppServer, listModels } from "./rpc";
+import { CODEX_ROUTES, HARNESS } from "./gateway";
 /** How often Buzz's copy of Codex looks for a new release. */
 const UPDATE_MS = 6 * 60 * 60_000;
 export const inject = ["agents", "host", "agentProtection"];
@@ -80,6 +85,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     ctx.host.resolveDirectory?.bind(ctx.host),
     (agent, signal, channelId) =>
       readyOwnerReads(ctx.agents.relay(agent.key), agent, signal, channelId),
+    CODEX_ROUTES,
   );
   // Failed turns' notices link to where Codex signs in.
   runtime.explain = (notice) =>
@@ -169,6 +175,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
   ctx.agents.register<Config>({
     id: TYPE_ID,
     conversationFolders: true,
+    conversationSections: true,
+    notes: true,
+    skillFolders: ["$CODEX_HOME/skills", "~/.agents/skills"],
     voice: async (seat) => {
       if (typeof RTCPeerConnection !== "function")
         throw new Error("Voice is unsupported on this device");
@@ -184,11 +193,25 @@ export const apply: PluginModule["apply"] = (ctx) => {
     hooks: { events: CODEX_HOOK_EVENTS },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
+    gateway: { harness: HARNESS, mode: "attribution" },
     title: "Codex",
     icon: CodexLogoIcon,
     description:
       "Codex on this computer, using its native coding tools and your account.",
     defaults: () => ({ config: { ...defaults } }),
+    settingsProposal: {
+      adapterModelAndEffort: true,
+      compactAt: true,
+      voice: true,
+      apps: true,
+      resolveRecommended: async () => {
+        await recommendationReady();
+        if (!candidatesFor(TYPE_ID).length) return null;
+        if (providerController.recommended() === undefined)
+          await providerController.check();
+        return providerController.recommended() ?? null;
+      },
+    },
     readModelSettings: (saved, context) =>
       providerController.readModelSettings(saved, context),
     Create,
@@ -211,6 +234,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
+      scope: carry.sessionScope ?? saved.scope,
       // Codex runs only in an absolute or home workspace.
       workspace:
         carry.workspace && validWorkspace(carry.workspace)
@@ -218,14 +242,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
           : saved.workspace,
     }),
     carry: (saved) => {
-      const { instructions, workspace } = config(saved);
+      const { instructions, workspace, scope } = config(saved);
       return {
         ...(instructions.trim() && { instructions }),
         ...(workspace !== defaults.workspace && { workspace }),
+        ...(scope !== defaults.scope && { sessionScope: scope }),
       };
     },
     describeMigration: (saved) => {
-      const { model, effort, scope, voice } = config(saved);
+      const { model, effort, voice, apps } = config(saved);
       return [
         { id: "model", label: "Model", isOverride: Boolean(model.trim()) },
         {
@@ -234,12 +259,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
           isOverride: Boolean(effort),
         },
         { id: "voice", label: "Voice", isOverride: Boolean(voice) },
-        {
-          id: "sessions",
-          label: "Sessions",
-          isOverride: scope !== defaults.scope,
-          unchangedKey: scope,
-        },
+        // Another harness has no place for it, and Codex starts it off.
+        { id: "apps", label: "Codex apps and plugins", isOverride: !!apps },
       ];
     },
     migrationWarning: "Any commands Codex left running will stop.",

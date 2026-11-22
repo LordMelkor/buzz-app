@@ -22,8 +22,21 @@ fn routes_cannot_retarget_credentials_or_expand_http_access() {
     ] {
         assert!(request_url("https://relay.test", path, "POST").is_err());
     }
-    for path in ["/api/invites", "/gifs/search", "/profiles/search"] {
+    for path in ["/gifs/search", "/profiles/search", "/api/invites/revoke"] {
         assert!(request_url("https://relay.test", path, "POST").is_ok());
+        assert!(request_url("https://relay.test", path, "GET").is_err());
+    }
+    let cursor = "/api/invites?before=1795049564000000_0b9c8f7e-1d2a-4b3c-9e8f-7a6b5c4d3e2f";
+    for path in ["/api/invites", cursor] {
+        assert!(request_url("https://relay.test", path, "GET").is_ok());
+    }
+    assert!(request_url("https://relay.test", "/api/invites", "POST").is_ok());
+    for path in [
+        "/api/invites?limit=200",
+        "/api/invites?before=1_x",
+        "/api/invites?before=1795049564000000_0b9c8f7e-1d2a-4b3c-9e8f-7a6b5c4d3e2f&limit=1",
+        "/api/invites/claim",
+    ] {
         assert!(request_url("https://relay.test", path, "GET").is_err());
     }
     assert!(request_url("https://relay.test", "/gifs/other", "POST").is_err());
@@ -1985,7 +1998,13 @@ fn thumbnail_server(status: &'static str) -> (Url, std::sync::Arc<std::sync::Mut
             let response = if path.ends_with(".thumb.webp") {
                 format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             } else {
-                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nConnection: close\r\n\r\njpeg".into()
+                let kind = match path.rsplit_once('.').map(|(_, ext)| ext) {
+                    Some("svg") => "image/svg+xml",
+                    Some("pdf") => "application/pdf",
+                    Some("mp4") => "video/mp4",
+                    _ => "image/jpeg",
+                };
+                format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: 4\r\nConnection: close\r\n\r\njpeg")
             };
             seen.lock().unwrap().push(path);
             socket.write_all(response.as_bytes()).unwrap();
@@ -2089,6 +2108,7 @@ fn native_downloads_only_accept_authenticated_media_urls() {
     for url in [
         format!("buzz-media://localhost/{encoded}"),
         format!("http://buzz-media.localhost/{encoded}"),
+        format!("buzz-media://localhost/{encoded}?channel=c"),
     ] {
         assert!(download_target(&url).is_some(), "{url}");
     }
@@ -2098,6 +2118,7 @@ fn native_downloads_only_accept_authenticated_media_urls() {
         format!("https://buzz-media.localhost/{encoded}"),
         format!("buzz-media://localhost:123/{encoded}"),
         format!("buzz-media://localhost/{encoded}?q=1"),
+        format!("buzz-media://localhost/{encoded}?channel=c&q=1"),
         format!("buzz-media://localhost/{encoded}#fragment"),
         format!("buzz-media://u:p@localhost/{encoded}"),
         format!(
@@ -2429,6 +2450,76 @@ fn assert_strict(event: &serde_json::Value, verb: &str, server: &str) {
     let expiration: u64 = tag(event, "expiration")[0].parse().unwrap();
     assert_eq!(tag(event, "expiration").len(), 1);
     assert_eq!(expiration, event["created_at"].as_u64().unwrap() + 60);
+}
+
+#[tokio::test]
+async fn saved_images_are_served_without_a_relay_read_until_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = MediaCache::new(Some(dir.path().into()));
+    let host = IdentityHost::fixture();
+    let (base, paths) = thumbnail_server("404 Not Found");
+    let webp = base
+        .join(&format!("/media/{}.thumb.webp", "a".repeat(64)))
+        .unwrap();
+    let read = || cached_media(&cache, &host, None, webp.clone(), None);
+    assert_eq!(read().await.unwrap().body(), b"jpeg");
+    // The fallback is saved under the requested URL, in the background.
+    for _ in 0..200 {
+        if cache.get(&webp, None).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let saved = read().await.unwrap();
+    assert_eq!(saved.body(), b"jpeg");
+    assert_eq!(saved.headers()["content-type"], "image/jpeg");
+    assert_eq!(paths.lock().unwrap().len(), 2);
+    cache.clear(&base).unwrap();
+    assert_eq!(read().await.unwrap().body(), b"jpeg");
+    assert_eq!(paths.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn media_requests_name_the_channel_that_shows_them() {
+    let url = format!("https://relay.test/media/{}.thumb.webp", "a".repeat(64));
+    let encoded = percent_encoding::utf8_percent_encode(&url, percent_encoding::NON_ALPHANUMERIC);
+    let channel = |query: &str| {
+        let request = tauri::http::Request::get(format!("buzz-media://localhost/{encoded}{query}"))
+            .body(Vec::new())
+            .unwrap();
+        media_request(&request).ok().unwrap().channel
+    };
+    assert_eq!(channel("?channel=a%2Fb").as_deref(), Some("a/b"));
+    assert_eq!(channel("?channel="), None);
+    assert_eq!(channel(""), None);
+}
+
+#[tokio::test]
+async fn only_whole_inline_images_that_fit_an_entry_are_saved() {
+    let host = IdentityHost::fixture();
+    let (base, _) = thumbnail_server("404 Not Found");
+    let served = |ext: &str| {
+        let url = base
+            .join(&format!("/media/{}.{ext}", "a".repeat(64)))
+            .unwrap();
+        let host = &host;
+        async move { serve_media(host, None, url, None).await.unwrap().1 }
+    };
+    assert_eq!(
+        saved_kind(&served("jpg").await).as_deref(),
+        Some("image/jpeg")
+    );
+    // SVG is served as an attachment, so it never renders from the cache.
+    assert_eq!(saved_kind(&served("svg").await), None);
+    assert_eq!(saved_kind(&served("pdf").await), None);
+    // Inline, but not an image: a whole-file video read is never saved.
+    assert_eq!(saved_kind(&served("mp4").await), None);
+    let large = tauri::http::Response::builder()
+        .status(200)
+        .header("content-type", "image/jpeg")
+        .body(vec![0; media_cache::ENTRY_MAX + 1])
+        .unwrap();
+    assert_eq!(saved_kind(&large), None);
 }
 
 #[tokio::test]
@@ -3544,6 +3635,222 @@ async fn read_state_codec_round_trips_and_rejects_foreign_intent() {
     assert!(host.decode_read_state(vec![signed; 17]).await.is_err());
 }
 
+#[tokio::test]
+async fn read_state_unread_v2_codec_is_its_own_paired_shape() {
+    let host = IdentityHost::fixture();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let blob = serde_json::json!({"v":2,"client_id":"fixture",
+        "contexts":{"room":0,"ov_s:room":now,"ov_c:room":0,"ov_b:room":0}});
+    let signed = host
+        .sign_read_state("c".repeat(32), now, blob.clone())
+        .await
+        .unwrap();
+    verify(&signed);
+    assert_eq!(
+        signed["tags"],
+        serde_json::json!([
+            ["d", format!("read-state-unread-v2:{}", "c".repeat(32))],
+            ["t", "read-state-unread-v2"]
+        ])
+    );
+    let decoded = host.decode_read_state(vec![signed.clone()]).await.unwrap();
+    assert_eq!(decoded[0]["blob"], blob);
+    // Only 32 lowercase hex slots, and only versions 1 and 2.
+    assert!(host
+        .sign_read_state("C".repeat(32), now, blob.clone())
+        .await
+        .is_err());
+    assert!(host
+        .sign_read_state(
+            "c".repeat(32),
+            now,
+            serde_json::json!({"v":3,"client_id":"f","contexts":{}})
+        )
+        .await
+        .is_err());
+    // Each crossed pairing is validly re-signed with the fixture key, so only
+    // the coordinate, tag and version gate can reject it.
+    let resign = |event: &serde_json::Value, tags: serde_json::Value| {
+        let mut event = event.clone();
+        event["tags"] = tags;
+        let hash = Sha256::digest(
+            serde_json::to_vec(&serde_json::json!([
+                0,
+                event["pubkey"],
+                event["created_at"],
+                event["kind"],
+                event["tags"],
+                event["content"]
+            ]))
+            .unwrap(),
+        );
+        let secp = secp256k1::Secp256k1::new();
+        let keypair = secp256k1::Keypair::from_seckey_byte_array(&secp, [1; 32]).unwrap();
+        event["id"] = format!("{hash:x}").into();
+        event["sig"] = secp
+            .sign_schnorr_no_aux_rand(&hash, &keypair)
+            .to_string()
+            .into();
+        verify(&event);
+        event
+    };
+    let pair = |prefix: &str, tag: &str| {
+        serde_json::json!([["d", format!("{prefix}:{}", "c".repeat(32))], ["t", tag]])
+    };
+    let v1 = host
+        .sign_read_state(
+            "c".repeat(32),
+            now,
+            serde_json::json!({"v":1,"client_id":"fixture","contexts":{"room":1}}),
+        )
+        .await
+        .unwrap();
+    // The re-signer itself yields events that decode under their own pair.
+    for (event, prefix) in [(&signed, "read-state-unread-v2"), (&v1, "read-state")] {
+        let same = resign(event, pair(prefix, prefix));
+        assert!(host.decode_read_state(vec![same]).await.is_ok());
+    }
+    for (event, prefix, tag) in [
+        // A version-2 blob under a crossed pair, or the version-1 pair.
+        (&signed, "read-state-unread-v2", "read-state"),
+        (&signed, "read-state", "read-state-unread-v2"),
+        (&signed, "read-state", "read-state"),
+        // A version-1 blob under a crossed pair, or the version-2 pair.
+        (&v1, "read-state", "read-state-unread-v2"),
+        (&v1, "read-state-unread-v2", "read-state"),
+        (&v1, "read-state-unread-v2", "read-state-unread-v2"),
+    ] {
+        let crossed = resign(event, pair(prefix, tag));
+        assert!(host.decode_read_state(vec![crossed]).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn thread_follows_codec_is_a_separate_exact_shape() {
+    let host = IdentityHost::fixture();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let key = format!("room:{}", "1".repeat(64));
+    let payload = serde_json::json!({"v":1,"client_id":"fixture","later":true,
+        "threads":{key.clone():{"follow":true,"at":now,"x":1}}});
+    let signed = host
+        .sign_thread_follows("b".repeat(32), now, payload.clone())
+        .await
+        .unwrap();
+    verify(&signed);
+    assert_eq!(
+        signed["tags"],
+        serde_json::json!([
+            ["d", format!("thread-follows:{}", "b".repeat(32))],
+            ["t", "thread-follows"]
+        ])
+    );
+    let decoded = host
+        .decode_thread_follows(vec![signed.clone()])
+        .await
+        .unwrap();
+    assert_eq!(decoded[0]["payload"], payload);
+    // The shapes never cross.
+    assert!(host.decode_read_state(vec![signed.clone()]).await.is_err());
+    let read = host
+        .sign_read_state(
+            "a".repeat(32),
+            now,
+            serde_json::json!({"v":1,"client_id":"f","contexts":{}}),
+        )
+        .await
+        .unwrap();
+    assert!(host.decode_thread_follows(vec![read]).await.is_err());
+    assert!(host
+        .sign_read_state("a".repeat(32), now, payload.clone())
+        .await
+        .is_err());
+    // Strict intent: slot, window and payload.
+    assert!(host
+        .sign_thread_follows("B".repeat(32), now, payload.clone())
+        .await
+        .is_err());
+    // The window's edge, against a held clock: the signer otherwise reads its
+    // own, and a second turning over after `now` would move the edge.
+    const AT: u64 = 1_700_000_000;
+    for (created_at, accepted) in [(AT + 60, true), (AT + 61, false)] {
+        let edge = host
+            .sign_thread_follows_at("b".repeat(32), created_at, payload.clone(), || Ok(AT))
+            .await;
+        assert_eq!(edge.is_ok(), accepted, "{created_at}");
+    }
+    assert!(host
+        .sign_thread_follows("b".repeat(32), now - 120, payload.clone())
+        .await
+        .is_err());
+    let bad = serde_json::json!({"v":1,"client_id":"f","threads":{"bad":{"follow":true,"at":1}}});
+    assert!(host
+        .sign_thread_follows("b".repeat(32), now, bad)
+        .await
+        .is_err());
+    let mut tampered = signed.clone();
+    tampered["tags"] = serde_json::json!([["d", "channel-sort"], ["t", "thread-follows"]]);
+    assert!(host.decode_thread_follows(vec![tampered]).await.is_err());
+    assert!(host
+        .decode_thread_follows(vec![signed.clone(); 17])
+        .await
+        .is_err());
+    // An own event whose payload can't be read decodes to null, and is never
+    // published; a readable one is forwarded byte-for-byte.
+    let mut unreadable = signed.clone();
+    unreadable["content"] = "not-ciphertext".into();
+    let hash = Sha256::digest(
+        serde_json::to_vec(&serde_json::json!([
+            0,
+            unreadable["pubkey"],
+            unreadable["created_at"],
+            unreadable["kind"],
+            unreadable["tags"],
+            unreadable["content"]
+        ]))
+        .unwrap(),
+    );
+    let secp = secp256k1::Secp256k1::new();
+    let keypair = secp256k1::Keypair::from_seckey_byte_array(&secp, [1; 32]).unwrap();
+    unreadable["id"] = format!("{hash:x}").into();
+    unreadable["sig"] = secp
+        .sign_schnorr_no_aux_rand(&hash, &keypair)
+        .to_string()
+        .into();
+    let decoded = host
+        .decode_thread_follows(vec![unreadable.clone()])
+        .await
+        .unwrap();
+    assert!(decoded[0]["payload"].is_null());
+    assert!(super::readable_own_follows(&host, unreadable)
+        .await
+        .is_err());
+    assert_eq!(
+        super::readable_own_follows(&host, signed.clone())
+            .await
+            .unwrap(),
+        serde_json::to_string(&signed).unwrap()
+    );
+    // Follow client ids are 1-64 characters, like read state's.
+    for client_id in ["".to_string(), "é".repeat(65)] {
+        let payload = serde_json::json!({"v":1,"client_id":client_id,"threads":{}});
+        assert!(host
+            .sign_thread_follows("b".repeat(32), now, payload)
+            .await
+            .is_err());
+    }
+    let payload = serde_json::json!({"v":1,"client_id":"é".repeat(64),"threads":{}});
+    assert!(host
+        .sign_thread_follows("b".repeat(32), now, payload)
+        .await
+        .is_ok());
+}
+
 #[test]
 fn general_signing_never_accepts_read_state_kind() {
     let event = EventTemplate {
@@ -4365,6 +4672,85 @@ mod federated_header {
             "{head}"
         );
         community.assert_carried(head);
+    }
+    /// The invite list and revoke go through `relay_http` itself: both list
+    /// forms are signed GETs over their full URL, revoke binds its body.
+    #[tokio::test]
+    async fn relay_http_signs_invite_list_and_revoke() {
+        use tauri::Manager;
+        let community = community(false).await;
+        let app = tauri::test::mock_builder()
+            .manage(community.host.clone())
+            .manage(community.fi.clone())
+            .build(crate::app_context())
+            .unwrap();
+        let cursor = "?before=1795049564000000_0b9c8f7e-1d2a-4b3c-9e8f-7a6b5c4d3e2f";
+        let revoke = r#"{"code":"v2.abc"}"#;
+        let routes = [
+            ("GET", "/api/invites".to_owned(), None),
+            ("GET", format!("/api/invites{cursor}"), None),
+            ("POST", "/api/invites/revoke".to_owned(), Some(revoke)),
+        ];
+        let server = community.serve(routes.iter().map(|_| reply("200 OK", "{}")).collect());
+        for (method, path, body) in &routes {
+            let response = relay_http(
+                app.state(),
+                app.state(),
+                community.origin.to_string(),
+                path.clone(),
+                (*method).into(),
+                body.map(str::to_owned),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status, 200);
+        }
+        let heads = server.heads().await;
+        for ((method, path, body), head) in routes.iter().zip(&heads) {
+            assert!(head.starts_with(&format!("{method} {path} ")), "{head}");
+            let encoded = head
+                .lines()
+                .find_map(|line| line.strip_prefix("authorization: Nostr "))
+                .unwrap_or_else(|| panic!("unsigned: {head}"));
+            let event: serde_json::Value =
+                serde_json::from_slice(&STANDARD.decode(encoded).unwrap()).unwrap();
+            verify(&event);
+            let url = community.origin.join(path).unwrap();
+            assert_eq!(event["tags"][0], serde_json::json!(["u", url.as_str()]));
+            assert_eq!(event["tags"][1], serde_json::json!(["method", method]));
+            let payload = event["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tag| tag[0] == "payload");
+            match body {
+                Some(body) => assert_eq!(
+                    payload.unwrap()[1],
+                    format!("{:x}", Sha256::digest(body.as_bytes()))
+                ),
+                None => assert!(payload.is_none()),
+            }
+        }
+        // No other invite path or query is reachable through the command.
+        for path in [
+            "/api/invites?limit=200",
+            "/api/invites?before=1_x",
+            &format!("/api/invites{cursor}&limit=1"),
+            "/api/invites/revoke",
+        ] {
+            assert!(relay_http(
+                app.state(),
+                app.state(),
+                community.origin.to_string(),
+                path.into(),
+                "GET".into(),
+                None,
+                None,
+            )
+            .await
+            .is_err());
+        }
     }
     #[tokio::test]
     async fn http_attaches_for_required_discovery() {

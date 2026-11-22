@@ -76,7 +76,7 @@ for (const entry of ["sidebar", "search"]) {
       }
       await expect.poll(() => requested).toBe(true);
       await expect(
-        page.getByText("Loading messages…", { exact: true }),
+        page.getByRole("status").filter({ hasText: "Loading messages…" }),
       ).toBeVisible();
     } finally {
       release();
@@ -89,10 +89,7 @@ for (const entry of ["sidebar", "search"]) {
       page.getByRole("region", { name: "Channel message history" }),
     ).toBeFocused();
     await expect
-      .poll(
-        async () =>
-          (await readJournal(page))?.state.frontiers[`activity:${id}`],
-      )
+      .poll(async () => (await readJournal(page))?.state.frontiers[id])
       .toBe(post.created_at);
     await expect(channel.locator("[data-channel-unread]")).toHaveCount(0);
   });

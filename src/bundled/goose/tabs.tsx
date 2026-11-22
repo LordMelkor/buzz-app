@@ -16,9 +16,14 @@ import {
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
 import activityStyles from "../../features/agents/ActivityLayout.module.css";
 import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
-import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
+import {
+  AgentSaveButton,
+  ClearModelOverrides,
+} from "../../features/agents/AgentSaveButton";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { AISettings, runsOnDetails } from "../../features/agents/AISettings";
+import { CompactionField } from "../../features/agents/Compaction";
+import { withCompactAt } from "../../features/agents/compact-at";
 import {
   candidatesFor,
   offRecommended,
@@ -869,7 +874,8 @@ export function createTabs({
       const transcript = await history.transcript(
         {
           agent: agent.key,
-          workspace,
+          // Where the conversation's sessions ran.
+          workspace: runtime.folders(agent.key).get(row.key) ?? workspace,
           ...(row.sessionId ? { sessionId: row.sessionId } : {}),
           ...(row.sessions ? { sessions: row.sessions } : {}),
           ...(row.channelId
@@ -886,6 +892,7 @@ export function createTabs({
         signal,
         (pubkey) => runtime.name(agent.key, pubkey),
         reuse,
+        runtime.notices(agent.key),
       );
       return (
         transcript && {
@@ -1402,6 +1409,35 @@ export function createTabs({
         if (!validWorkspace(workspace))
           throw new Error("Enter an absolute or ~/… workspace path.");
         const next = { ...draft, model: draft.model.trim(), workspace };
+        if (
+          settingsHost?.proposedModelOrEffort &&
+          (next.model || next.effort)
+        ) {
+          if (agent.executionBinding)
+            throw new Error(
+              "Clear the model and thinking overrides to use the target’s defaults.",
+            );
+          if (next.model) {
+            const provider =
+              next.provider || (await setup.providers()).defaults.provider;
+            if (
+              !provider ||
+              !(await setup.models(provider)).some(
+                (model) => model.id === next.model,
+              )
+            )
+              throw new Error(
+                "Choose an available Goose model or clear the model and thinking overrides.",
+              );
+          }
+          if (
+            next.effort &&
+            !(await setup.efforts(next)).levels.includes(next.effort)
+          )
+            throw new Error(
+              "Choose a thinking level this Goose model supports or use Default.",
+            );
+        }
         // A Custom agent's save drops a mark left from before, which a later
         // blank synced model would otherwise turn back on.
         await save(onRecommended(next) ? next : offRecommended(next));
@@ -1455,6 +1491,11 @@ export function createTabs({
               ) : (
                 manual
               )}
+              <CompactionField
+                value={draft.compactAt}
+                disabled={saving}
+                onChange={(value) => setDraft(withCompactAt(draft, value))}
+              />
             </SettingsGroup>
             <AgentInstructions
               value={draft.instructions}
@@ -1479,7 +1520,8 @@ export function createTabs({
               />
             </Field>
             <Select
-              label="Sessions"
+              label="Session scope"
+              description="Choose how your agent uses sessions to keep context."
               variant="preference"
               value={draft.scope}
               groups={SCOPES}
@@ -1492,6 +1534,15 @@ export function createTabs({
             />
           </>
         )}
+        {settingsHost?.proposedModelOrEffort &&
+          (draft.model || draft.effort) && (
+            <ClearModelOverrides
+              disabled={saving}
+              onClick={() =>
+                setDraft(offRecommended({ ...draft, model: "", effort: "" }))
+              }
+            />
+          )}
         <AgentSaveButton form={form} saving={saving} disabled={!changed} />
         {settingsSection !== "identity" && settingsContent}
       </form>

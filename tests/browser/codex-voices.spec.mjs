@@ -15,7 +15,7 @@ test("Codex Voices persist separately through the settings host", async ({
   expect(
     await voice.evaluate((button) => {
       const pane = button.closest('[role="tabpanel"]');
-      const sessions = pane?.querySelector('[aria-label="Sessions"]');
+      const sessions = pane?.querySelector('[aria-label="Session scope"]');
       return (
         sessions &&
         !!(

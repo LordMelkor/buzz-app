@@ -64,10 +64,13 @@ import {
 import { createUpdates } from "../features/updates/updates";
 import { PanelsService } from "../features/panels/service";
 import { BackdropsService } from "../features/backdrops/service";
+import { NoticesService } from "../features/notices/service";
 import { SubjectLiftService } from "../features/messages/subject-lift";
+import { pluginUi } from "../features/plugin-ui/service";
 import { Context } from "@deepseek-ai/cordis";
 import { BrowserService } from "../features/browser/service";
 import { PagesService } from "../features/pages/service";
+import { SeenService } from "../features/seen/service";
 import { SoloNavigationService } from "../features/channel-navigation/solo-navigation";
 import { SidebarRowsService } from "../features/channel-navigation/sidebar-rows-service";
 import { SidebarSectionsService } from "../features/channel-navigation/sidebar-sections-service";
@@ -127,7 +130,9 @@ export function createServices() {
   const sidebarRows = new SidebarRowsService(ctx);
   const panels = new PanelsService(ctx);
   const backdrops = new BackdropsService(ctx);
+  const notices = new NoticesService(ctx);
   new SubjectLiftService(ctx);
+  ctx.provide("ui", pluginUi);
   const accountActions = new AccountActionsService(ctx);
   const conversation = new ConversationService(ctx);
   const settingsCards = new SettingsCardsService(ctx);
@@ -145,6 +150,7 @@ export function createServices() {
     identity ? verifyNativeStored : undefined,
     identity ? askAgain : undefined,
   );
+  const seen = new SeenService(ctx, communities);
   ctx.provide("communityReader", {
     snapshot: communities.snapshot,
     subscribe: communities.subscribe,
@@ -453,12 +459,14 @@ export function createServices() {
     settingsCards,
     adminAccess,
     pages,
+    seen,
     sidebarSections,
     pluginInstallRequests,
     sidebarScope,
     sidebarRows,
     panels,
     backdrops,
+    notices,
     plugins,
     federatedIdentity,
     firstRunFederatedIdentity,

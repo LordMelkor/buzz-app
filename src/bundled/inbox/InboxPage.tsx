@@ -28,6 +28,8 @@ import {
   rowIdentity,
   rowProfileIds,
 } from "./InboxRow";
+import { withMentionedIds } from "../../features/messages/PreviewText";
+import { activityConversation, useActivityMutes } from "./useActivityMutes";
 import {
   useChannelList,
   useProfileGeneration,
@@ -299,6 +301,7 @@ function InboxList({
 }) {
   const previewId = useId();
   const list = useChannelList(session.channels);
+  const muted = useActivityMutes(session);
   const inbox = useSyncExternalStore(
     session.unread.subscribeInbox,
     session.unread.inbox,
@@ -361,7 +364,7 @@ function InboxList({
     setFilter(route);
   }, [navigation]);
   const subscribeFilters = useCallback(
-    (listener: () => void) => subscribeView(viewScope, listener),
+    (listener: () => void) => subscribeView(viewScope, listener, filtersKey),
     [viewScope],
   );
   const filtersRevision = useSyncExternalStore(subscribeFilters, () =>
@@ -480,7 +483,11 @@ function InboxList({
   }, [session, list.status, list.asOf, refreshAfterRoster]);
   const items = inbox.items;
   const activityItems = items
-    .map((item) => (activity === "mentions" ? item.mention : item))
+    .map((item) =>
+      activity === "mentions"
+        ? item.mention
+        : activityConversation(item, muted),
+    )
     .filter(
       (item): item is InboxItem =>
         !!item &&
@@ -564,9 +571,17 @@ function InboxList({
   // Enrich bounded activity candidates before applying Sender: unknown authors
   // must be able to appear after their profiles arrive, even in an empty view.
   // Keep main's bounded optional profile demand, independent of presentation.
+  const activityReactions = reactionFeed.items.filter(
+    (item) =>
+      !muted.has(item.channelId) ||
+      list.channels.some(
+        (channel) =>
+          channel.id === item.channelId && channel.channelType === "dm",
+      ),
+  );
   const candidateIds = [
     ...activityItems.slice(0, 50).map((item) => item.authorId),
-    ...reactionFeed.items
+    ...activityReactions
       .slice(0, 50)
       .flatMap((item) => item.events.map((event) => event.pubkey)),
   ];
@@ -618,7 +633,7 @@ function InboxList({
   const reactionItems =
     !unreadOnly && (activity === "all" || activity === "reactions")
       ? reactionRows(
-          reactionFeed.items,
+          activityReactions,
           (authorId) =>
             senderFilter === "everyone" ||
             senderKind(authorId) ===
@@ -664,8 +679,8 @@ function InboxList({
         selectedShown: shown,
       });
   });
-  const profileKey = [
-    ...new Set([
+  const profileKey = withMentionedIds(
+    [
       ...authorIds,
       ...reactionItems.slice(0, 50).flatMap((item) =>
         rowProfileIds(
@@ -679,8 +694,12 @@ function InboxList({
           list.channels.find((entry) => entry.id === item.channelId),
         ),
       ),
-    ]),
-  ]
+    ],
+    [
+      ...reactionItems.slice(0, 50).map((item) => item.message),
+      ...visible.slice(0, 50).map((item) => item.previewMentions),
+    ],
+  )
     .sort()
     .join(":");
   const profileIds = useMemo(
@@ -1230,7 +1249,7 @@ function InboxList({
                         <InboxRowButton
                           item={item}
                           identity={identity}
-                          media={session.media}
+                          session={session}
                           feed={feed}
                           time={relativeTimestamp(item.createdAt)}
                           previewId={`${previewId}-${item.id}`}
@@ -1258,6 +1277,8 @@ function InboxList({
                                     channel,
                                     unread &&
                                       activity !== "mentions" &&
+                                      (item.target.kind === "channel" ||
+                                        !muted.has(item.channelId)) &&
                                       selectedId !== item.id,
                                   )
                             )

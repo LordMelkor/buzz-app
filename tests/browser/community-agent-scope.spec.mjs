@@ -12,7 +12,10 @@ for (const provider of ["claude", "codex"]) {
     );
     await page.getByRole("gridcell", { name: "Ada", exact: true }).click();
     await page.getByRole("tab", { name: "Settings", exact: true }).click();
-    const scope = page.getByRole("combobox", { name: "Sessions", exact: true });
+    const scope = page.getByRole("combobox", {
+      name: "Session scope",
+      exact: true,
+    });
     await expect(scope).toBeVisible();
     await scope.focus();
     await scope.press("Enter");

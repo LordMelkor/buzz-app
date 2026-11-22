@@ -293,6 +293,9 @@ export function createSidebarPreferencesStore({
       ...(data.workspaceMigrationPending
         ? { workspaceMigrationPending: true as const }
         : {}),
+      ...(data.soloWorkspaces
+        ? { soloWorkspaces: Object.freeze([...data.soloWorkspaces]) }
+        : {}),
       ...(data.sort ? { sort: Object.freeze({ ...data.sort }) } : {}),
       ...(data.filters ? { filters: Object.freeze({ ...data.filters }) } : {}),
       ...(data.activeWindowSeconds

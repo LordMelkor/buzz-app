@@ -13,7 +13,9 @@ import {
 } from "react";
 import { Virtualizer } from "virtua";
 import {
+  ArrowRightIcon,
   type ChatCircleIcon,
+  SparklesIcon,
   XIcon,
 } from "../../shared/design-system/icons/index";
 import type { PeekFollow, PeekTarget } from "./SearchPreview";
@@ -48,6 +50,9 @@ export type SearchDestination = {
   rank?: number;
   key: string;
   label: string;
+  /** Shown in place of `label` where text alone cannot show it, as a
+   * message's mention chips; `matches` still index `label`. */
+  labelContent?: ReactNode;
   detail?: string;
   /** Quiet metadata at the row's end, such as a count. */
   trailing?: ReactNode;
@@ -100,6 +105,9 @@ export type SearchGroup = {
   headingStatus?: string | undefined;
   /** Why the group sits where it does, e.g. "Exact name". */
   why?: string | undefined;
+  /** Its rows are in the order a decision provider judged best, which a
+   * small mark after the heading shows. */
+  reranked?: boolean | undefined;
   /** How many it holds when that differs from its rows, e.g. "20+". */
   count?: string | undefined;
   /** The group's icon in the rail. */
@@ -149,6 +157,9 @@ export type SearchPeek = {
    * too short to search messages, say), so they may still come back, each
    * with the reason shown while it's chosen. */
   unsearched?: Readonly<Record<string, ReactNode>> | undefined;
+  /** Called once the person moves the highlight for this text: rows on
+   * screen shouldn't move under them after that. */
+  onMove?: (() => void) | undefined;
 };
 
 /** The person's keys for the previous and next result, which the field
@@ -159,6 +170,18 @@ export const DEFAULT_SEARCH_STEPS: SearchSteps = {
   next: { key: "ArrowDown" },
 };
 export const SearchStepsContext = createContext(DEFAULT_SEARCH_STEPS);
+/** Vim's and Emacs's keys, with Control itself on every platform: a step to
+ * the next or previous result, or to the next or previous group as Tab. */
+const CONTROL_STEPS = new Map<string, readonly ["result" | "group", boolean]>([
+  ["j", ["result", true]],
+  ["n", ["result", true]],
+  ["k", ["result", false]],
+  ["p", ["result", false]],
+  ["l", ["group", true]],
+  ["f", ["group", true]],
+  ["h", ["group", false]],
+  ["b", ["group", false]],
+]);
 
 /** Top results shows this many rows of its first group, and of the rest. */
 const LEAD_ROWS = 5;
@@ -395,6 +418,7 @@ export function SearchChoices({
   const tabs = landing ? [...ranked, landing] : ranked;
   const countOf = (group: SearchGroup) =>
     group.count ?? String(resultRows(group).length);
+  /** How many rows Top results shows of each group it cuts short. */
   const truncated = new Map<string, number>();
   const groups: SearchGroup[] = !peek?.ranked
     ? merged
@@ -410,16 +434,17 @@ export function SearchChoices({
             const limit = rows[cap]?.attached ? cap + 1 : cap;
             if (rows.length <= limit && !group.count)
               return { ...group, destinations: rows };
-            truncated.set(group.label, rows.length);
+            const shown = [
+              ...rows.slice(0, limit),
+              ...rows.slice(limit).filter((row) => row.attached),
+            ];
+            truncated.set(group.label, shown.length);
             // Each row is read as one of the whole group: "1 of 37", or of
             // an open set when more may follow ("20+").
             const count = countOf(group);
             return {
               ...group,
-              destinations: [
-                ...rows.slice(0, limit),
-                ...rows.slice(limit).filter((row) => row.attached),
-              ],
+              destinations: shown,
               total: /^\d+$/.test(count) ? Number(count) : -1,
             };
           });
@@ -431,6 +456,18 @@ export function SearchChoices({
     if (first) highlight.select(first);
     if (resultsContent.current) resultsContent.current.scrollTop = 0;
     if (focusInput) input.current?.focus();
+  };
+  /** Shows the group after or before the one shown, Top results (or an empty
+   * search's first group) first; false past either end. */
+  const stepScope = (forward: boolean) => {
+    const order = [
+      ...(home ? [] : [undefined]),
+      ...tabs.map(({ label }) => label),
+    ];
+    const next = order.indexOf(scoped?.label) + (forward ? 1 : -1);
+    if (next < 0 || next >= order.length) return false;
+    showScope(order[next]);
+    return true;
   };
   const hasControls = groups.some((group) =>
     group.destinations.some((row) => row.content),
@@ -447,7 +484,11 @@ export function SearchChoices({
     // waiting for results never runs one of its rows.
     query: onBack ? `\u0000${query}` : query,
     keys,
-    onChoose: (key) => destinations.find((row) => row.key === key)?.run(),
+    onChoose: (key) => {
+      // Choosing acts on the order shown: a later rerank must not move it.
+      peek?.onMove?.();
+      destinations.find((row) => row.key === key)?.run();
+    },
     open,
     pending,
     isAction,
@@ -462,6 +503,11 @@ export function SearchChoices({
         : {}),
   });
   const selected = highlight.active;
+  const onMove = peek?.onMove;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Reports each text's first move once.
+  useEffect(() => {
+    if (highlight.moved) onMove?.();
+  }, [highlight.moved, query]);
   const moved = previewing && highlight.moved;
   const steps = useContext(SearchStepsContext);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Freezes the order just shown, once per text.
@@ -484,10 +530,17 @@ export function SearchChoices({
     document.getElementById(highlight.rowId(key))?.getBoundingClientRect();
   const inView = (key: string) => {
     const content = resultsContent.current;
-    const box = key ? rowBox(key) : undefined;
-    if (!content || !box) return false;
+    const row = key ? document.getElementById(highlight.rowId(key)) : null;
+    if (!content || !row) return false;
+    const box = row.getBoundingClientRect();
     const view = content.getBoundingClientRect();
-    return box.bottom > view.top && box.top < view.bottom;
+    // A cut group's pinned heading covers the rows scrolling under it.
+    const heading = row
+      .closest(".search-palette-group")
+      ?.querySelector("[data-search-cut]")
+      ?.getBoundingClientRect();
+    const top = Math.max(view.top, heading?.bottom ?? view.top);
+    return box.bottom > top && box.top < view.bottom;
   };
   const keepPlace = () => {
     const content = resultsContent.current;
@@ -631,6 +684,7 @@ export function SearchChoices({
       content,
       key,
       label,
+      labelContent,
       detail,
       detailIcon: DetailIcon,
       detailIconLabel,
@@ -768,7 +822,9 @@ export function SearchChoices({
             label={
               <>
                 <span className="block truncate text-body-sm">
-                  <MatchedLabel label={label} positions={matches} />
+                  {labelContent ?? (
+                    <MatchedLabel label={label} positions={matches} />
+                  )}
                 </span>
                 {detail && (
                   <span
@@ -905,6 +961,44 @@ export function SearchChoices({
               }
               // Other arrow chords, such as Shift+Down, edit the text.
               if (event.key === "ArrowDown" || event.key === "ArrowUp") return;
+              // Control's letter keys step after the person's keys, in place
+              // of the text field's own Emacs keys. Group keys only take
+              // over while there are groups to show. An app shortcut that
+              // runs inside search, such as one the person moved to one of
+              // these, comes first: the window's dispatcher sees the key
+              // after this field, so the step waits there and is skipped
+              // once a shortcut has claimed the key.
+              const control =
+                native.ctrlKey &&
+                !native.metaKey &&
+                !native.altKey &&
+                !native.shiftKey &&
+                !native.getModifierState("AltGraph")
+                  ? CONTROL_STEPS.get(event.key.toLowerCase())
+                  : undefined;
+              const host = event.currentTarget.ownerDocument.defaultView;
+              if (
+                host &&
+                control &&
+                (control[0] === "result" || (peek?.ranked && tabs.length))
+              ) {
+                const [kind, forward] = control;
+                const step = (later: Event) => {
+                  if (later !== native) return;
+                  host.removeEventListener("keydown", step);
+                  if (native.defaultPrevented) return;
+                  native.preventDefault();
+                  if (kind === "group") return void stepScope(forward);
+                  restore.current = 0;
+                  highlight.move(forward);
+                };
+                host.addEventListener("keydown", step);
+                // A key stopped before the window edits the text as before.
+                host.setTimeout(() =>
+                  host.removeEventListener("keydown", step),
+                );
+                return;
+              }
             }
             const shortcutNumber = /^Digit([1-9])$/.exec(event.code)?.[1];
             if (
@@ -965,16 +1059,8 @@ export function SearchChoices({
               !event.metaKey &&
               !event.altKey
             ) {
-              const order = [
-                ...(home ? [] : [undefined]),
-                ...tabs.map(({ label }) => label),
-              ];
-              const next =
-                order.indexOf(scoped?.label) + (event.shiftKey ? -1 : 1);
-              if (tabs.length ? next >= 0 && next < order.length : peek.busy) {
+              if (tabs.length ? stepScope(!event.shiftKey) : peek.busy)
                 event.preventDefault();
-                if (tabs.length) showScope(order[next]);
-              }
               return;
             }
             // Escape from one group returns to Top results, or the first
@@ -1029,17 +1115,10 @@ export function SearchChoices({
                 {group?.label === "Direct messages"
                   ? "DMs"
                   : (group?.label ?? "Top results")}
-                {/* A landing group has no count yet. */}
-                {(!group || group !== landing) && (
-                  <span className="search-peek-count">
-                    {group
-                      ? countOf(group)
-                      : `${ranked.reduce(
-                          (sum, item) =>
-                            sum + (item.browse ? 0 : resultRows(item).length),
-                          0,
-                        )}${ranked.some((item) => !item.browse && item.count?.endsWith("+")) ? "+" : ""}`}
-                  </span>
+                {/* A landing group has no count yet. Top results has none:
+                  it shows only the first rows of each group. */}
+                {group && group !== landing && (
+                  <span className="search-peek-count">{countOf(group)}</span>
                 )}
                 {index === 1 && group !== landing && !!query.trim() && (
                   <Badge size="xs" tone="success">
@@ -1103,9 +1182,25 @@ export function SearchChoices({
                       notice,
                       headingStatus,
                       why,
+                      reranked,
                       tone,
                       multiline,
                     }) => {
+                      const shown = truncated.get(label);
+                      const count = countOf(
+                        ranked.find((group) => group.label === label) ?? {
+                          label,
+                          destinations,
+                        },
+                      );
+                      // The heading's cut and rerank mark are hidden from
+                      // assistive technology, so the group describes them.
+                      const summary = [
+                        shown !== undefined && `Top ${shown} of ${count}`,
+                        reranked && "Reranked",
+                      ]
+                        .filter(Boolean)
+                        .join(", ");
                       const heading = (
                         <span
                           className={`navigation-section-label text-body text-secondary${headingStatus ? " truncate" : ""}`}
@@ -1120,11 +1215,8 @@ export function SearchChoices({
                                 aria-hidden="true"
                               >
                                 {" "}
-                                {countOf(
-                                  ranked.find(
-                                    (group) => group.label === label,
-                                  ) ?? { label, destinations },
-                                )}
+                                {shown !== undefined && `· Top ${shown} of `}
+                                {count}
                               </span>
                             )}
                           {why && (
@@ -1135,6 +1227,13 @@ export function SearchChoices({
                               {" "}
                               · {why}
                             </span>
+                          )}
+                          {reranked && (
+                            <SparklesIcon
+                              size={12}
+                              title="Reranked"
+                              className="search-peek-reranked"
+                            />
                           )}
                           {headingStatus && (
                             <span aria-hidden="true"> · {headingStatus}</span>
@@ -1147,6 +1246,11 @@ export function SearchChoices({
                           key={label}
                           role={hasControls ? "rowgroup" : "group"}
                           aria-label={label}
+                          aria-describedby={
+                            summary
+                              ? `${peekPanelId(label)}-summary`
+                              : undefined
+                          }
                           // A status-only group has no rows yet; busy states why.
                           aria-busy={
                             (!!headingStatus && !destinations.length) ||
@@ -1155,33 +1259,43 @@ export function SearchChoices({
                           className="search-palette-group"
                           data-tone={tone}
                         >
+                          {summary && (
+                            <span id={`${peekPanelId(label)}-summary`} hidden>
+                              {summary}
+                            </span>
+                          )}
                           <div className="navigation-section" data-buzz-ui="">
                             {!hideLabel && (
                               <div
                                 className="navigation-section-heading"
-                                data-search-action={
+                                // A cut group's heading stays in view while
+                                // its rows scroll, with the way to the rest.
+                                data-search-cut={
                                   truncated.has(label) || undefined
                                 }
                                 aria-hidden={hasControls || undefined}
                               >
                                 <h2 className="m-0 min-w-0 flex-1">
-                                  {truncated.has(label) ? (
-                                    <Button
-                                      variant="plain"
-                                      size="inline"
-                                      aria-label={`Show all ${label}`}
-                                      tabIndex={-1}
-                                      onMouseDown={(event) =>
-                                        event.preventDefault()
-                                      }
-                                      onClick={() => showScope(label)}
-                                    >
-                                      {heading}
-                                    </Button>
-                                  ) : (
-                                    heading
-                                  )}
+                                  {heading}
                                 </h2>
+                                {truncated.has(label) && (
+                                  <Button
+                                    variant="ghost"
+                                    size="xs"
+                                    aria-label={`Show all ${label}`}
+                                    tabIndex={-1}
+                                    onMouseDown={(event) =>
+                                      event.preventDefault()
+                                    }
+                                    onClick={() => showScope(label)}
+                                  >
+                                    Show all
+                                    <ArrowRightIcon
+                                      size={14}
+                                      aria-hidden="true"
+                                    />
+                                  </Button>
+                                )}
                               </div>
                             )}
                             <div className="navigation-section-rows">

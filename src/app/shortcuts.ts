@@ -46,6 +46,7 @@ export const HOST_SHORTCUT_ORDER = {
   deleteMessage: 93,
   quoteSelection: 94,
   reload: 95,
+  restart: 96,
 } as const;
 
 export function registerAppShortcuts(
@@ -53,6 +54,8 @@ export function registerAppShortcuts(
   appearance: Appearance,
   openSettings: () => void,
   ready: boolean,
+  /** Reloads every community in place, keeping running agents. */
+  reload: () => void,
 ) {
   const apple = isApplePlatform(navigator.platform);
   const remove = [
@@ -153,6 +156,16 @@ export function registerAppShortcuts(
       title: "Reload Buzz",
       binding: { key: "r", mod: true },
       order: HOST_SHORTCUT_ORDER.reload,
+      allowInEditable: true,
+      allowInModal: true,
+      run: reload,
+    }),
+    // The whole page loads again, which restarts running agents.
+    shortcuts.registerHost({
+      id: "app-restart",
+      title: "Reload Buzz and restart agents",
+      binding: { key: "r", mod: true, shift: true },
+      order: HOST_SHORTCUT_ORDER.restart,
       allowInEditable: true,
       allowInModal: true,
       run: () => window.location.reload(),
@@ -367,7 +380,7 @@ export function registerNavigationShortcuts(
       order: HOST_SHORTCUT_ORDER.navigationBack,
       binding: { key: "[", mod: true },
       allowInEditable: true,
-      // Back closes a dialog that is its own visit (docs/navigation-history.md).
+      // Back closes a dialog that is its own visit.
       allowInVisit: true,
       when: () => navigation.snapshot().canGoBack,
       run: navigation.back,

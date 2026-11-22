@@ -17,8 +17,6 @@ import mermaidManifest from "./mermaid/manifest.json";
 import * as mermaid from "./mermaid";
 import chartsManifest from "./charts/manifest.json";
 import * as charts from "./charts";
-import fileViewerManifest from "./file-viewer/manifest.json";
-import * as fileViewer from "./file-viewer";
 import namingManifest from "./identity-naming/manifest.json";
 import * as naming from "./identity-naming";
 import feedbackManifest from "./feedback/manifest.json";
@@ -74,6 +72,8 @@ import typesafeManifest from "./typesafe/manifest.json";
 import * as typesafe from "./typesafe";
 import pluginDevelopmentManifest from "./plugin-development/manifest.json";
 import * as pluginDevelopment from "./plugin-development";
+import performanceDiagnosticsManifest from "./performance-diagnostics/manifest.json";
+import * as performanceDiagnostics from "./performance-diagnostics";
 
 import relayNotesManifest from "./relay-notes/manifest.json";
 import * as relayNotes from "./relay-notes";
@@ -145,11 +145,6 @@ export const bundledPlugins: readonly BundledPlugin[] = [
   {
     manifest: { ...chartsManifest, apiVersion: 1 },
     module: charts,
-    enabledByDefault: false,
-  },
-  {
-    manifest: { ...fileViewerManifest, apiVersion: 1 },
-    module: fileViewer,
     enabledByDefault: false,
   },
   {
@@ -271,6 +266,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     manifest: { ...pluginDevelopmentManifest, apiVersion: 1 },
     module: pluginDevelopment,
     enabledByDefault: true,
+  },
+  {
+    manifest: { ...performanceDiagnosticsManifest, apiVersion: 1 },
+    module: performanceDiagnostics,
+    enabledByDefault: false,
   },
   // An organization's own build may bundle plugins here (org.ts).
   ...orgPlugins,

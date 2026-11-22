@@ -4,7 +4,10 @@
 // saves only `preset: "recommended"` in its config. Its type runs it on the
 // first candidate for its harness whose model is still offered, found once per
 // launch, so a later build's recommendation reaches it; with none, it runs on
-// the harness's own default. Its harness is never changed for it.
+// the harness's own default. Once per launch, the copy that runs it moves it
+// to the harness of the first candidate ready here, by the usual harness
+// change, unless a check ahead of that one didn't answer
+// (`followRecommendedHarness`, service.ts).
 // The build config parses candidates too, so this module imports nothing.
 //
 // What the agent UI uses (it owns none of the logic below):
@@ -321,16 +324,23 @@ export const CHECK_MS = 8_000;
 /** How long a launch keeps a finding that found nothing, before a harness
  * set up or signed in since then is asked again. */
 export const RETRY_MS = 60_000;
-/** A check's answer, as no once it rejects or takes longer than `CHECK_MS`. */
-export const bounded = (check: Promise<boolean> | undefined) =>
-  new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), CHECK_MS);
-    const done = (answer: boolean) => {
+/** A check's answer: "unsure" once it rejects or takes longer than
+ * `CHECK_MS`, "no" when there is no check. */
+const answer = (check: Promise<boolean> | undefined) =>
+  new Promise<"yes" | "no" | "unsure">((resolve) => {
+    const timer = setTimeout(() => resolve("unsure"), CHECK_MS);
+    const done = (value: "yes" | "no" | "unsure") => {
       clearTimeout(timer);
-      resolve(answer);
+      resolve(value);
     };
-    (check ?? Promise.resolve(false)).then(done, () => done(false));
+    (check ?? Promise.resolve(false)).then(
+      (ready) => done(ready ? "yes" : "no"),
+      () => done("unsure"),
+    );
   });
+/** A check's answer, as no once it rejects or takes longer than `CHECK_MS`. */
+export const bounded = async (check: Promise<boolean> | undefined) =>
+  (await answer(check)) === "yes";
 
 /** What one harness's agents on Recommended run on, found once per launch. */
 export type RecommendedRun = Readonly<{
@@ -418,6 +428,22 @@ export const recommendedNote = (pick: RecommendedPick<RecommendedHarness>) => {
 export async function pickRecommended<T extends RecommendedHarness>(
   types: readonly T[],
 ): Promise<RecommendedPick<T> | undefined> {
+  const pick = await firstReady(types, false);
+  return pick === "unsure" ? undefined : pick;
+}
+
+/** `pickRecommended`, but "unsure" when a check ahead of the pick, or every
+ * check when none is ready, rejected or took longer than `CHECK_MS`: then
+ * nobody knows which candidate is first. */
+export const pickRecommendedSurely = <T extends RecommendedHarness>(
+  types: readonly T[],
+) => firstReady(types, true);
+
+async function firstReady<T extends RecommendedHarness>(
+  types: readonly T[],
+  sure: boolean,
+): Promise<RecommendedPick<T> | "unsure" | undefined> {
+  // A bundled plugin may still be giving this launch its setup.
   await recommendationReady();
   const skipped: T[] = [];
   for (const candidate of recommendedCandidates()) {
@@ -426,12 +452,14 @@ export async function pickRecommended<T extends RecommendedHarness>(
         item.id === candidate.harness && item.recommends && !item.remote,
     );
     if (!type) continue;
-    if (await bounded(type.recommends?.(candidate)))
+    const answered = await answer(type.recommends?.(candidate));
+    if (answered === "yes")
       return {
         type,
         candidate,
         skipped: skipped.filter((item) => item !== type),
       };
+    if (sure && answered === "unsure") return "unsure";
     if (!skipped.includes(type)) skipped.push(type);
   }
   return undefined;

@@ -222,14 +222,16 @@ describe("plugin agent hooks", () => {
     await f.service.save("pk-1", {
       config: { model: "model-c", pluginNotes: { "org.other": { data: 2 } } },
     });
-    expect(f.save).toHaveBeenLastCalledWith("pk-1", {
-      config: { model: "model-c", pluginNotes: notes },
-    });
+    expect(f.save).toHaveBeenLastCalledWith(
+      "pk-1",
+      { config: { model: "model-c", pluginNotes: notes } },
+      undefined,
+    );
     f.setAgents([agent()]);
     await f.service.save("pk-1", {
       config: { pluginNotes: { "org.other": { data: 2 } } },
     });
-    expect(f.save).toHaveBeenLastCalledWith("pk-1", { config: {} });
+    expect(f.save).toHaveBeenLastCalledWith("pk-1", { config: {} }, undefined);
   });
 
   it("saves only an agent set up here with its synced settings", async () => {

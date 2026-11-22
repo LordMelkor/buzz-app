@@ -1,4 +1,11 @@
+import { rememberLoadedImage } from "../../shared/design-system/useReadyImage";
 import { relayDebug } from "./debug";
+
+/** Warming image loads in flight at once. Native media reads are
+ * latency-bound, so more in flight warm a channel sooner without slowing
+ * each one; 16 measured no better than 8. */
+const WARM_CONCURRENCY = 8;
+
 export function saveData(): boolean {
   try {
     const connection = (
@@ -81,15 +88,17 @@ export function rememberOpeningFrame(
 
 /** Decoded attachment originals detached by virtualized rows, so a remount
  * re-adopts the painted element. A new element would hide until it decodes,
- * and WebKit refetches custom-scheme images for every element. Only the
- * retaining owner (session) can claim one. Bounded by decoded size; disposing
- * session media forgets them and refuses retention that began before. */
+ * and WebKit refetches custom-scheme images for every element. A source can
+ * show in several places at once (a channel row and its open thread), so each
+ * source keeps one element per detached display. Only the retaining owner
+ * (session) can claim one. Bounded by decoded size; disposing session media
+ * forgets them and refuses retention that began before. */
 const DECODED_IMAGE_BUDGET = 512 * 1024 * 1024;
 // 16 MP; a larger original would push out many smaller ones.
 const DECODED_IMAGE_LIMIT = 64 * 1024 * 1024;
 const decodedImages = new Map<
   string,
-  { owner: WeakRef<object>; image: HTMLImageElement; bytes: number }
+  { owner: WeakRef<object>; images: HTMLImageElement[]; bytes: number }
 >();
 let decodedImageBytes = 0;
 let decodedImageScope = 0;
@@ -99,20 +108,24 @@ export function decodedImageCapture(): number {
 export function hasDecodedImage(owner: object, source: string): boolean {
   return decodedImages.get(source)?.owner.deref() === owner;
 }
-/** Claims the retained element; a concurrent mount of the source gets none. */
+/** Claims one retained element; concurrent mounts beyond those retained get
+ * none. */
 export function takeDecodedImage(
   owner: object,
   source: string,
 ): HTMLImageElement | undefined {
-  if (!hasDecodedImage(owner, source)) return undefined;
-  return forgetDecodedImage(source);
-}
-function forgetDecodedImage(source: string) {
   const entry = decodedImages.get(source);
-  if (!entry) return undefined;
-  decodedImages.delete(source);
+  if (!entry || entry.owner.deref() !== owner) return undefined;
+  const image = entry.images.pop();
   decodedImageBytes -= entry.bytes;
-  return entry.image;
+  if (!entry.images.length) decodedImages.delete(source);
+  return image;
+}
+function forgetDecodedImages(source: string) {
+  const entry = decodedImages.get(source);
+  if (!entry) return;
+  decodedImages.delete(source);
+  decodedImageBytes -= entry.bytes * entry.images.length;
 }
 export function retainDecodedImage(
   owner: object,
@@ -123,19 +136,25 @@ export function retainDecodedImage(
   const bytes = image.naturalWidth * image.naturalHeight * 4;
   if (capture !== decodedImageScope || !bytes || bytes > DECODED_IMAGE_LIMIT)
     return;
-  forgetDecodedImage(source);
-  decodedImages.set(source, { owner: new WeakRef(owner), image, bytes });
-  decodedImageBytes += bytes;
+  const entry = decodedImages.get(source);
+  const images =
+    entry?.owner.deref() === owner && entry.bytes === bytes ? entry.images : [];
+  forgetDecodedImages(source);
+  images.push(image);
+  decodedImages.set(source, { owner: new WeakRef(owner), images, bytes });
+  decodedImageBytes += bytes * images.length;
   for (const oldest of decodedImages.keys()) {
     if (decodedImageBytes <= DECODED_IMAGE_BUDGET) break;
-    forgetDecodedImage(oldest);
+    forgetDecodedImages(oldest);
   }
 }
 
 /** Avatar request warming, the react-native-web Image model: fetch and
  * decode() into detached images, then retain nothing. The browser's own HTTP
- * and decoded-image caches serve the real <img> mounts. Never warms
- * originals/attachments that this renderer doesn't display. */
+ * and decoded-image caches serve the real <img> mounts; WebKit serves warmed
+ * custom-scheme images only to eager mounts, so a warmed source is remembered
+ * as loaded. Never warms originals/attachments that this renderer doesn't
+ * display. Up to `WARM_CONCURRENCY` requests overlap. */
 export function createMediaPreparation() {
   const pending = new Set<string>();
   let queue: string[] = [];
@@ -154,7 +173,7 @@ export function createMediaPreparation() {
   let prefetched = 0;
   function pump() {
     if (disposed || typeof Image === "undefined") return;
-    while (active.size < 2 && queue.length) {
+    while (active.size < WARM_CONCURRENCY && queue.length) {
       const url = queue.shift();
       if (url === undefined) break;
       const image = new Image();
@@ -168,6 +187,7 @@ export function createMediaPreparation() {
         active.delete(image);
         cancellations.delete(image);
         pending.delete(url);
+        if (outcome.startsWith("ok")) rememberLoadedImage(url);
         if (outcome !== "timeout" && outcome !== "cancelled") {
           settled.delete(url);
           settled.set(url, Date.now());
@@ -214,7 +234,7 @@ export function createMediaPreparation() {
   return {
     prepare(urls: readonly string[]) {
       if (disposed || saveData() || typeof Image === "undefined") return;
-      // New intent replaces queued speculation; active requests remain capped at two.
+      // New intent replaces queued speculation; active requests remain capped.
       for (const url of queue) pending.delete(url);
       queue = [];
       for (const url of [...new Set(urls)].slice(0, 24)) {

@@ -1,6 +1,8 @@
+import { runtimePerformance } from "../developer/runtime-performance";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
+import { writeClipboardText } from "../../shared/clipboard";
 import { nativeIdentityEnabled } from "../identity/service";
 import type { SoloRegionBinding } from "../channel-navigation/solo-navigation-contract";
 import { repositoryFolders } from "../communities/repositories";
@@ -287,6 +289,9 @@ export interface Host {
     agentPubkey: string,
     signal?: AbortSignal,
   ) => Promise<NipOaAuthorization>;
+  /** Copies plain text as Buzz itself does: natively on macOS, where WebKit
+   * often rejects `navigator.clipboard` writes. Needs no manifest grant. */
+  writeClipboardText?: (text: string) => Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {
@@ -375,6 +380,10 @@ export class HostService extends Service implements Host {
 
   prepareRemoteAgentAuthorization(agentPubkey: string, signal?: AbortSignal) {
     return prepareRemoteAgentAuthorization(agentPubkey, signal);
+  }
+
+  writeClipboardText(text: string) {
+    return writeClipboardText(text);
   }
 
   async runCommand(id: string, input?: string): Promise<string | null> {
@@ -539,14 +548,20 @@ export class HostService extends Service implements Host {
         });
       const reply = await answerMcp(handler, body);
       try {
-        await send(reply === undefined ? null : JSON.stringify(reply));
+        await send(
+          reply === undefined
+            ? null
+            : runtimePerformance.serializeMcpReply(reply),
+        );
       } catch (error) {
         // A reply that will not encode or is too large still answers the
         // request, so the agent is not left waiting. When the agent has
         // stopped waiting, this fails too.
-        await send(JSON.stringify(mcpError(requestId(body), error))).catch(
-          () => undefined,
-        );
+        await send(
+          runtimePerformance.serializeMcpReply(
+            mcpError(requestId(body), error),
+          ),
+        ).catch(() => undefined);
       }
     };
     const onEvent = new Channel<McpEvent>((event) => {

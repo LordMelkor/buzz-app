@@ -264,6 +264,63 @@ export function parseGatewayDescriptor(raw: string): GatewayDescriptor | null {
   });
 }
 
+/** At most this many descriptors in `src/bundled/org-gateways.json`. */
+const ORG_GATEWAY_LIMIT = 8;
+
+/** The build's descriptor: an explicit `BUZZ_AGENT_GATEWAY` when one is
+ * set, else the entry of `src/bundled/org-gateways.json` (an organization's
+ * packaged descriptors, `[]` in open-source builds) that lists the build's
+ * `BUZZ_DEFAULT_COMMUNITY_URL`, else none. Every listed entry is checked
+ * even when none is chosen, and no community may be listed twice, so a bad
+ * file fails every build that carries it. Native selects the same way
+ * (`crates/plugin-manager/src/gateway.rs`); the shared vectors pin both. */
+export function selectGatewayDescriptor(
+  explicit: string,
+  listed: string,
+  communityUrl: string,
+): GatewayDescriptor | null {
+  const fail = (problem: string): never => {
+    throw new Error(`src/bundled/org-gateways.json is invalid: ${problem}.`);
+  };
+  let entries: unknown;
+  try {
+    entries = JSON.parse(listed);
+  } catch {
+    fail("it is not JSON");
+  }
+  if (!Array.isArray(entries) || entries.length > ORG_GATEWAY_LIMIT)
+    fail(`it must be a list of at most ${ORG_GATEWAY_LIMIT} descriptors`);
+  const descriptors = (entries as unknown[]).map((entry) => {
+    if (!plain(entry)) return fail("each entry must be a descriptor");
+    try {
+      return parseGatewayDescriptor(JSON.stringify(entry)) as GatewayDescriptor;
+    } catch (error) {
+      if (!(error instanceof GatewayDescriptorError)) throw error;
+      return fail(`an entry is invalid (${error.code})`);
+    }
+  });
+  const origins = descriptors.flatMap(({ communities }) =>
+    communities.map(({ origin }) => origin),
+  );
+  if (!unique(origins)) fail("two entries list the same community");
+  const chosen = parseGatewayDescriptor(explicit);
+  if (chosen) return chosen;
+  // A blank or non-secure URL selects nothing rather than failing: dev builds
+  // may point at a local ws:// relay, and Vite's build check already refuses a
+  // bad URL for packaged frontends.
+  let origin: string;
+  try {
+    origin = relayOrigin(communityUrl);
+  } catch {
+    return null;
+  }
+  return (
+    descriptors.find(({ communities }) =>
+      communities.some((community) => community.origin === origin),
+    ) ?? null
+  );
+}
+
 /** This build's descriptor. Vite validated it, so it parses. */
 export function gatewayDescriptor(): GatewayDescriptor | null {
   return parseGatewayDescriptor(import.meta.env.VITE_BUZZ_AGENT_GATEWAY ?? "");

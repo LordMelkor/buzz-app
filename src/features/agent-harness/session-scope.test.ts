@@ -65,7 +65,7 @@ it("releases an expired admission while preserving the prior ordering barrier", 
   const policies = new Map([
     [
       COMMUNITY_SESSION,
-      { topLevel: false, handed: previous, settled: previous, cancel() {} },
+      { solo: false, handed: previous, settled: previous, cancel() {} },
     ],
   ]);
   const signal = new AbortController();
@@ -105,11 +105,11 @@ it("cancels prior queued policies when the shared session is interrupted", async
   const policies = new Map([
     [
       COMMUNITY_SESSION,
-      { topLevel: false, handed: previous, settled: previous, cancel },
+      { solo: false, handed: previous, settled: previous, cancel },
     ],
   ]);
   policies.set("channel/thread", {
-    topLevel: false,
+    solo: false,
     handed: previous,
     settled: previous,
     cancel: independentCancel,
@@ -153,7 +153,7 @@ it("notifies when a cancelled wake's retained ordering policy finally drains", a
   const policies = new Map([
     [
       COMMUNITY_SESSION,
-      { topLevel: false, handed: prior, settled: prior, cancel() {} },
+      { solo: false, handed: prior, settled: prior, cancel() {} },
     ],
   ]);
   const states: boolean[] = [];

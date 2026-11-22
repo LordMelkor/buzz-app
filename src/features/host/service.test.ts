@@ -2,6 +2,7 @@ import { Context } from "@deepseek-ai/cordis";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HostService, type Host } from "./service";
+import { runtimePerformance } from "../developer/runtime-performance";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: vi.fn(),
@@ -163,6 +164,18 @@ it.each(["different owner", "nonempty conditions", "malformed signature"])(
     ).rejects.toThrow("Invalid remote agent authorization");
   },
 );
+
+it("copies a plugin's text through Buzz's clipboard, natively on macOS", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  await plugin.host.writeClipboardText?.("x²");
+  expect(invoke).toHaveBeenCalledWith("clipboard_write_text", { text: "x²" });
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { platform: "Win32", clipboard: { writeText } });
+  await plugin.host.writeClipboardText?.("y");
+  expect(writeText).toHaveBeenCalledWith("y");
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
 
 it("uses the calling plugin identity and preserves bounded command output", async () => {
   const { plugin } = pluginContext();
@@ -611,6 +624,64 @@ it.each([false, true])(
     await expect(server?.closed).resolves.toBeUndefined();
   },
 );
+
+it("counts actual plugin MCP reply encoding without retaining its contents", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "document",
+    Object.assign(new EventTarget(), {
+      hidden: false,
+      visibilityState: "visible",
+    }),
+  );
+  const lifetime = new AbortController();
+  try {
+    const { plugin } = pluginContext();
+    vi.mocked(invoke).mockResolvedValue({
+      handle: 4,
+      url: "http://127.0.0.1:5000/mcp",
+      token: "secret",
+    });
+    const reply = {
+      jsonrpc: "2.0",
+      id: 9,
+      result: { private: "private message" },
+    };
+    const server = await plugin.host.serveMcp?.(async () => reply);
+    const [, serve] = vi.mocked(invoke).mock.calls[0] as [
+      string,
+      { onEvent: { onmessage(event: unknown): void } },
+    ];
+    const pending = runtimePerformance.capture(1000, () => () => {}, [
+      lifetime.signal,
+    ]);
+    serve.onEvent.onmessage({
+      type: "message",
+      request: 1,
+      body: '{"jsonrpc":"2.0","id":9,"method":"ping"}',
+    });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
+        id: "example.plugin",
+        handle: 4,
+        request: 1,
+        body: JSON.stringify(reply),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    const encoded = JSON.stringify(await pending);
+    expect(JSON.parse(encoded).mcpReplies).toMatchObject({
+      count: 1,
+      codeUnits: 63,
+      failed: 0,
+    });
+    expect(encoded).not.toContain("private message");
+    await server?.close();
+  } finally {
+    lifetime.abort();
+    vi.useRealTimers();
+  }
+});
 
 it("answers a failed MCP request with a JSON-RPC error", async () => {
   const { plugin } = pluginContext();
