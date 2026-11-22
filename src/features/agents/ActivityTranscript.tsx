@@ -432,9 +432,8 @@ export function ActivityTranscript({
     () => ({ picture: poster ?? picture, focused }),
     [poster, picture, focused],
   );
-  const value = useMemo(() => ({ profiles, community }), [profiles, community]);
   return (
-    <PeopleContext.Provider value={value}>
+    <PeopleContext.Provider value={{ profiles, community }}>
       <RowContext.Provider value={rowContext}>
         <TranscriptTimeline
           scroll={scroll}
