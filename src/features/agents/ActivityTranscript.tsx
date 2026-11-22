@@ -2,6 +2,7 @@ import {
   Component,
   Fragment,
   createContext,
+  memo,
   useContext,
   useEffect,
   useSyncExternalStore,
@@ -454,7 +455,7 @@ export function ActivityTranscript({
                     : "Session continued; earlier turns not shown"}
                 </p>
               )}
-              <Turn
+              <MemoizedTurn
                 turn={turn}
                 state={
                   turn.endedAt ? "ended" : (state(turn.turnId) ?? "unknown")
@@ -580,6 +581,8 @@ function Turn({
     </article>
   );
 }
+
+const MemoizedTurn = memo(Turn);
 
 /** The same live-work treatment at the start and end of the turn. */
 function WorkingLabel() {
@@ -775,7 +778,7 @@ function Item({
           icon={<BulbIcon size={16} aria-label="Thought" />}
           label={<span className={styles.subject}>{heading}</span>}
         >
-          {body && <Reply text={body} />}
+          {body && <MemoizedReply text={body} />}
         </Disclosure>
       );
     }
@@ -806,7 +809,7 @@ function Item({
         >
           <div className={messageStyles.messageBubble} data-arrival-surface>
             <div className="text-message">
-              <Reply text={item.text} />
+              <MemoizedReply text={item.text} />
             </div>
           </div>
         </Disclosure>
@@ -871,6 +874,8 @@ function Reply({ text }: { text: string }) {
     />
   );
 }
+
+const MemoizedReply = memo(Reply);
 
 /** A file's lines; a final newline does not start another line. */
 const lines = (text: string) => text.replace(/\n$/, "").split("\n");

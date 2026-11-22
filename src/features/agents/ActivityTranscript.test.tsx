@@ -1053,7 +1053,7 @@ it("keeps the conversation readable while disclosing work and showing the curren
   expect(screen.getByText("source")).not.toBeVisible();
 });
 
-it("keeps thought details collapsed until requested and preserves them across updates", async () => {
+it("keeps an expanded thought open at turn end without rereading earlier activity", async () => {
   const turn: TranscriptTurn = {
     turnId: "thought-turn",
     channelId: null,
@@ -1072,10 +1072,23 @@ it("keeps thought details collapsed until requested and preserves them across up
       },
     ],
   };
+  const earlierItems: TranscriptTurn["items"] = [
+    { id: "previous", at: 1, type: "status", text: "Previous activity" },
+  ];
+  let earlierReads = 0;
+  const earlier: TranscriptTurn = {
+    ...turn,
+    turnId: "earlier",
+    endedAt: 1,
+    get items() {
+      earlierReads++;
+      return earlierItems;
+    },
+  };
   const user = userEvent.setup();
   const { rerender } = render(
     <ActivityTranscript
-      transcript={{ turns: [turn] }}
+      transcript={{ turns: [earlier, turn] }}
       agentName="Agent"
       state={() => "working"}
     />,
@@ -1088,13 +1101,17 @@ it("keeps thought details collapsed until requested and preserves them across up
   await user.click(disclosure);
   expect(screen.getByText("formatting")).toBeVisible();
   expect(screen.getAllByText("Checking the view")).toHaveLength(1);
+  expect(screen.getByText("Previous activity")).toBeVisible();
+  const readsBeforeStop = earlierReads;
   rerender(
     <ActivityTranscript
-      transcript={{ turns: [{ ...turn, endedAt: 2 }] }}
+      transcript={{ turns: [earlier, { ...turn, endedAt: 2 }] }}
       agentName="Agent"
       state={() => "ended"}
     />,
   );
+  expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  expect(earlierReads).toBe(readsBeforeStop);
   expect(screen.getByText("formatting")).toBeVisible();
   await user.click(disclosure);
   expect(screen.getByText("formatting")).not.toBeVisible();
