@@ -756,6 +756,22 @@ it("reads canonical history when a 51st turn first appears at stop", async () =>
   expect(fileReads().slice(before)).toEqual(["read", "read-page", "read"]);
 });
 
+const reportCall = {
+  type: "tool_use",
+  name: "mcp__buzz__send",
+  id: "s",
+  input: { text: "Sample report" },
+};
+
+const toolResult = (id: string, content: string, is_error = false) =>
+  JSON.stringify({
+    uuid: `result-${id}`,
+    type: "user",
+    message: {
+      content: [{ type: "tool_result", tool_use_id: id, content, is_error }],
+    },
+  });
+
 it("updates a tool outside the working tail and resumes polling after a late send result", async () => {
   const { load, path, gap, fileReads, startCompaction, summary } =
     await openLongTranscript();
@@ -772,23 +788,10 @@ it("updates a tool outside the working tail and resumes polling after a late sen
           id: "r",
           input: { file_path: "/work/sample.txt" },
         },
-        {
-          type: "tool_use",
-          name: "mcp__buzz__send",
-          id: "s",
-          input: { text: "Sample report" },
-        },
+        reportCall,
       ],
     },
   });
-  const result = (id: string, content: string, is_error = false) =>
-    JSON.stringify({
-      uuid: `result-${id}`,
-      type: "user",
-      message: {
-        content: [{ type: "tool_result", tool_use_id: id, content, is_error }],
-      },
-    });
   appendFileSync(path, `\n${calls}\n${gap}\n${sessionReply("draft reply")}\n`);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const poll = async () =>
@@ -811,7 +814,7 @@ it("updates a tool outside the working tail and resumes polling after a late sen
     tool.open = true;
     fireEvent(tool, new Event("toggle"));
     const before = fileReads().length;
-    appendFileSync(path, `${result("r", "original output")}\n`);
+    appendFileSync(path, `${toolResult("r", "original output")}\n`);
     await poll();
     await vi.waitFor(() =>
       expect(within(tool).getByText("original output")).toBeVisible(),
@@ -819,7 +822,7 @@ it("updates a tool outside the working tail and resumes polling after a late sen
     expect(tool).toHaveAttribute("data-status", "completed");
     expect(fileReads().slice(before)).not.toContain("read");
 
-    appendFileSync(path, `${result("s", "channel missing", true)}\n`);
+    appendFileSync(path, `${toolResult("s", "channel missing", true)}\n`);
     await poll();
     await vi.waitFor(() =>
       expect(
@@ -849,6 +852,45 @@ it("updates a tool outside the working tail and resumes polling after a late sen
   }
   expectTurnStatus(await summary("final oversized reply"), "Completed");
   await expectFullPreviewHistory();
+});
+
+it("marks a prior-batch send as posted when its full read returns", async () => {
+  const { path, gap, load, startCompaction, holdNextFileProcess } =
+    await openLongTranscript();
+  await userEvent.click(load);
+  await expectFullPreviewHistory();
+  const call = JSON.stringify({
+    uuid: "report",
+    type: "assistant",
+    message: { content: [reportCall] },
+  });
+  appendFileSync(path, `\n${call}\n${gap}\n`);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const finish = startCompaction();
+  try {
+    const report = () =>
+      screen.getByText("Sample report", transcriptSummary).closest("summary");
+    await vi.waitFor(() => expect(report()).toBeVisible());
+    const read = holdNextFileProcess("read");
+    try {
+      appendFileSync(path, `${toolResult("s", `sent ${"a".repeat(64)}`)}\n`);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(LIVE_READ_MS);
+      });
+      await read.started;
+      expect(report()).not.toHaveTextContent("Posted");
+    } finally {
+      read.release();
+    }
+    await vi.waitFor(() => expect(report()).toHaveTextContent("Posted"));
+    expectTurnStatus(
+      screen.getByText("Sample report", transcriptSummary),
+      "Working",
+    );
+  } finally {
+    vi.useRealTimers();
+    await act(finish);
+  }
 });
 
 it("reads corrected earlier history when work stops with Refresh queued behind a poll", async () => {
