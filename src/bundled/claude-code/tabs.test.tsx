@@ -532,7 +532,7 @@ function longTranscript() {
   return {
     Activity: tab(type, 1),
     path: join(home, ".claude/projects", file),
-    holdNextSize() {
+    holdNextFileProcess(...ids: string[]) {
       const run = spawn.getMockImplementation();
       if (!run) throw new Error("Missing manifest process fixture");
       let release!: () => void;
@@ -540,7 +540,9 @@ function longTranscript() {
         release = resolve;
       });
       const started = new Promise<string>((resolve) => {
-        spawn.mockImplementationOnce(async (id, options) => {
+        spawn.mockImplementation(async (id, options) => {
+          if (!ids.includes(id)) return run(id, options);
+          spawn.mockImplementation(run);
           const process = await run(id, options);
           const code = await process.exited;
           resolve(id);
@@ -638,13 +640,18 @@ it("loads the missing history when a working session grows past the held tail", 
   }
 });
 
-async function openLongTranscript() {
-  const fixture = longTranscript();
-  const { Activity } = fixture;
+async function showLongTranscript(
+  Activity: ReturnType<typeof longTranscript>["Activity"],
+) {
   render(<Activity agent={agent()} save={vi.fn()} />);
   await userEvent.click(
     screen.getByRole("button", { name: /^View transcript/ }),
   );
+}
+
+async function openLongTranscript() {
+  const fixture = longTranscript();
+  await showLongTranscript(fixture.Activity);
   const load = await screen.findByRole("button", {
     name: /load earlier activity/i,
   });
@@ -652,6 +659,124 @@ async function openLongTranscript() {
     screen.findByText(text, { selector: "summary span" });
   return { ...fixture, load, summary };
 }
+
+const transcriptSummary = { selector: "summary span" };
+const partialHistory = "Earlier activity is not loaded.";
+
+async function expectFullPreviewHistory(first = "earlier") {
+  expect(await screen.findByText(first, transcriptSummary)).toBeVisible();
+  expect(screen.getByText("newest", transcriptSummary)).toBeVisible();
+  expect(screen.queryByText(partialHistory)).toBeNull();
+}
+
+it.each(["Refresh transcript", "Load earlier activity"])(
+  "expands a Claude preview with %s and reads only the tail when work starts",
+  async (action) => {
+    const { path, fileReads, holdNextFileProcess, startCompaction, summary } =
+      await openLongTranscript();
+    const newest = await summary("newest");
+    const before = fileReads().length;
+    const expansion = holdNextFileProcess("read", "read-page");
+    try {
+      fireEvent.click(screen.getByRole("button", { name: action }));
+      await expansion.started;
+      expect(newest).toBeVisible();
+      expect(screen.getByText(partialHistory)).toBeVisible();
+    } finally {
+      await act(async () => expansion.release());
+    }
+    await expectFullPreviewHistory();
+    expect(fileReads().slice(before)).toEqual(["read"]);
+
+    const after = fileReads().length;
+    appendFileSync(path, `\n${sessionPrompt("working after expansion")}`);
+    const finish = startCompaction();
+    try {
+      expect(await summary("working after expansion")).toBeVisible();
+      await expectFullPreviewHistory();
+      expect(fileReads().slice(after)).toEqual(["read-page"]);
+    } finally {
+      await act(finish);
+    }
+  },
+);
+
+it("expands a Claude preview when Refresh queues during its initial read", async () => {
+  const { Activity, fileReads, holdNextFileProcess } = longTranscript();
+  const opening = holdNextFileProcess("read-page");
+  try {
+    await showLongTranscript(Activity);
+    expect(await opening.started).toBe("read-page");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+    expect(screen.queryByText("newest", transcriptSummary)).toBeNull();
+    expect(fileReads()).toEqual(["read-page"]);
+  } finally {
+    await act(async () => opening.release());
+  }
+  await expectFullPreviewHistory();
+  expect(fileReads()).toEqual(["read-page", "read"]);
+});
+
+it.each([false, true])(
+  "expands a Claude preview when work stops during Refresh (hidden: %s)",
+  async (hide) => {
+    const {
+      path,
+      gap,
+      fileReads,
+      holdNextFileProcess,
+      startCompaction,
+      summary,
+    } = await openLongTranscript();
+    appendFileSync(path, `\n${sessionPrompt("during refresh")}`);
+    let finish: ReturnType<typeof startCompaction> | undefined =
+      startCompaction();
+    const visibility = vi.spyOn(document, "hidden", "get");
+    try {
+      await summary("during refresh");
+      writeFileSync(
+        path,
+        [
+          sessionPrompt("corrected earlier", earlierEvent),
+          gap,
+          sessionPrompt("newest"),
+          sessionPrompt("during refresh"),
+        ].join("\n"),
+      );
+      const interrupted = holdNextFileProcess("read", "read-page");
+      try {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Refresh transcript" }),
+        );
+        await interrupted.started;
+        expect(screen.getByText(partialHistory)).toBeVisible();
+        appendFileSync(path, `\n${sessionPrompt("after interrupted refresh")}`);
+        if (hide) {
+          visibility.mockReturnValue(true);
+          fireEvent(document, new Event("visibilitychange"));
+        }
+        const beforeStop = fileReads().length;
+        await act(finish);
+        finish = undefined;
+        await act(async () => interrupted.release());
+        if (hide) {
+          expect(fileReads()).toHaveLength(beforeStop);
+          expect(screen.getByText(partialHistory)).toBeVisible();
+          visibility.mockReturnValue(false);
+          fireEvent(document, new Event("visibilitychange"));
+        }
+        expect(await summary("after interrupted refresh")).toBeVisible();
+        await expectFullPreviewHistory("corrected earlier");
+        expect(fileReads().slice(beforeStop)).toEqual(["read"]);
+      } finally {
+        interrupted.release();
+      }
+    } finally {
+      visibility.mockRestore();
+      if (finish) await act(finish);
+    }
+  },
+);
 
 it("reads only the tail at both working changes and keeps earlier turns", async () => {
   const { load, path, fileReads, startCompaction, summary } =
@@ -832,8 +957,15 @@ it.each([
   { refresh: false, hide: true, reads: "the tail on return" },
   { refresh: true, hide: false, reads: "full history for a queued Refresh" },
 ])("reads $reads when turn end aborts a poll", async ({ refresh, hide }) => {
-  const { load, path, gap, fileReads, holdNextSize, startCompaction, summary } =
-    await openLongTranscript();
+  const {
+    load,
+    path,
+    gap,
+    fileReads,
+    holdNextFileProcess,
+    startCompaction,
+    summary,
+  } = await openLongTranscript();
   await userEvent.click(load);
   await summary("earlier");
   appendFileSync(path, `\n${sessionPrompt("during")}`);
@@ -843,7 +975,7 @@ it.each([
     await vi.waitFor(() =>
       screen.getByText("during", { selector: "summary span" }),
     );
-    const poll = holdNextSize();
+    const poll = holdNextFileProcess("size");
     try {
       act(() => {
         vi.advanceTimersByTime(LIVE_READ_MS);

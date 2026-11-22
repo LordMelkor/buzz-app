@@ -1075,6 +1075,8 @@ export function createTabs({
         agent={agent}
         onRefreshRequested={() => {
           refreshCount.current++;
+          if (fullHistory.current?.input !== input)
+            fullHistory.current = { input, loaded: false };
         }}
         read={async (signal) => {
           const refresh = refreshCount.current;
