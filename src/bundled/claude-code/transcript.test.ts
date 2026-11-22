@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -148,14 +149,15 @@ it("groups a session file into prompted turns with steering, tools and replies",
   );
 });
 
+const send = (id: string, text: string, tool = "send") =>
+  line("assistant", [
+    { type: "tool_use", id, name: `mcp__buzz__${tool}`, input: { text } },
+  ]);
+const result = (id: string, content: string, is_error = false) =>
+  line("user", [{ type: "tool_result", tool_use_id: id, content, is_error }]);
+
 it("shows what the agent posted as its reply once sent, and names Buzz tools as Codex does", () => {
   clock = 0;
-  const send = (id: string, text: string, tool = "send") =>
-    line("assistant", [
-      { type: "tool_use", id, name: `mcp__buzz__${tool}`, input: { text } },
-    ]);
-  const result = (id: string, content: string, is_error = false) =>
-    line("user", [{ type: "tool_result", tool_use_id: id, content, is_error }]);
   const [turn] = claudeTurns(
     [
       line("user", prompt("review it")),
@@ -1416,6 +1418,115 @@ it("keeps an incomplete UTF-8 record across working polls and retries from the a
   expect(await latest(staged)).toEqual([]);
   appendFileSync(path, `${line("user", prompt("next request"))}\n`);
   expect(await latest(staged)).toBeUndefined();
+});
+
+it("matches each accepted working poll to a full read of the same session bytes", async () => {
+  const { home, spawn, reads } = host({
+    [savedPath]: [
+      line("user", turn("Check the report")),
+      line("progress", "x".repeat(2 << 20)),
+      "",
+    ].join("\n"),
+  });
+  const path = join(home, ".claude/projects", savedPath);
+  const disk = manifestProcesses(home);
+  const args = [
+    "~/.buzz",
+    conversation,
+    true,
+    new AbortController().signal,
+  ] as const;
+  let poll: WorkingPoll = {};
+  const seed = async () => {
+    poll = {};
+    await readTranscript(disk, ...args, undefined, poll);
+    expect(poll.cursor?.offset).toBe(statSync(path).size);
+  };
+  const append = (...records: string[]) =>
+    appendFileSync(path, records.join("\n") + "\n");
+  const latest = () => readLatestTurns(spawn, ...args, undefined, poll);
+  const accept = async (shape: string, ...records: string[]) => {
+    append(...records);
+    const polled = await latest();
+    expect(polled, shape).toHaveLength(1);
+    expect(poll.cursor?.offset, shape).toBe(statSync(path).size);
+    expect(reads, shape).toHaveLength(0);
+    const full = await readTranscript(disk, ...args);
+    expect(polled, shape).toStrictEqual(full?.turns);
+    return polled?.[0]?.items.at(-1);
+  };
+  const text = (value: string, extra = {}) =>
+    line("assistant", [{ type: "text", text: value }], extra);
+  const read = (id: string) =>
+    line("assistant", [
+      { type: "tool_use", id, name: "Read", input: { path: id } },
+    ]);
+  await seed();
+  await accept("assistant text", text("Checking"));
+  await accept(
+    "thinking",
+    line("assistant", [{ type: "thinking", thinking: "Compare reports" }]),
+  );
+  await accept("open tool", read("report"));
+  await accept("complete tool", result("report", "ready"));
+  await accept("open second tool", read("missing"));
+  await accept("failed tool", result("missing", "file missing", true));
+  await accept(
+    "posted send",
+    send("post", "Report ready"),
+    result("post", `sent ${"a".repeat(64)}`),
+  );
+  await accept(
+    "failed send",
+    send("error", "Second report"),
+    result("error", "send failed", true),
+  );
+
+  const userSteer = await accept(
+    "timestamped user steer",
+    line("user", steerPrompt(turn("Check totals"))),
+  );
+  const queuedSteer = await accept(
+    "untimed queued steer",
+    line("attachment", undefined, {
+      timestamp: undefined,
+      attachment: {
+        type: "queued_command",
+        prompt: steerPrompt(turn("Check dates")),
+      },
+    }),
+  );
+  expect(userSteer).toMatchObject({ steer: true, text: "Check totals" });
+  expect(queuedSteer).toMatchObject({
+    steer: true,
+    text: "Check dates",
+    at: userSteer?.at,
+  });
+
+  await accept("meta", line("user", turn("Hidden"), { isMeta: true }));
+  await accept("sidechain", text("Hidden", { isSidechain: true }));
+  await accept("missing uuid", text("Hidden", { uuid: undefined }));
+  await accept(
+    "other attachment",
+    line("attachment", undefined, {
+      attachment: { type: "other", prompt: steerPrompt(turn("Hidden")) },
+    }),
+  );
+  await accept("progress", line("progress", "Checking"));
+  await accept("system", line("system", "Notice"));
+  await accept(
+    "multiple pages",
+    text("Report complete", { padding: "x".repeat(1 << 20) }),
+  );
+  const [process, options] = spawn.mock.calls.at(-1) ?? [];
+  expect(process).toBe("read-page");
+  expect(Number(options?.args?.[2])).toBeGreaterThan(1);
+
+  await accept("pending send", send("late", "Final report"));
+  append(result("late", `sent ${"b".repeat(64)}`));
+  expect(await latest(), "receipt from an earlier poll").toBeUndefined();
+  await seed();
+  await accept("after the full read", text("Finished"));
 });
 
 it("requests a full read immediately for a second oversized working turn", async () => {
