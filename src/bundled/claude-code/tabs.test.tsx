@@ -657,7 +657,17 @@ async function openLongTranscript() {
   });
   const summary = (text: string) =>
     screen.findByText(text, { selector: "summary span" });
-  return { ...fixture, load, summary };
+  async function withFileRead<T>(id: "read" | "read-page", action: () => T) {
+    const read = fixture.holdNextFileProcess(id);
+    try {
+      const result = await action();
+      await read.started;
+      return result;
+    } finally {
+      await act(async () => read.release());
+    }
+  }
+  return { ...fixture, load, summary, withFileRead };
 }
 
 const transcriptSummary = { selector: "summary span" };
@@ -821,32 +831,22 @@ it("keeps the session divider and prompt when a working turn shifts the 50-turn 
   await sessionPrompts(localStore(), "claude-code", agent().key).save("kept", [
     { label: "Instructions", text: "Saved session instructions" },
   ]);
-  const {
-    load,
-    path,
-    gap,
-    fileReads,
-    holdNextFileProcess,
-    startCompaction,
-    summary,
-  } = await openLongTranscript();
+  const { load, path, gap, fileReads, withFileRead, startCompaction, summary } =
+    await openLongTranscript();
   const older = Array.from({ length: 50 }, (_, i) =>
     sessionPrompt(`turn ${i}`),
   );
   writeFileSync(path, [...older, gap, sessionPrompt("newest")].join("\n"));
-  await userEvent.click(load);
+  await withFileRead("read", () => userEvent.click(load));
   await summary("turn 1");
   const before = fileReads().length;
   appendFileSync(path, `\n${sessionPrompt("during")}`);
-  const page = holdNextFileProcess("read-page");
-  const finish = startCompaction();
+  const finish = await withFileRead("read-page", startCompaction);
   try {
-    await page.started;
-    await act(async () => page.release());
     await summary("during");
     appendFileSync(path, `\n${sessionPrompt("finished")}`);
   } finally {
-    await act(finish);
+    await withFileRead("read-page", () => act(finish));
   }
   await summary("finished");
   const first = (await summary("turn 3")).closest("article");
@@ -865,8 +865,10 @@ it("keeps the session divider and prompt when a working turn shifts the 50-turn 
     );
   const afterTurn = rows();
   const region = first?.closest("[aria-busy]");
-  fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
-  expect(region).toHaveAttribute("aria-busy", "true");
+  await withFileRead("read", () => {
+    fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+    expect(region).toHaveAttribute("aria-busy", "true");
+  });
   await waitFor(() => expect(region).toHaveAttribute("aria-busy", "false"));
   expect(fileReads().at(-1)).toBe("read");
   expect(rows()).toEqual(afterTurn);
