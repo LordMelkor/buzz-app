@@ -275,6 +275,7 @@ export class Pi {
       };
     });
     let buffer = "";
+    let newline = -1;
     let stderr = "";
     const connection: Connection = {
       lifetime: new AbortController(),
@@ -402,8 +403,11 @@ export class Pi {
           }
         : {}),
       onStdout: (data) => {
+        if (newline < 0) {
+          const next = data.indexOf("\n");
+          if (next >= 0) newline = buffer.length + next;
+        }
         buffer += data;
-        let newline = buffer.indexOf("\n");
         while (newline >= 0) {
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);

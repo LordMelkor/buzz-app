@@ -101,6 +101,7 @@ export class AcpProcess {
   private readonly calls = new Map<number, Pending>();
   private requests = 0;
   private buffer = "";
+  private newline = -1;
   private stderr = "";
   private alive = true;
   private code: number | null | undefined;
@@ -520,12 +521,15 @@ export class AcpProcess {
     this.stderr = (this.stderr + data).slice(-STDERR_LIMIT);
   }
   private read(data: string) {
+    if (this.newline < 0) {
+      const next = data.indexOf("\n");
+      if (next >= 0) this.newline = this.buffer.length + next;
+    }
     this.buffer += data;
-    let newline = this.buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = this.buffer.slice(0, newline).trim();
-      this.buffer = this.buffer.slice(newline + 1);
-      newline = this.buffer.indexOf("\n");
+    while (this.newline >= 0) {
+      const line = this.buffer.slice(0, this.newline).trim();
+      this.buffer = this.buffer.slice(this.newline + 1);
+      this.newline = this.buffer.indexOf("\n");
       if (!line) continue;
       let message: Wire;
       try {
