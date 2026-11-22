@@ -609,15 +609,20 @@ it("keeps an untouched tail on working changes until earlier activity is request
   expect(fileReads().slice(before)).toEqual(["read-page", "read-page"]);
   const load = screen.getByRole("button", { name: /load earlier activity/i });
   chmodSync(path, 0);
-  await user.click(load);
+  load.focus();
+  await user.keyboard("{Enter}");
   expect(await screen.findByRole("alert")).toHaveTextContent(
     /permission denied/i,
   );
   expect(screen.getByText("while working", summary)).toBeVisible();
+  expect(document.activeElement).toBe(load);
   chmodSync(path, 0o600);
-  await user.click(load);
+  await user.keyboard("{Enter}");
   expect(await screen.findByText("earlier", summary)).toBeVisible();
   expect(load).not.toBeInTheDocument();
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: "Refresh transcript" }),
+  );
 });
 
 it("loads the missing history when a working session grows past the held tail", async () => {
@@ -943,23 +948,38 @@ it("reads corrected earlier history when work stops with Refresh queued behind a
   expect(fileReads().slice(before)).toEqual(["read", "read-page", "read"]);
 });
 
-it.each(["Refresh transcript", "Load earlier activity"])(
-  "keeps the preview visible while %s loads full history",
-  async (action) => {
+it.each([
+  ["Refresh transcript", false],
+  ["Load earlier activity", false],
+  ["Load earlier activity", true],
+] as const)(
+  "keeps the preview visible while %s loads full history (tab away: %s)",
+  async (action, tabAway) => {
     const { fileReads, holdNextFileProcess, summary } =
       await openLongTranscript();
     const newest = await summary("newest");
     const before = fileReads().length;
     const expansion = holdNextFileProcess("read", "read-page");
+    const user = userEvent.setup();
+    const control = screen.getByRole("button", { name: action });
+    const refresh = screen.getByRole("button", { name: "Refresh transcript" });
+    const expectedFocus = tabAway ? newest.closest("summary") : refresh;
     try {
-      fireEvent.click(screen.getByRole("button", { name: action }));
+      control.focus();
+      await user.keyboard("{Enter}");
       await expansion.started;
+      expect(document.activeElement).toBe(control);
+      if (tabAway) {
+        await user.tab();
+        expect(document.activeElement).toBe(expectedFocus);
+      }
       expect(newest).toBeVisible();
       expect(screen.getByText(partialHistory)).toBeVisible();
     } finally {
       await act(async () => expansion.release());
     }
     await expectFullPreviewHistory();
+    expect(document.activeElement).toBe(expectedFocus);
     expect(fileReads().slice(before)).toEqual(["read"]);
   },
 );

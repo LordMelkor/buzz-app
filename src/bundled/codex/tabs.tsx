@@ -31,6 +31,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { TranscriptPreviewNotice } from "../TranscriptPreviewNotice";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
 import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
@@ -1326,22 +1327,19 @@ export function createTabs(
             session may have been deleted.
           </p>
         }
-        notes={(transcript) =>
-          transcript.partial ? (
-            <div className="text-body-sm text-subtle">
-              Earlier activity is not loaded.{" "}
-              <Button variant="plain" size="inline" onClick={loadEarlier}>
-                Load earlier activity
-              </Button>
-            </div>
-          ) : (
-            transcript.more && (
+        notes={(transcript) => (
+          <>
+            <TranscriptPreviewNotice
+              partial={!!transcript.partial}
+              onLoad={loadEarlier}
+            />
+            {!transcript.partial && transcript.more && (
               <p className="m-0 text-body-sm text-subtle">
                 Showing the latest {TURN_LIMIT} turns.
               </p>
-            )
-          )
-        }
+            )}
+          </>
+        )}
       />
     );
   }

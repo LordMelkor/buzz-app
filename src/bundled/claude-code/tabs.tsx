@@ -22,6 +22,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
+import { TranscriptPreviewNotice } from "../TranscriptPreviewNotice";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
 import {
   type ClaudeTranscript,
@@ -1162,21 +1163,11 @@ export function createTabs({
         }
         notes={(transcript) => (
           <>
-            {transcript.partial && (
-              <div>
-                <span className="text-body-sm text-subtle">
-                  Earlier activity is not loaded.{" "}
-                </span>
-                <Button
-                  variant="plain"
-                  size="inline"
-                  loading={history.loading}
-                  onClick={loadEarlier}
-                >
-                  Load earlier activity
-                </Button>
-              </div>
-            )}
+            <TranscriptPreviewNotice
+              partial={!!transcript.partial}
+              loading={history.loading}
+              onLoad={loadEarlier}
+            />
             {transcript.incomplete && (
               <p role="status" className="m-0 text-body-sm">
                 Some of this conversation’s sessions may be missing. Refresh to

@@ -472,11 +472,17 @@ it("expands the clipped session opener without rereading it, and Refresh reads n
   expect(screen.getByText("Earlier activity is not loaded.")).toBeVisible();
   expect(screen.queryByText("New session")).toBeNull();
   const reads = f.spawn.mock.calls.length;
-  fireEvent.click(expand);
+  const user = userEvent.setup();
+  const refresh = screen.getByRole("button", { name: "Refresh transcript" });
+  refresh.focus();
+  await user.tab();
+  expect(document.activeElement).toBe(expand);
+  await user.keyboard("{Enter}");
   expect(await screen.findByText("New session")).toBeVisible();
   expect(loadedEntries()).toEqual(
     Array.from({ length: 130 }, (_, i) => `item:first-${i}`),
   );
+  expect(document.activeElement).toBe(refresh);
   expect(f.spawn.mock.calls).toHaveLength(reads);
   count++;
   fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
@@ -612,8 +618,15 @@ it.each(["Load earlier activity", "Refresh transcript", "linked message"])(
         else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
       }
     } else {
-      fireEvent.click(screen.getByRole("button", { name: action }));
+      const user = userEvent.setup();
+      const control = screen.getByRole("button", { name: action });
+      control.focus();
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(control);
       await act(async () => stopped.resolve(full));
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Refresh transcript" }),
+      );
     }
     await screen.findByText("Message live-135", { selector: "summary span" });
     expect(loadedEntries()).toHaveLength(266);
