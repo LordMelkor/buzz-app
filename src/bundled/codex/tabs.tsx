@@ -23,12 +23,15 @@ import {
 // The type's tabs: Codex's setup on this computer, and the agent's settings;
 // and its part of the New agent dialog.
 import {
+  useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useId,
   useState,
   useSyncExternalStore,
 } from "react";
+import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
 import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
@@ -85,7 +88,7 @@ import {
 } from "./rpc";
 import type { CodexRuntime, SavedConversation } from "./runtime";
 import type { CodexSetup } from "./setup";
-import { readTranscript, TURN_LIMIT } from "./transcript";
+import { type CodexTranscript, readTranscript, TURN_LIMIT } from "./transcript";
 import { VoicePreview } from "./VoicePreview";
 import {
   discoverPreviews,
@@ -123,6 +126,72 @@ const STORAGE_KEY = "buzz.codex.provider-defaults.v1";
 const SIGN_IN_ERROR = "Codex needs you to sign in.";
 const NOT_INSTALLED = "The Codex integration isn't installed yet.";
 const CONVERSATION_LIMIT = 30;
+
+const PREVIEW_ITEMS = 128;
+type TranscriptViewState = {
+  start?: undefined | "full" | { turn: string; item?: string | undefined };
+  snapshot?: { transcript: CodexTranscript; working: boolean } | undefined;
+  reading?: AbortSignal | undefined;
+};
+
+function previewTranscript(
+  transcript: CodexTranscript,
+  view: TranscriptViewState,
+  working: boolean,
+) {
+  const { turns } = transcript;
+  const last = turns.at(-1);
+  if (
+    view.start !== "full" &&
+    last &&
+    !turns.some((turn) =>
+      turn.items.some(
+        (item) => item.id === `${turn.sessionId}:recorded-tools-unavailable`,
+      ),
+    )
+  ) {
+    if (
+      !view.start &&
+      turns.reduce((n, turn) => n + turn.items.length, 0) > PREVIEW_ITEMS
+    )
+      view.start = {
+        turn: last.turnId,
+        item:
+          !working &&
+          !transcript.working &&
+          last.endedAt !== undefined &&
+          last.items.length > PREVIEW_ITEMS
+            ? last.items.at(-PREVIEW_ITEMS)?.id
+            : undefined,
+      };
+    const start = view.start;
+    const index = turns.findIndex((turn) => turn.turnId === start?.turn);
+    const first = turns[index];
+    if (first && start) {
+      const offset =
+        start.item === undefined
+          ? 0
+          : first.items.findIndex((item) => item.id === start.item);
+      if (offset >= 0 && (index > 0 || offset > 0)) {
+        const visible = turns.slice(index);
+        if (offset > 0)
+          visible[0] = {
+            ...first,
+            newSession: false,
+            continued: false,
+            config: [],
+            partial: true,
+            items: first.items.slice(offset),
+          };
+        view.snapshot = { transcript, working };
+        return { ...transcript, partial: true as const, turns: visible };
+      }
+    }
+  }
+  view.start = "full";
+  return transcript;
+}
+
 /** Read-only setup/catalog discovery uses the same declared native transport. */
 async function catalog(spawn: Spawn, signal: AbortSignal, host?: PreviewHost) {
   const rpc = new AppServer();
@@ -1188,10 +1257,41 @@ export function createTabs(
     conversation: SavedConversation;
     working: boolean;
   }) {
+    const focus = useContext(TranscriptFocus);
+    const view = useRef<TranscriptViewState>({
+      start: focus ? "full" : undefined,
+    }).current;
+    const [again, setAgain] = useState(0);
+    useLayoutEffect(() => {
+      if (view.snapshot?.working !== working) view.snapshot = undefined;
+      if (focus && view.start !== "full") {
+        view.start = "full";
+        setAgain((n) => n + 1);
+      }
+    }, [working, focus, view]);
+    const loadEarlier = () => {
+      view.start = "full";
+      if (!view.reading || view.reading.aborted) setAgain((n) => n + 1);
+    };
+    const project =
+      (read: (signal: AbortSignal) => Promise<CodexTranscript | undefined>) =>
+      async (signal: AbortSignal) => {
+        const saved = view.start === "full" ? view.snapshot : undefined;
+        view.snapshot = undefined;
+        if (saved) return saved.transcript;
+        view.reading = signal;
+        try {
+          const full = await read(signal);
+          signal.throwIfAborted();
+          return full && previewTranscript(full, view, working);
+        } finally {
+          if (view.reading === signal) view.reading = undefined;
+        }
+      };
     return (
-      <TranscriptPanel
+      <TranscriptPanel<CodexTranscript & { partial?: true }>
         agent={agent}
-        read={async (signal) => {
+        read={project(async (signal) => {
           if (await binding(agent.key))
             throw new Error(
               "Transcripts are unavailable for remote Codex agents.",
@@ -1208,6 +1308,11 @@ export function createTabs(
               turns: runtime.prompts(agent.key).shown(transcript.turns),
             }
           );
+        })}
+        readAgain={String(again)}
+        onRefreshRequested={() => {
+          view.snapshot = undefined;
+          view.start = "full";
         }}
         readKey={conversation.key}
         working={working}
@@ -1220,10 +1325,19 @@ export function createTabs(
           </p>
         }
         notes={(transcript) =>
-          transcript.more && (
-            <p className="m-0 text-body-sm text-subtle">
-              Showing the latest {TURN_LIMIT} turns.
-            </p>
+          transcript.partial ? (
+            <div className="text-body-sm text-subtle">
+              Earlier activity is not loaded.{" "}
+              <Button variant="plain" size="inline" onClick={loadEarlier}>
+                Load earlier activity
+              </Button>
+            </div>
+          ) : (
+            transcript.more && (
+              <p className="m-0 text-body-sm text-subtle">
+                Showing the latest {TURN_LIMIT} turns.
+              </p>
+            )
           )
         }
       />
@@ -1307,12 +1421,19 @@ export function createTabs(
     const recent = conversations
       .filter((item) => item.key !== here?.key)
       .slice(0, CONVERSATION_LIMIT);
-    const { open, show, back } = useOpenTranscript(
+    const {
+      open: selected,
+      show,
+      back,
+    } = useOpenTranscript(
       conversation,
       label,
       initialTranscript && { initial: here, searching, ...initialTranscript },
       close,
     );
+    const open =
+      selected &&
+      (conversations.find((row) => row.key === selected.key) ?? selected);
     const saved = new Set(conversations.map((row) => row.key));
     const views = new Map(sessions.map((view) => [view.key, view]));
     const unbound = sessions.filter((view) => !saved.has(view.key));
@@ -1415,7 +1536,7 @@ export function createTabs(
             onBack={back}
           >
             <TranscriptView
-              key={open.key}
+              key={JSON.stringify([agent.key, open.key, open.threadId])}
               agent={agent}
               conversation={open}
               working={views.get(open.key)?.status === "Working"}

@@ -1859,6 +1859,9 @@ If an agent reports incompatible synced settings, choose the **Previous Versions
   A local Claude transcript can open on its latest activity. Choose **Load
   earlier activity** to load the available history, up to 50 turns. Find on
   screen searches the loaded rows.
+  A large local Codex transcript can open on its newest turn, showing up to 128
+  entries from a completed turn. A working turn stays visible in full. Choose
+  **Load earlier activity** or **Refresh transcript** to see up to 20 turns.
   Once goose agents run through the agent gateway, a goose turn woken in a
   conversation by a plugin, watch or timer that ran without the gateway shows
   "Ran without the agent gateway" beside its prompt only while the app keeps

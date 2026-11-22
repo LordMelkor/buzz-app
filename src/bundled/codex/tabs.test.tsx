@@ -1,4 +1,5 @@
 import type { AgentExecutionBinding } from "../../features/agents/execution";
+import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
 import { AgentTabs } from "../agents/AgentTabs";
 import type {
   Agent,
@@ -86,6 +87,7 @@ function fixture({
   installed = true,
   saved = {},
   turns = () => ({ result: { data: [] } }),
+  rolloutPath,
   threads = [],
   configured = {},
   voices = ["cove", "maple"],
@@ -114,7 +116,8 @@ function fixture({
   requiresOpenaiAuth?: boolean;
   installed?: boolean;
   saved?: Record<string, unknown>;
-  turns?: (threadId: string) => Wire;
+  turns?: (threadId: string) => Wire | Promise<Wire>;
+  rolloutPath?: () => string | null;
   threads?: { id: string; name: string; updatedAt: number }[] | string;
   configured?: {
     model?: string;
@@ -136,6 +139,15 @@ function fixture({
   const logins: ReturnType<typeof deferred<number | null>>[] = [];
   const spawn = vi.fn(async (id: string, options?: HostProcessOptions) => {
     const exit = deferred<number | null>();
+    if (id === "read" || id === "read-from" || id === "rollout-stat") {
+      if (id === "rollout-stat") options?.onStdout?.("0 1:1 1");
+      return {
+        write: async () => {},
+        end: async () => {},
+        kill: async () => {},
+        exited: Promise.resolve(0),
+      };
+    }
     if (id === "codex" || id === "login") {
       const args = options?.args?.join(" ");
       if (id === "login") logins.push(exit);
@@ -161,7 +173,9 @@ function fixture({
         const wire: Wire = JSON.parse(text);
         if (wire.id == null) return;
         if (wire.method === "thread/turns/list") {
-          const reply = turns((wire.params as { threadId: string }).threadId);
+          const reply = await turns(
+            (wire.params as { threadId: string }).threadId,
+          );
           // Kept for `thread/items/list`, which Buzz reads them through.
           const listed = reply.result as { data?: Record<string, unknown>[] };
           for (const turn of listed?.data ?? [])
@@ -177,6 +191,8 @@ function fixture({
             nextCursor: null,
           };
         }
+        if (wire.method === "thread/read")
+          result = { thread: { path: rolloutPath?.() ?? null } };
         if (wire.method === "config/read") {
           await configGate;
           result = { config: configured };
@@ -401,6 +417,213 @@ it("lists saved conversations and shows one's Codex thread, or that Codex no lon
   expect(screen.queryByRole("alert")).toBeNull();
   expect(save).not.toHaveBeenCalled();
 });
+
+function recordedTurn(id: string, count: number, startedAt = 1, live = false) {
+  return {
+    id,
+    startedAt,
+    completedAt: live ? null : startedAt + 1,
+    status: live ? "inProgress" : "completed",
+    items: Array.from({ length: count }, (_, i) => ({
+      type: "agentMessage",
+      id: `${id}-${i}`,
+      text: `Message ${id}-${i}`,
+    })),
+  };
+}
+
+const savedKey = JSON.stringify(["channel", "channel"]);
+function previewFixture(
+  turns: (thread: string) => Wire | Promise<Wire>,
+  rolloutPath: () => string | null = () => "/sessions/thread.jsonl",
+) {
+  return fixture({
+    saved: { [savedKey]: { threadId: "thread", workspace: "/w", at: 1 } },
+    turns,
+    rolloutPath,
+  });
+}
+
+const loadedEntries = () =>
+  Array.from(
+    document.querySelectorAll("[data-transcript] [data-entry^='item:']"),
+    (row) => row.getAttribute("data-entry"),
+  );
+
+it("expands the clipped session opener without rereading it, and Refresh reads new rows in full", async () => {
+  let count = 130;
+  const f = previewFixture(() => ({
+    result: { data: [recordedTurn("first", count)] },
+  }));
+  const props = f.props();
+  render(<f.tabs.ActivityTab {...props} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^View transcript/ }),
+  );
+  const expand = await screen.findByRole("button", {
+    name: "Load earlier activity",
+  });
+  expect(loadedEntries()).toEqual(
+    Array.from({ length: 128 }, (_, i) => `item:first-${i + 2}`),
+  );
+  expect(
+    screen.getByText("The start of this turn isn't loaded."),
+  ).toBeVisible();
+  expect(screen.getByText("Earlier activity is not loaded.")).toBeVisible();
+  expect(screen.queryByText("New session")).toBeNull();
+  const reads = f.spawn.mock.calls.length;
+  fireEvent.click(expand);
+  expect(await screen.findByText("New session")).toBeVisible();
+  expect(loadedEntries()).toEqual(
+    Array.from({ length: 130 }, (_, i) => `item:first-${i}`),
+  );
+  expect(f.spawn.mock.calls).toHaveLength(reads);
+  count++;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+  await screen.findByText("Message first-130", { selector: "summary span" });
+  expect(f.spawn.mock.calls.filter(([id]) => id === "app-server")).toHaveLength(
+    2,
+  );
+  expect(loadedEntries()).toHaveLength(131);
+});
+
+it.each(["Load earlier activity", "Refresh transcript", "linked message"])(
+  "keeps the prior turn and all live rows, and honors %s during a stop read",
+  async (action) => {
+    const event = "d".repeat(64);
+    const history = recordedTurn("previous", 130);
+    const previous = {
+      ...history,
+      items: [
+        {
+          type: "dynamicToolCall",
+          id: "sent",
+          namespace: "buzz",
+          tool: "send",
+          arguments: { text: "Linked reply" },
+          status: "completed",
+          contentItems: [{ type: "inputText", text: `sent ${event}` }],
+          success: true,
+        },
+        ...history.items.slice(1),
+      ],
+    };
+    const live = recordedTurn("live", 135, 3, true);
+    const stopped = deferred<Wire>();
+    const started = deferred<void>();
+    let served: Wire | Promise<Wire> = { result: { data: [previous] } };
+    const f = previewFixture(() => {
+      if (served === stopped.promise) started.resolve();
+      return served;
+    });
+    const sessions = vi.spyOn(f.runtime, "sessions").mockReturnValue([]);
+    const focus = { events: [event], inputs: 0, done() {} };
+    const panel = (opening?: typeof focus) => (
+      <TranscriptFocus.Provider value={opening}>
+        <f.tabs.ActivityTab {...f.props()} />
+      </TranscriptFocus.Provider>
+    );
+    const mounted = render(panel());
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^View transcript/ }),
+    );
+    await screen.findByRole("button", { name: "Load earlier activity" });
+    const prior = loadedEntries();
+    served = { result: { data: [live, previous] } };
+    sessions.mockReturnValue([
+      { key: savedKey, status: "Working", detail: "" },
+    ]);
+    mounted.rerender(panel());
+    await screen.findByText("Message live-134", { selector: "summary span" });
+    expect(loadedEntries()).toEqual([
+      ...prior,
+      ...live.items.map((item) => `item:${item.id}`),
+    ]);
+    served = stopped.promise;
+    sessions.mockReturnValue([]);
+    mounted.rerender(panel());
+    await started.promise;
+    const full = { result: { data: [recordedTurn("live", 136, 3), previous] } };
+    if (action === "linked message") {
+      served = full;
+      const original = Object.getOwnPropertyDescriptor(
+        Element.prototype,
+        "scrollIntoView",
+      );
+      Element.prototype.scrollIntoView = () => {};
+      try {
+        mounted.rerender(panel(focus));
+        await act(async () =>
+          stopped.resolve({
+            error: { code: -32603, message: "Stop read failed" },
+          }),
+        );
+        await waitFor(() =>
+          expect(
+            document.querySelector('[data-entry="item:sent"] [data-arrived]'),
+          ).toBeVisible(),
+        );
+        expect(screen.queryByRole("alert")).toBeNull();
+      } finally {
+        if (original)
+          Object.defineProperty(Element.prototype, "scrollIntoView", original);
+        else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: action }));
+      await act(async () => stopped.resolve(full));
+    }
+    await screen.findByText("Message live-135", { selector: "summary span" });
+    expect(loadedEntries()).toHaveLength(266);
+    expect(
+      screen.queryByRole("button", { name: "Load earlier activity" }),
+    ).toBeNull();
+    expect(
+      f.spawn.mock.calls.filter(([id]) => id === "app-server"),
+    ).toHaveLength(action === "Load earlier activity" ? 3 : 4);
+  },
+);
+
+it.each(["linked message", "unavailable tools", "working turn"])(
+  "opens a large transcript for a %s",
+  async (mode) => {
+    const old = recordedTurn("old", 1);
+    const newest = recordedTurn("latest", 130, 3, mode === "working turn");
+    const f = previewFixture(
+      () => ({ result: { data: [newest, old] } }),
+      () => (mode === "unavailable tools" ? null : "/sessions/thread.jsonl"),
+    );
+    const focus =
+      mode === "linked message"
+        ? { events: ["message"], inputs: 0, done() {} }
+        : undefined;
+    render(
+      <TranscriptFocus.Provider value={focus}>
+        <f.tabs.ActivityTab {...f.props()} />
+      </TranscriptFocus.Provider>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^View transcript/ }),
+    );
+    await screen.findByText("Message latest-129", { selector: "summary span" });
+    expect(loadedEntries()).toContain("item:latest-0");
+    if (mode === "working turn") {
+      expect(loadedEntries()).not.toContain("item:old-0");
+      expect(
+        screen.getByRole("button", { name: "Load earlier activity" }),
+      ).toBeVisible();
+    } else {
+      expect(loadedEntries()).toContain("item:old-0");
+      expect(
+        screen.queryByRole("button", { name: "Load earlier activity" }),
+      ).toBeNull();
+      if (mode === "unavailable tools")
+        expect(loadedEntries()).toContain(
+          "item:thread:recorded-tools-unavailable",
+        );
+    }
+  },
+);
 
 it("sets the conversation the profile was opened from apart from recent conversations", async () => {
   const root = "e".repeat(64);
