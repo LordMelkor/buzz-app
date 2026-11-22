@@ -720,6 +720,21 @@ it("a new latest message keeps observation and catches up after its row is measu
     undefined,
   );
 });
+it("a folded preview of the latest message catches up without being observed as read", async () => {
+  const h = setup({ latestMessageId: "folded" });
+  const preview = row("preview", 100, 200);
+  delete preview.dataset.messageId;
+  preview.dataset.previewMessageId = "folded";
+  h.setRows([row("visible", 0, 100), preview]);
+  h.mutation();
+  vi.advanceTimersToNextFrame();
+  await vi.advanceTimersByTimeAsync(300);
+  expect(h.dwelled()?.observe).toHaveBeenCalledExactlyOnceWith(["visible"]);
+  expect(h.dwelled()?.catchUp).toHaveBeenCalledExactlyOnceWith(
+    "folded",
+    undefined,
+  );
+});
 it("a historical viewport or a bottom reached only at dwell end cannot catch up", async () => {
   const h = setup({ latestMessageId: "visible" });
   vi.spyOn(h.element, "scrollHeight", "get").mockReturnValue(1000);

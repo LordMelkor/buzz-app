@@ -115,6 +115,8 @@ export type Attachment = Readonly<{
 }>;
 /** Signed URL binding a timecoded reply to one attachment in a media gallery. */
 export const MEDIA_TARGET_TAG = "buzz:media";
+export const INVOCATION_INTENT_TAG = "buzz:invocation-intent";
+export const INVOCATION_INTENT_VERSION = 1;
 /** Relay-authored membership activity, not a membership grant or user message. */
 export type MembershipChange = Readonly<{
   type: "member_joined" | "member_left" | "member_removed";
@@ -145,6 +147,16 @@ export type ChannelMessage = Readonly<{
   /** Signed `audience` tag of the original event: `agents` is coordination
    * between agents, shown quietly. Absent means everyone; unknown values too. */
   audience?: "agents";
+  /** Signed `relayed-from` tag: the signer's claim that this agent wrote the
+   * text in another chat. `verified` when the signer is the author and the
+   * agent's cryptographically verified owner; only then is it drawn as the agent's. */
+  relayedFrom?: Readonly<{
+    agent: string;
+    channelId?: string;
+    /** The signed original's text before its first blank line. */
+    notice?: string;
+    verified: boolean;
+  }>;
   /** Signed `buzz:request` tag: the agent's claim of the triggering message
    * this update belongs to, separate from its flattened reply link. */
   request?: string;

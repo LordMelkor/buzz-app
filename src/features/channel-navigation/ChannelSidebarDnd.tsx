@@ -95,10 +95,13 @@ export function ChannelSidebarDnd({
   onMove,
   onReorder,
   onCreateSection,
+  onDragStart,
   overlay,
   children,
 }: {
   writable: boolean;
+  /** A row or group starts moving, before any drop. */
+  onDragStart?: ((id: string, group: boolean) => void) | undefined;
   onMove: (channelId: string, sectionKey: string) => void;
   onReorder: (sectionKey: string, overKey: string) => void;
   onCreateSection?: ((channelId: string) => void) | undefined;
@@ -113,12 +116,14 @@ export function ChannelSidebarDnd({
       collisionDetection={sidebarCollisions}
       // The sidebar's own status is its loading notice; drag announcements live outside it.
       accessibility={{ container: document.body }}
-      onDragStart={({ active }) =>
-        setDragging({
+      onDragStart={({ active }) => {
+        const dragged = {
           id: String(active.id),
           group: !!active.data.current?.group,
-        })
-      }
+        };
+        setDragging(dragged);
+        onDragStart?.(dragged.id, dragged.group);
+      }}
       onDragCancel={() => setDragging(undefined)}
       onDragEnd={({ active, over }) => {
         setDragging(undefined);
@@ -247,11 +252,13 @@ export function useSidebarSectionDrag({
   reorderable,
   groupIndex,
   groupDomain = "channels",
+  capturePointerDown = false,
 }: {
   sectionKey: string;
   reorderable: boolean;
   groupIndex: number;
   groupDomain?: string;
+  capturePointerDown?: boolean;
 }) {
   const drag = useDraggable({
     id: sectionKey,
@@ -295,10 +302,19 @@ export function useSidebarSectionDrag({
           },
           listeners: {
             ...drag.listeners,
-            onPointerDown: (event: PointerEvent<HTMLElement>) => {
-              suppressClick.current = false;
-              drag.listeners?.onPointerDown?.(event);
-            },
+            ...(capturePointerDown
+              ? {
+                  // A contributed leading control stops drag activation.
+                  onPointerDownCapture: () => {
+                    suppressClick.current = false;
+                  },
+                }
+              : {
+                  onPointerDown: (event: PointerEvent<HTMLElement>) => {
+                    suppressClick.current = false;
+                    drag.listeners?.onPointerDown?.(event);
+                  },
+                }),
           },
         }
       : undefined,

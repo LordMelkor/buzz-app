@@ -72,6 +72,7 @@ export const test = base.extend({
   sortingSidebar: [false, { option: true }],
   initialSidebarSort: [{}, { option: true }],
   channelLifecycle: [false, { option: true }],
+  memberRoleChanges: [false, { option: true }],
   leaveRosterBeforeAck: [false, { option: true }],
   guestPermalinks: [false, { option: true }],
   lifecycleRole: ["owner", { option: true }],
@@ -171,6 +172,7 @@ export const test = base.extend({
       sortingSidebar,
       initialSidebarSort,
       channelLifecycle,
+      memberRoleChanges,
       leaveRosterBeforeAck,
       guestPermalinks,
       lifecycleRole,
@@ -287,6 +289,8 @@ export const test = base.extend({
     );
     // Kind 0 by author for keys a test creates; served on later profile reads.
     const servedProfiles = new Map();
+    // NIP-38 general statuses by author, served on later status reads.
+    const servedStatuses = new Map();
     const soloAgentKeys = [];
     const soloAgents = [...soloAgentNames, ...soloOutsideAgentNames].map(
       (name) => {
@@ -322,7 +326,7 @@ export const test = base.extend({
       },
     );
     const ownerAgentKey =
-      lifecycleOwnerAgent || agentMessageDeletion
+      lifecycleOwnerAgent || agentMessageDeletion || memberRoleChanges
         ? generateSecretKey()
         : undefined;
     const ownerAgent = ownerAgentKey ? getPublicKey(ownerAgentKey) : undefined;
@@ -1468,7 +1472,9 @@ export const test = base.extend({
         });
         expect(filter.authors.length).toBeGreaterThan(0);
         expect(filter.authors.length).toBeLessThanOrEqual(100);
-        return [];
+        return [...servedStatuses.values()].filter((event) =>
+          filter.authors.includes(event.pubkey),
+        );
       }
       if (filter.kinds?.includes(30178)) {
         expect(filter).toEqual({
@@ -2252,13 +2258,17 @@ export const test = base.extend({
           // The production broker advertises read-state writes for every session,
           // not only tests opting into complete snapshot reads.
           acceptPublication: acceptReadPublication,
-          ...(actionProfile || channelLifecycle
+          ...(actionProfile || channelLifecycle || memberRoleChanges
             ? {
                 latencyMs: 40,
                 holdOlder: false,
                 acceptPublication: (community, event) => {
                   expect(verifyEvent(event)).toBe(true);
                   expect(event.pubkey).toBe(viewer);
+                  if (memberRoleChanges && event.kind === 9050) {
+                    report.publications.push({ community, event });
+                    return;
+                  }
                   if (
                     channelLifecycle &&
                     [9002, 9008, 9021, 9022, 41012].includes(event.kind)
@@ -2307,8 +2317,13 @@ export const test = base.extend({
             self: getPublicKey(relayKey),
             ...(openingAdminSetup ? { supported_nips: [29] } : {}),
             // Solo details publications below retain label changes as well as names.
-            ...(ownSoloChannels.length
-              ? { supported_extensions: ["nip-cl"] }
+            ...(ownSoloChannels.length || memberRoleChanges
+              ? {
+                  supported_extensions: [
+                    ...(ownSoloChannels.length ? ["nip-cl"] : []),
+                    ...(memberRoleChanges ? ["buzz-solo-member-role"] : []),
+                  ],
+                }
               : {}),
             ...(readState
               ? {
@@ -2638,7 +2653,7 @@ export const test = base.extend({
                   communityAliases: fixtureAliases,
                   identity: () => userKey.slice(),
                   agentLibrary: () => ({ definitions: [], identities: [] }),
-                  ...(readState || channelLifecycle
+                  ...(readState || channelLifecycle || memberRoleChanges
                     ? {}
                     : {
                         authority: async () => ({
@@ -2813,6 +2828,7 @@ export const test = base.extend({
           return event;
         },
         signRelay: (template) => finalizeEvent(template, relayKey),
+        ownerAgent,
         membershipSnapshot(role) {
           expect(["owner", "admin", "member"]).toContain(role);
           return sign(13534, [["member", viewer, role]], "", relayKey);
@@ -2963,6 +2979,20 @@ export const test = base.extend({
         serveProfile(key, body) {
           const event = sign(0, [], JSON.stringify(body), key);
           servedProfiles.set(event.pubkey, event);
+          return event;
+        },
+        // Answer later status reads for this key, like serveProfile.
+        serveStatus(key, emoji, text) {
+          const event = sign(
+            30315,
+            [
+              ["d", "general"],
+              ["emoji", emoji],
+            ],
+            text,
+            key,
+          );
+          servedStatuses.set(event.pubkey, event);
           return event;
         },
         // A real, newer NIP-OA head; the client still admits it through a read.

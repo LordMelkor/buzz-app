@@ -975,7 +975,9 @@ it("confirms on the grid without mounting detail, cancels safely, and removes on
   await act(async () => {
     fixture.finish("succeeded");
   });
-  expect(screen.queryByText("Deleting workflow…")).toBeNull();
+  expect(
+    screen.queryByRole("dialog", { name: "Deleting workflow…" }),
+  ).toBeNull();
   expect(
     screen.queryByRole("button", { name: /^Open Message helper:/ }),
   ).toBeNull();
@@ -1131,7 +1133,9 @@ it.each(["unknown", "succeeded"] as const)(
       fixture.finish("succeeded");
     });
     await waitFor(() =>
-      expect(screen.queryByText(/^Couldn't confirm deletion/)).toBeNull(),
+      expect(
+        screen.queryByRole("dialog", { name: /^Couldn't confirm deletion/ }),
+      ).toBeNull(),
     );
   },
 );
@@ -1147,7 +1151,9 @@ it("purges deletion recovery on access loss", async () => {
   ).toBeVisible();
   act(() => fixture.revoke());
   await waitFor(() =>
-    expect(screen.queryByText(/^Couldn't confirm deletion/)).toBeNull(),
+    expect(
+      screen.queryByRole("dialog", { name: /^Couldn't confirm deletion/ }),
+    ).toBeNull(),
   );
   expect(
     screen.queryByRole("button", { name: /^Open Message helper:/ }),
@@ -1212,7 +1218,9 @@ it("resumes a paused read from the deletion toast and never republishes", async 
       screen.queryByRole("button", { name: /^Open Message helper:/ }),
     ).toBeNull(),
   );
-  expect(screen.queryByText(/^Couldn't confirm deletion/)).toBeNull();
+  expect(
+    screen.queryByRole("dialog", { name: /^Couldn't confirm deletion/ }),
+  ).toBeNull();
   expect(fixture.calls.delete).toBe(1);
 });
 

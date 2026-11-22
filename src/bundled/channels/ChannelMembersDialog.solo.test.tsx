@@ -1315,16 +1315,11 @@ it("shows loading and failed current access with refresh, never an empty roster"
     );
     await user.click(refresh);
     await within(access).findByRole("region", { name: "People" });
-    // General access has its own failed metadata read and explicit recovery.
-    const recovery = within(access).getByRole("group", {
-      name: "General access recovery",
-    });
-    expect(within(recovery).getByRole("alert")).toHaveTextContent(
-      "Roster unavailable",
-    );
-    await user.click(
-      within(recovery).getByRole("button", { name: "Reload access" }),
-    );
+    // General access renders from the channel summary, so the failed roster
+    // read leaves it no read of its own to fail or recover.
+    expect(
+      within(access).queryByRole("group", { name: "General access recovery" }),
+    ).toBeNull();
     await waitFor(() => expect(within(access).queryByRole("alert")).toBeNull());
     t.failRoster(true);
     await findDestination(user, dialog);

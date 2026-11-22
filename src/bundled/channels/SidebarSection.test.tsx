@@ -481,6 +481,42 @@ it("keeps hidden-channel navigation available when filter choices are read-only"
   expect(change).not.toHaveBeenCalled();
 });
 
+it("opens a filtered Solo chat without expanding its workspace", async () => {
+  const user = userEvent.setup();
+  function Workspace() {
+    const [open, setOpen] = useState(false);
+    const [chat, select] = useState<string>();
+    return (
+      <>
+        <SidebarSection
+          sectionKey="group:work"
+          title="Work"
+          open={open}
+          onToggle={setOpen}
+          filter={{ value: "unreads", change: () => {} }}
+          channels={{
+            rows: [{ id: "quiet", name: "Quiet chat", channelType: "solo" }],
+            select,
+          }}
+        >
+          <p>Workspace chats</p>
+        </SidebarSection>
+        <output aria-label="Open chat">{chat}</output>
+      </>
+    );
+  }
+  render(<Workspace />);
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Work" }),
+  );
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Quiet chat" }));
+  expect(screen.getByLabelText("Open chat")).toHaveTextContent("quiet");
+  expect(screen.getByLabelText("Work").closest("details")).not.toHaveAttribute(
+    "open",
+  );
+});
+
 it("opens workspace settings from a saved section's menu", async () => {
   const user = userEvent.setup();
   const open = vi.fn();

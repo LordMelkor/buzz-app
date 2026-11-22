@@ -596,6 +596,7 @@ function PreparedMessageMarkdown({
         scope={scope}
         interactive={interactive}
         channelPrivate={!!channel?.private}
+        channelSolo={channel?.channelType === "solo"}
       >
         {children}
       </MessageLink>

@@ -640,17 +640,37 @@ test.describe("pages inside one second", () => {
         await expect
           .poll(() => history(page).evaluate((e) => e.scrollHeight))
           .toBeGreaterThan(height);
+        // A Virtua correction's scrollend can arrive before the input's own
+        // scroll, which Linux WebKit can deliver after later renders. The
+        // input ends at a scrollend once the reader has moved.
         await history(page).evaluate((e) => {
+          const start = e.scrollTop;
+          let corrected = 0;
           e.dataset.scrollEnded = "";
-          e.addEventListener("scrollend", () => delete e.dataset.scrollEnded, {
-            once: true,
+          e.addEventListener("virtua-scroll-correction", ({ detail }) => {
+            corrected += detail.after - detail.before;
           });
+          const ended = () => {
+            if (start + corrected - e.scrollTop < 150) return;
+            delete e.dataset.scrollEnded;
+            e.removeEventListener("scrollend", ended);
+          };
+          e.addEventListener("scrollend", ended);
         });
         if (input === "drag")
           await history(page).evaluate((e) => {
             e.scrollTop -= 300;
           });
-        else await page.mouse.wheel(0, -300);
+        // Linux WebKit animates a wheel scroll, and a row measurement's
+        // correction can stop it short. Wheel again until the reader moves.
+        else
+          for (
+            let i = 0;
+            i < 4 &&
+            (await history(page).getAttribute("data-scroll-ended")) !== null;
+            i++
+          )
+            await wheel(page, -300);
         await expect(history(page)).not.toHaveAttribute("data-scroll-ended");
         if (input === "drag") await page.mouse.up();
         // The timeline renders new rows before the page's rows measure, and

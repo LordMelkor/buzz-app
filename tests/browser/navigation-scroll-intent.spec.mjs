@@ -28,7 +28,7 @@ for (const cachedStartup of [false, true]) {
       // warm layout that this journey optionally restores on startup.
       await expect(
         sidebar.locator('[data-sidebar-section="solo"]').getByRole("button", {
-          name: "New chat in Solo",
+          name: "New Solo chat",
           exact: true,
         }),
       ).toBeEnabled();

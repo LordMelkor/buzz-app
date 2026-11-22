@@ -15,6 +15,7 @@ import {
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { PageTabs } from "../channels/PageTabs";
+import { InboxBadge } from "./InboxBadge";
 import { InboxPage } from "./InboxPage";
 import { InboxPreview } from "./InboxPreview";
 import { apply } from "./index";
@@ -987,6 +988,7 @@ function fixture(
     failRoster?: boolean;
     archivedChannel?: boolean;
     withDm?: boolean;
+    withMutes?: boolean;
     withSolo?: boolean;
     withSenders?: boolean;
     holdProfiles?: boolean;
@@ -1182,6 +1184,18 @@ function fixture(
     {
       viewer: viewer.pubkey,
       relayAuthor: relayKey.pubkey,
+      ...(options.withMutes
+        ? {
+            decodeSidebarPreferences: async () => ({
+              sections: [],
+              assignments: {},
+              starred: [],
+              muted: [],
+            }),
+            writeSidebarMute: async ({ channelId, muted }) =>
+              muted ? [channelId] : [],
+          }
+        : {}),
       query: async (filters) => {
         if (
           filters.some(
@@ -5445,6 +5459,206 @@ it.each(["solo", "dm", "thread"] as const)(
     }
   },
 );
+
+it.each(["page", "preview"] as const)(
+  "keeps direct mentions and DMs in the %s when channels are muted",
+  async (surface) => {
+    const h = fixture({ withDm: true, withMutes: true });
+    const root = h.root;
+    if (!root) throw new Error("Missing fixture root");
+    h.addEvent(
+      signed(h.alice, {
+        kind: 7,
+        content: "❤️",
+        created_at: 30,
+        tags: [
+          ["e", root.id],
+          ["p", h.viewer.pubkey],
+        ],
+      }),
+    );
+    const preferences = h.session.sidebarPreferences;
+    await preferences.ensure();
+    render(
+      <>
+        {surface === "page" ? h.view : previewAt(h)}
+        <InboxBadge relay={h.relay} />
+      </>,
+    );
+    const reaction = { name: /Alice reacted with heart/ };
+    await screen.findByText("A thread update");
+    await screen.findByText("Please review this");
+    await screen.findByRole("button", reaction);
+    expect(screen.getByRole("img", { name: "3 unread" })).toBeVisible();
+
+    await act(async () => {
+      await preferences.setMute("room", true);
+    });
+    expect(screen.getByText("A direct reply")).toBeVisible();
+    expect(screen.queryByText("A thread update")).not.toBeInTheDocument();
+    expect(screen.getByText("Please review this")).toBeVisible();
+    expect(screen.queryByRole("button", reaction)).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "2 unread" })).toBeVisible();
+    if (surface === "preview")
+      expect(
+        screen.getByText("2 unread · 1 mention · 1 DM"),
+      ).toBeInTheDocument();
+
+    const threadMention = message(
+      h.alice,
+      "room",
+      "Direct mention in thread",
+      30,
+      [
+        ["e", root.id, "", "reply"],
+        ["p", h.viewer.pubkey],
+      ],
+    );
+    const laterReply = message(h.alice, "room", "Another thread reply", 31, [
+      ["e", root.id, "", "reply"],
+    ]);
+    act(() => h.emit([threadMention, laterReply]));
+    await screen.findByText("Direct mention in thread");
+    // Wait for the session to project the reply so its absence proves the mute.
+    await waitFor(() =>
+      expect(
+        h.session.unread
+          .inbox()
+          .items.some((item) => item.messageIds.includes(laterReply.id)),
+      ).toBe(true),
+    );
+    expect(screen.queryByText("Another thread reply")).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "3 unread" })).toBeVisible();
+
+    await act(async () => {
+      await h.session.unread.markThrough(
+        { kind: "thread", channelId: "room", rootId: root.id },
+        threadMention.id,
+      );
+    });
+    expect(screen.getByText("Direct mention in thread")).toBeVisible();
+    expect(screen.getByRole("img", { name: "2 unread" })).toBeVisible();
+
+    await act(async () => {
+      await preferences.setMute("room", false);
+    });
+    expect(screen.getByText("Another thread reply")).toBeVisible();
+    expect(
+      screen.queryByText("Direct mention in thread"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Please review this")).toBeVisible();
+    expect(screen.getByRole("button", reaction)).toBeVisible();
+    expect(screen.getByRole("img", { name: "3 unread" })).toBeVisible();
+    await act(async () => {
+      await preferences.setMute("dm-room", true);
+    });
+    expect(screen.getByText("A direct reply")).toBeVisible();
+    expect(screen.getByRole("img", { name: "3 unread" })).toBeVisible();
+  },
+);
+
+it.each(["page", "preview"] as const)(
+  "keeps muted DM reactions in the %s",
+  async (surface) => {
+    const h = fixture({ withDm: true, withMutes: true });
+    const target = message(
+      h.viewer,
+      "dm-room",
+      "My DM acknowledged message",
+      25,
+    );
+    h.addEvent(target);
+    h.addEvent(
+      signed(h.alice, {
+        kind: 7,
+        content: "❤️",
+        created_at: 29,
+        tags: [
+          ["e", target.id],
+          ["p", h.viewer.pubkey],
+        ],
+      }),
+    );
+    const preferences = h.session.sidebarPreferences;
+    await preferences.ensure();
+    render(
+      <>
+        {surface === "page" ? h.view : previewAt(h)}
+        <InboxBadge relay={h.relay} />
+      </>,
+    );
+    const reaction = {
+      name: /Alice reacted with heart to your message: My DM acknowledged message/,
+    };
+    await screen.findByRole("button", reaction);
+    await act(async () => {
+      await preferences.setMute("dm-room", true);
+    });
+    expect(screen.getByRole("button", reaction)).toBeVisible();
+  },
+);
+
+it("hides an ordinary Activity-row Mark as unread after its channel is muted", async () => {
+  const h = fixture({ withMutes: true });
+  const preferences = h.session.sidebarPreferences;
+  await preferences.ensure();
+  const page = render(
+    <>
+      {h.view}
+      <InboxBadge relay={h.relay} />
+    </>,
+  );
+  await screen.findByText("A thread update");
+  await chooseFilter("Threads");
+  await markRead(h, "room");
+  const row = rows()[0];
+  if (!row) throw new Error("Missing ordinary thread row");
+  await waitFor(() => expect(row).not.toHaveAttribute("data-unread"));
+  fireEvent.contextMenu(within(row).getByRole("button", { name: /^Open / }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Mark as unread" }),
+  );
+  await waitFor(() => expect(row).toHaveAttribute("data-unread"));
+  expect(screen.getByRole("img", { name: "1 unread" })).toBeVisible();
+
+  await act(async () => {
+    await preferences.setMute("room", true);
+  });
+  expect(screen.queryByText("A thread update")).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "1 unread" })).toBeNull();
+
+  page.unmount();
+  render(
+    <>
+      {previewAt(h)}
+      <InboxBadge relay={h.relay} />
+    </>,
+  );
+  expect(screen.queryByText("A thread update")).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "1 unread" })).toBeNull();
+});
+
+it("opens a muted mention at the mention rather than an ordinary reply", async () => {
+  const h = fixture({ withMutes: true });
+  const preferences = h.session.sidebarPreferences;
+  await preferences.ensure();
+  render(h.view);
+  await screen.findByText("Please review this");
+  await act(async () => {
+    await preferences.setMute("room", true);
+  });
+  const mentionRow = rows().find((row) =>
+    row.textContent?.includes("Please review this"),
+  );
+  if (!mentionRow) throw new Error("Missing muted mention row");
+  fireEvent.click(within(mentionRow).getByRole("button", { name: /^Open / }));
+  const detail = await findReader();
+  await waitFor(() =>
+    expect(
+      detail.querySelector(`[data-message-id="${h.mention.id}"]`),
+    ).toHaveFocus(),
+  );
+});
 
 it("mixes hover reactions by time, preserves unread filtering, and opens the exact target", async () => {
   const h = fixture();

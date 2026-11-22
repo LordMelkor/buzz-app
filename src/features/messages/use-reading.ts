@@ -215,9 +215,16 @@ export function useReading({
       )
         return;
       const viewport = element.getBoundingClientRect();
+      // A folded preview that shows the latest message stands in for its row
+      // here only: what it folds is not observed as individually read.
       const row = [
-        ...element.querySelectorAll<HTMLElement>("[data-message-id]"),
-      ].find((row) => row.dataset.messageId === latest);
+        ...element.querySelectorAll<HTMLElement>(
+          "[data-message-id], [data-preview-message-id]",
+        ),
+      ].find(
+        (row) =>
+          (row.dataset.messageId ?? row.dataset.previewMessageId) === latest,
+      );
       const bounds = row?.getBoundingClientRect();
       return bounds &&
         bounds.height > 0 &&

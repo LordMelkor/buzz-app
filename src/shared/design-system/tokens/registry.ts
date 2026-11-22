@@ -922,7 +922,7 @@ export const ROLE_GROUPS: RoleGroup[] = [
         token: "status-availability-online",
         variable: "--status-availability-online",
         pointsAt: "green-10 light / green-10 dark",
-        use: "Online availability label. Accepted contrast exception: below AA in light mode and APCA in both modes; see docs/presence.md.",
+        use: "Online availability label. Accepted contrast exception: below AA in light mode and APCA in both modes.",
         status: "core",
       },
       {

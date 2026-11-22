@@ -5,7 +5,7 @@ const restores = new WeakMap<HTMLElement, () => void>();
 /**
  * Applies an automatic scroll correction. Mac WebKit can leave the corrected
  * viewport unpainted while native momentum continues, so stop the momentum the
- * same way the Virtua patch does (patches/README.md): hide vertical overflow for
+ * same way the Virtua patch does (patches/virtua@0.54.2.patch): hide vertical overflow for
  * one task. The scroller must keep its inline size (`scrollbar-gutter: stable`).
  */
 export function correctScrollTop(element: HTMLElement, delta: number) {

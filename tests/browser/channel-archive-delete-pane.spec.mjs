@@ -526,6 +526,7 @@ test.describe("owner-role agent without direct ownership", () => {
       page.locator(`[data-channel-id="${channelId}"]`),
     ).toBeVisible();
     expect(app.report.lifecyclePublications ?? []).toHaveLength(0);
+    await failure.hover();
     await failure.getByRole("button", { name: "Dismiss notification" }).click();
     await trigger.click();
     await dialog

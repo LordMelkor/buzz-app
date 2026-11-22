@@ -8,9 +8,11 @@ import {
 } from "@testing-library/react";
 import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 import { MessageLink } from "./MessageLink";
 import { apply as registerLinks } from "../../bundled/links";
 import type { LinkRenderer } from "./contracts";
+import { LinkThreadTabContext } from "./LinkLabelContext";
 import type { ChannelList, ChannelReference } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 
@@ -122,19 +124,55 @@ it("names an open channel and shows its hover card", async () => {
     this.style.display = "block";
   };
   const t = fixture();
+  const rich = (key: string, children: ReactNode) => (
+    <MessageLink
+      key={key}
+      url="buzz://channel/open"
+      registry={undefined}
+      onOpenLink={() => true}
+      session={t.session}
+      label="#authored"
+    >
+      {children}
+    </MessageLink>
+  );
   render(
     <>
       {link(t.session, "open")}
       {link(t.session, "open", null)}
+      {link(t.session, "open", "#crew lounge (old)")}
+      {link(t.session, "open", `#${"🛠".repeat(120)}`)}
+      {link(t.session, "open", "the crew room")}
+      {link(t.session, "open", "## crew")}
+      {link(t.session, "open", "#crew ")}
+      {link(t.session, "open", `#${"a".repeat(121)}`)}
+      {rich("formatted", <strong>#authored</strong>)}
+      {rich("mixed", ["#authored", <img key="image" alt="" />])}
     </>,
   );
   await act(async () => {});
   expect(t.refer).toHaveBeenCalledWith("open");
+  // Until the channel is known, a `#` label shows as written.
+  expect(screen.getAllByRole("link")[0]?.textContent).toBe("#authored");
   t.answer("open", crew);
-  // The authored label stays; a raw link takes the channel's name.
-  const [authored, raw] = screen.getAllByRole("link");
-  expect(authored?.textContent).toBe("#authored");
-  expect(raw?.textContent).toBe("#crew-open");
+  const links = screen.getAllByRole("link");
+  const raw = links[1];
+  // Text that is `#` and a channel name, spaces included and up to 120
+  // characters, takes the channel's name, as a raw link does, and copies with it.
+  for (const chip of links.slice(0, 4))
+    expect(chip.textContent).toBe("#crew-open");
+  expect(links[0]?.getAttribute("aria-label")).toBe("#crew-open");
+  expect(links[0]?.getAttribute("data-link-label")).toBe("#crew-open");
+  // Other text stays: no `#`, no channel name after it, or more than text.
+  expect(links.slice(4).map((link) => link.innerHTML)).toEqual([
+    "the crew room",
+    "## crew",
+    "#crew ",
+    `#${"a".repeat(121)}`,
+    "<strong>#authored</strong>",
+    '#authored<img alt="">',
+  ]);
+  expect(links[8]?.getAttribute("data-link-label")).toBe("#authored");
   fireEvent.mouseEnter(raw as HTMLElement);
   fireEvent.mouseMove(raw as HTMLElement);
   await act(() => vi.advanceTimersByTimeAsync(PREVIEW_REST_MS));
@@ -201,6 +239,71 @@ it("does not open a withheld channel link, and keeps its href for copying", () =
   expect(screen.queryByRole("status")).toBeNull();
 });
 
+it("does not open a message or thread link into a withheld channel until access returns", async () => {
+  const t = fixture();
+  const open = vi.fn(() => true);
+  const openThreadTab = vi.fn(() => true);
+  const id = "a".repeat(64);
+  const root = "b".repeat(64);
+  const urls = [
+    `buzz://message?channel=secret&id=${id}`,
+    `buzz://message?channel=secret&id=${id}&thread=${root}`,
+  ];
+  render(
+    <LinkThreadTabContext value={openThreadTab}>
+      {urls.map((url, index) => (
+        <MessageLink
+          key={url}
+          url={url}
+          label={`link ${index}`}
+          registry={undefined}
+          onOpenLink={open}
+          session={t.session}
+        >
+          {`link ${index}`}
+        </MessageLink>
+      ))}
+    </LinkThreadTabContext>,
+  );
+  await act(async () => {});
+  // The channel is looked up for its access, even though it isn't shown.
+  expect(t.refer.mock.calls).toEqual([["secret"], ["secret"]]);
+  t.answer("secret", { state: "withheld" });
+  const links = screen.getAllByRole("link");
+  expect(links.map((element) => element.textContent)).toEqual([
+    "link 0",
+    "link 1",
+  ]);
+  for (const [index, element] of links.entries()) {
+    expect(element.getAttribute("aria-disabled")).toBe("true");
+    expect(element.getAttribute("aria-description")).toContain(
+      "aren’t a member",
+    );
+    expect(element.getAttribute("href")).toBe(urls[index]);
+    fireEvent.click(element);
+    fireEvent(
+      element,
+      new MouseEvent("auxclick", { bubbles: true, button: 1 }),
+    );
+  }
+  fireEvent.contextMenu(screen.getByRole("link", { name: "link 0" }));
+  const item = await screen.findByRole("menuitem", { name: "Open link" });
+  expect(item.getAttribute("aria-disabled")).toBe("true");
+  fireEvent.click(item);
+  expect(open).not.toHaveBeenCalled();
+  expect(openThreadTab).not.toHaveBeenCalled();
+  expect(screen.queryByRole("status")).toBeNull();
+  fireEvent.keyDown(item, { key: "Escape" });
+  // A recheck that admits the reader makes the links live without a reload.
+  t.answer("secret", { ...crew, private: true, joined: true });
+  for (const element of screen.getAllByRole("link")) {
+    expect(element.getAttribute("aria-disabled")).toBeNull();
+    expect(element.getAttribute("aria-description")).toBeNull();
+    fireEvent.click(element);
+  }
+  expect(open.mock.calls).toEqual([[urls[0]], [urls[1]]]);
+});
+
 it("keeps the authored label while the answer is unknown", async () => {
   const t = fixture();
   render(link(t.session, "flaky"));
@@ -234,6 +337,78 @@ it("asks only once the list is ready, and never from a composer decoration", asy
   t.answer("draft", { state: "withheld" });
   expect(screen.getByText("#draft")).toBeTruthy();
   expect(screen.queryByText("Private channel")).toBeNull();
+});
+
+it("shows a withheld message link's card as an explanation, not a second link", async () => {
+  vi.useFakeTimers();
+  HTMLElement.prototype.showPopover = function () {
+    this.style.display = "block";
+  };
+  const t = fixture();
+  const url = `buzz://message?channel=secret&id=${"a".repeat(64)}`;
+  render(
+    <MessageLink
+      url={url}
+      label="the plan"
+      registry={undefined}
+      onOpenLink={() => true}
+      session={t.session}
+    >
+      the plan
+    </MessageLink>,
+  );
+  await act(async () => {});
+  t.answer("secret", { state: "withheld" });
+  const trigger = screen.getByRole("link", { name: "the plan" });
+  act(() => trigger.focus());
+  await act(() => vi.advanceTimersByTimeAsync(PREVIEW_REST_MS));
+  const card = screen.getByLabelText("Message preview");
+  expect(card.textContent).toContain("aren’t a member");
+  expect(card.textContent).not.toContain("Open link");
+  expect(card.getAttribute("role")).toBe("tooltip");
+  expect(card.getAttribute("href")).toBeNull();
+  expect(card.getAttribute("tabindex")).toBeNull();
+  expect(screen.getAllByRole("link")).toEqual([trigger]);
+  // Access restores the card's destination.
+  t.answer("secret", { ...crew, private: true, joined: true });
+  const restored = screen.getByLabelText("Message preview");
+  expect(restored.getAttribute("role")).toBe("link");
+  expect(restored.getAttribute("href")).toBe(url);
+});
+
+it("returns focus to a message link when its focused card learns the channel is withheld", async () => {
+  vi.useFakeTimers();
+  HTMLElement.prototype.showPopover = function () {
+    this.style.display = "block";
+  };
+  const t = fixture();
+  render(
+    <MessageLink
+      url={`buzz://message?channel=slow&id=${"a".repeat(64)}`}
+      label="the plan"
+      registry={undefined}
+      onOpenLink={() => true}
+      session={t.session}
+    >
+      the plan
+    </MessageLink>,
+  );
+  await act(async () => {});
+  t.answer("slow", { state: "looking" });
+  const trigger = screen.getByRole("link", { name: "the plan" });
+  act(() => trigger.focus());
+  await act(() => vi.advanceTimersByTimeAsync(PREVIEW_REST_MS));
+  // While the lookup is pending the card is the link's destination, a tab
+  // stop of its own.
+  const card = screen.getByLabelText("Message preview");
+  expect(card.getAttribute("role")).toBe("link");
+  act(() => card.focus());
+  expect(document.activeElement).toBe(card);
+  t.answer("slow", { state: "withheld" });
+  expect(screen.getByLabelText("Message preview").getAttribute("role")).toBe(
+    "tooltip",
+  );
+  expect(document.activeElement).toBe(trigger);
 });
 
 it("keeps a link focused while its name resolves, then opens its card", async () => {

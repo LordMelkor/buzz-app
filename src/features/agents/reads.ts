@@ -10,7 +10,7 @@ import { validVerifiedName } from "../relay/verified-profile";
 import type { AuthorNames } from "../agent-harness/turn-records";
 import type { EventData, ReadFilter, RelayEvent } from "../relay/events";
 import type { RelayData } from "../relay/service";
-import { ownerCanvas } from "../agent-harness/project";
+import { type OwnerCanvas, ownerCanvas } from "../agent-harness/project";
 import type { ChannelLabel } from "../channels/channel-icon";
 import { soloChat } from "./solo-chat";
 import { communityDestination } from "../communities/destination";
@@ -69,7 +69,7 @@ export type AgentReads = Readonly<{
   /** The channel's current Canvas text when `owner`, or an agent they
    * attest, wrote it; undefined when it has none, someone else wrote it, or
    * the reader cannot read Canvas. */
-  canvas?(channelId: string, owner: string): Promise<string | undefined>;
+  canvas?(channelId: string, owner: string): Promise<OwnerCanvas | undefined>;
   /** Whether a mention in this channel continues `owner`'s Solo chat. Only the
    * owner's own connection can tell; other readers answer false. */
   soloChat(
@@ -167,17 +167,16 @@ export function workflowMarked(event: RelayEvent, owner: string) {
  * replaces the old one. Rejects when the community ends up another one or another owner's, is
  * disconnected or fails in a way the service does not recover from by itself,
  * or when `signal` aborts first. It waits for the service's own notifications
- * and never reconnects. */
+ * and never reconnects. Its errors name what waits, `what`. */
 export function readyOwnerReads(
   relay: RelayData | undefined,
   agent: Readonly<{ relay: string; owner: string; pubkey: string }>,
   signal: AbortSignal,
   channelId?: string,
+  what = "Workflow request",
 ): Promise<AgentReads> {
   const unavailable = () =>
-    new Error(
-      "Workflow request could not start: its community is no longer connected.",
-    );
+    new Error(`${what} could not start: its community is no longer connected.`);
   let origin: string;
   try {
     origin = communityDestination(agent.relay).url;
@@ -234,7 +233,7 @@ export function readyOwnerReads(
       finish();
       reject(
         new Error(
-          "Workflow request could not start: its community did not reconnect before the delivery deadline.",
+          `${what} could not start: its community did not reconnect before the delivery deadline.`,
           { cause: signal.reason },
         ),
       );

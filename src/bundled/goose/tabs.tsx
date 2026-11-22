@@ -874,7 +874,8 @@ export function createTabs({
       const transcript = await history.transcript(
         {
           agent: agent.key,
-          workspace,
+          // Where the conversation's sessions ran.
+          workspace: runtime.folders(agent.key).get(row.key) ?? workspace,
           ...(row.sessionId ? { sessionId: row.sessionId } : {}),
           ...(row.sessions ? { sessions: row.sessions } : {}),
           ...(row.channelId
@@ -891,6 +892,7 @@ export function createTabs({
         signal,
         (pubkey) => runtime.name(agent.key, pubkey),
         reuse,
+        runtime.notices(agent.key),
       );
       return (
         transcript && {

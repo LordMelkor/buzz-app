@@ -52,6 +52,11 @@ test("working badges align in their rows and clear the Solo actions button", asy
     chat
       .locator(".navigation-item-label")
       .evaluate((label) => label.getBoundingClientRect().width);
+  const labelMask = () =>
+    chat.locator(".navigation-item-label").evaluate((label) => {
+      const style = getComputedStyle(label);
+      return style.maskImage || style.webkitMaskImage;
+    });
   const actionClearance = () =>
     soloRow.evaluate((row) => {
       const badge = row
@@ -103,8 +108,10 @@ test("working badges align in their rows and clear the Solo actions button", asy
         .toEqual({ center: 0, inset: 0.625 });
     }
     const restingWidth = await titleWidth();
+    await expect.poll(labelMask).toBe("none");
     await chat.hover({ position: { x: 24, y: 14 } });
     await expect(action).toHaveCSS("opacity", "1");
+    await expect.poll(labelMask).toContain("linear-gradient");
     await expect.poll(actionClearance).toBeGreaterThanOrEqual(0);
     await expect.poll(titleWidth).toBe(restingWidth);
     await expect(preview).toBeVisible();
@@ -115,6 +122,7 @@ test("working badges align in their rows and clear the Solo actions button", asy
     await page.keyboard.press("Tab");
     await expect(action).toBeFocused();
     await expect(action).toHaveCSS("opacity", "1");
+    await expect.poll(labelMask).toContain("linear-gradient");
     await expect.poll(actionClearance).toBeGreaterThanOrEqual(0);
     await expect.poll(titleWidth).toBe(restingWidth);
   }
@@ -190,7 +198,7 @@ function railInsetError(row) {
 
 const newOptions = (page) =>
   page.locator('[data-sidebar-section="solo"]').getByRole("button", {
-    name: "New chat in Solo",
+    name: "New Solo chat",
     exact: true,
   });
 
@@ -291,12 +299,12 @@ test("the Drafts & sent row shares channel rows' columns and inset without movin
     await expect
       .poll(() =>
         drafts.evaluate((row) => {
-          const starred = document.querySelector(
-            '[data-sidebar-section="starred"]',
+          const firstSection = document.querySelector(
+            '[aria-label="Subscribed channels"] [data-sidebar-section]',
           );
-          if (!starred) return undefined;
+          if (!firstSection) return undefined;
           const gap =
-            starred.getBoundingClientRect().top -
+            firstSection.getBoundingClientRect().top -
             row.getBoundingClientRect().bottom;
           const rem = parseFloat(
             getComputedStyle(document.documentElement).fontSize,
@@ -384,9 +392,12 @@ test("a presence badge preserves the sidebar avatar center and header insets", a
   page,
   app,
 }) => {
+  // A second DM can move this row while its participant names load.
+  app.omitChannel("dm-group");
   await page.goto(app.origin);
   const row = page.locator('button[data-channel-id="dm-peer"]');
   await row.click();
+  await expect(row).toHaveAttribute("aria-current", "page");
   await expect
     .poll(() =>
       app.report.presenceSnapshots.some((snapshot) =>
@@ -402,7 +413,10 @@ test("a presence badge preserves the sidebar avatar center and header insets", a
   const avatar = row.locator(".buzz-avatar-status");
   await expect(avatar).toHaveAttribute("data-status", "away");
   await page
-    .getByRole("button", { name: /^Manage members of /, exact: true })
+    .getByRole("button", {
+      name: "Manage members of Alice Fixture",
+      exact: true,
+    })
     .click();
   await page
     .getByRole("button", { name: /^Open profile for Alice Fixture/ })
@@ -668,7 +682,7 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
       .toEqual([]);
     const result = await layout();
     expect(result.rows).toBeGreaterThanOrEqual(2);
-    expect(result.headings).toBeGreaterThanOrEqual(6);
+    expect(result.headings).toBeGreaterThanOrEqual(5);
 
     // Revealing the action must keep the title at its resting width.
     const restingWidth = await titleWidth();

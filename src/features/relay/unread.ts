@@ -137,6 +137,25 @@ export type ThreadActivitySnapshot = Readonly<{
   freshness: "unknown" | "observed" | "stale";
   error?: string | undefined;
 }>;
+export type UnreadMessageItem = Readonly<{
+  id: string;
+  createdAt: number;
+  authorId: string;
+  /** Replies only: the thread's root. */
+  rootId?: string;
+}>;
+export type UnreadMessagesSnapshot = Readonly<{
+  channelId: string;
+  /** The messages `observedCount` counts, newest first. null when it is null. */
+  items: readonly UnreadMessageItem[] | null;
+  /** More unread messages are known than the limit returned. */
+  truncated?: true;
+  /** Unread messages may be missing from the list: no repair has sampled
+   * every channel, evidence is stale, capacity dropped the channel's oldest
+   * rows, or the channel's last repair batch filled its limit and a row it
+   * left out could be unread. */
+  incomplete?: true;
+}>;
 export type ReadingHandle = Readonly<{
   /** Qualified visible rows only. This publishes no read intent and ends with the
    * lease. `visible` decides each of this channel's rows; `measured` says the
@@ -172,6 +191,11 @@ export interface UnreadCapability {
   subscribe(target: ReadTarget, listener: () => void): () => void;
   activity(channelId: string): ThreadActivitySnapshot;
   subscribeActivity(channelId: string, listener: () => void): () => void;
+  /** The channel's unread messages from retained evidence, at most `limit`
+   * (default 200, rounded down, at most 500; below 1 lists none). Reads no
+   * relay and opens no window; re-read it when the channel's `subscribe`
+   * fires and after the caller's own reads. Older hosts may omit it. */
+  messages?(channelId: string, limit?: number): UnreadMessagesSnapshot;
   sync(): ReadSyncSnapshot;
   subscribeSync(listener: () => void): () => void;
   ensure(): Promise<void>;
@@ -295,6 +319,8 @@ const REPAIR_OVERLAP = LIVE_RESUME_LAG;
 /** Rows one repair read asks for per batch. A read that returns this many may
  * have been cut off, and says nothing about what lay beyond the cut. */
 const REPAIR_LIMIT = 500;
+const MESSAGES_LIMIT = 200;
+const MESSAGES_MAX = 500;
 /** Retained evidence bounds. A full window drops its oldest rows down to the
  * low-water marks, so eviction runs once per quarter-window of arrivals. */
 const EVIDENCE_EVENTS = 4096;
@@ -452,6 +478,11 @@ export function createUnread({
    * only what channel windows and live traffic delivered. A later repair only
    * adds evidence, so this stays set while it runs. */
   let sampled = false;
+  /** Channels whose last repair batch filled its limit, with the oldest
+   * message that batch returned: older rows of each may be missing. */
+  const capped = new Map<string, number>();
+  /** Channels that lost rows to capacity since evidence was last emptied. */
+  const narrowed = new Set<string>();
   const handles = new Set<() => void>();
   const views = new Map<
     () => void,
@@ -929,9 +960,10 @@ export function createUnread({
       joined.has(conversationKey(channelId, parentId))
     );
   };
-  /** A reply that lights its thread in channel activity. */
+  /** A reply that lights its thread in channel activity. Also sending a reply
+   * to the channel shows it in the timeline, not in the viewer's threads. */
   const activityEvidence = (entry: Evidence) =>
-    entry.mentioned || entry.broadcast || conversation(entry);
+    entry.mentioned || conversation(entry);
   /** Top-level posts always count. A reply counts only in the viewer's own
    * conversations, or when it is a DM, mentions the viewer, or is broadcast.
    * Quiet agent messages never count. */
@@ -942,13 +974,21 @@ export function createUnread({
       entry.mentioned ||
       entry.broadcast ||
       conversation(entry));
-  /** Retained evidence cannot decide this reply's conversation yet. */
-  const undecided = (entry: Evidence, dm: boolean) =>
+  /** Retained evidence cannot tell whether this reply is in one of the
+   * viewer's conversations, and a lookup could. */
+  const unknownConversation = (entry: Evidence, dm: boolean) =>
     !entry.quiet &&
     !!entry.parentId &&
-    !relevant(entry, dm) &&
+    !dm &&
+    !entry.mentioned &&
+    !conversation(entry) &&
     chosen(entry) === undefined &&
     !lookups.get(conversationKey(entry.channelId, entry.parentId))?.done;
+  /** Retained evidence cannot decide whether this reply counts yet. A
+   * broadcast counts either way: its lookup decides only its attention, so
+   * its unread state never waits on it. */
+  const undecided = (entry: Evidence, dm: boolean) =>
+    !entry.broadcast && unknownConversation(entry, dm);
   /** `seen` is the row's `seen:` cut: only a channel row passes one. */
   function isUnread(
     entry: Evidence,
@@ -1170,6 +1210,8 @@ export function createUnread({
           ? "thread"
           : undefined;
   }
+  /** Read by its own receipt, never by a timestamp cut: attention, and
+   * broadcasts, which the timeline shows apart from their thread. */
   function priority(entry: Evidence, dm: boolean) {
     return !!category(entry, dm) || entry.broadcast;
   }
@@ -1205,6 +1247,8 @@ export function createUnread({
     const kind = category(entry, dm);
     // A queued or running lookup may still make this reply thread attention.
     // A read reply is never looked up, so it is undecided but not pending.
+    // A broadcast is never undecided: its lookup can still raise it from
+    // ineligible to thread attention, but its unread state never waits.
     const open = undecided(entry, dm);
     if (open) want(entry, dm);
     const pending =
@@ -1289,7 +1333,7 @@ export function createUnread({
       want(entry, dm);
       if (!isUnread(entry, state, dm)) continue;
       count++;
-      if (priority(entry, dm)) attention++;
+      if (category(entry, dm)) attention++;
       if (
         target.kind === "channel" &&
         (!entry.parentId || entry.broadcast) &&
@@ -1302,7 +1346,7 @@ export function createUnread({
       )
         continue;
       rowCount++;
-      if (priority(entry, dm)) rowAttention++;
+      if (category(entry, dm)) rowAttention++;
       if (entry.rootId && activityEvidence(entry)) rowThreads.add(entry.rootId);
     }
     const manual = reads.localUnread(key)
@@ -1556,6 +1600,66 @@ export function createUnread({
     if (previous && equalActivity(previous, value)) return previous;
     activitySnapshots.set(channelId, value);
     return value;
+  }
+  function messages(
+    channelId: string,
+    limit = MESSAGES_LIMIT,
+  ): UnreadMessagesSnapshot {
+    if (closed || !allowed(channelId) || !known.has(channelId))
+      return Object.freeze({ channelId, items: null });
+    indexEvidence();
+    const state = reads.state();
+    const dm = isDm(channelId);
+    const unread = (byChannel.get(channelId) ?? [])
+      .filter((entry) => isUnread(entry, state, dm))
+      .sort((a, b) => order(b.event, a.event));
+    const items = unread
+      .slice(0, limit >= 1 ? Math.min(Math.floor(limit), MESSAGES_MAX) : 0)
+      .map(({ event, parentId, rootId, threadRootId }) => {
+        const root = parentId ? (rootId ?? threadRootId) : undefined;
+        return Object.freeze({
+          id: event.id,
+          createdAt: event.created_at,
+          authorId: event.pubkey,
+          ...(root ? { rootId: root } : {}),
+        });
+      });
+    return Object.freeze({
+      channelId,
+      items: Object.freeze(items),
+      ...(unread.length > items.length ? { truncated: true as const } : {}),
+      ...(!sampled ||
+      freshness !== "observed" ||
+      narrowed.has(channelId) ||
+      cutOff(channelId, state)
+        ? { incomplete: true as const }
+        : {}),
+    });
+  }
+  /** A full repair batch may have left out rows of this channel at or before
+   * its oldest one, and one of them can be unread: the channel's read mark
+   * does not reach that row, or unread intent may name a message evidence
+   * lacks. Whether the channel has such rows at all is unknown. */
+  function cutOff(channelId: string, state: ReadState) {
+    const cut = capped.get(channelId);
+    if (cut === undefined) return false;
+    if (Math.max(state.frontiers[channelId] ?? -1, reads.floor()) < cut)
+      return true;
+    const missing = (id: string) => !byId.has(id);
+    return (
+      overrideActive(
+        state.overrides[channelId],
+        effectiveFrontier(state, channelId),
+      ) ||
+      reads
+        .localUnreadKeys()
+        .some(
+          (key) =>
+            key.startsWith("msg:") &&
+            missing(key.slice(4)) &&
+            !!reads.localUnread(key),
+        )
+    );
   }
   function snapshot(target: ReadTarget) {
     const key = keyFor(target),
@@ -2059,12 +2163,17 @@ export function createUnread({
     for (const [key, { channelId }] of queued)
       if (!allowed(channelId)) queued.delete(key);
     const denied = new Set(
-      [...known, ...forcedMessages.keys()].filter(
-        (channel) => !allowed(channel),
-      ),
+      [
+        ...known,
+        ...forcedMessages.keys(),
+        ...capped.keys(),
+        ...narrowed,
+      ].filter((channel) => !allowed(channel)),
     );
     for (const channel of denied) {
       known.delete(channel);
+      capped.delete(channel);
+      narrowed.delete(channel);
       forcedMessages.delete(channel);
       pendingForcedMessages.delete(channel);
       entered.delete(channel);
@@ -2170,12 +2279,14 @@ export function createUnread({
   function want(entry: Evidence, dm: boolean) {
     const { event, channelId, parentId, threadRootId } = entry;
     if (!parentId || event.pubkey === viewer) return;
-    // Activity groups unread thread replies by root, so fetch a root the
-    // sampled window dropped for a followed thread or an unread reply in it.
+    // Activity groups unread thread replies by root, and a thread read mark
+    // reads a broadcast only by its root, so fetch a root the sampled window
+    // dropped for a followed thread or for an unread reply in it that lights
+    // activity or shows in the timeline.
     const structuralRootId =
       !entry.rootId &&
       (chosen(entry) === true ||
-        ((entry.mentioned || entry.broadcast || conversation(entry)) &&
+        ((activityEvidence(entry) || entry.broadcast) &&
           isUnread(entry, reads.state(), dm)))
         ? threadRootId
         : undefined;
@@ -2186,7 +2297,8 @@ export function createUnread({
     if (
       lookups.has(key) ||
       (!structuralRecovery &&
-        (!undecided(entry, dm) || !afterFrontier(entry, reads.state(), dm)))
+        (!unknownConversation(entry, dm) ||
+          !afterFrontier(entry, reads.state(), dm)))
     )
       return;
     lookups.set(key, {
@@ -2507,6 +2619,18 @@ export function createUnread({
           // discarded what the mark stands for: an overflow waits for refresh,
           // a refresh or cache clear reads again.
           if (!current()) return;
+          // Before `accept`, whose listeners may read `messages()`.
+          const cut =
+            result.length >= REPAIR_LIMIT
+              ? Math.min(
+                  ...result
+                    .filter(contentKind)
+                    .map((event) => event.created_at),
+                )
+              : undefined;
+          for (const id of batch)
+            if (cut === undefined) capped.delete(id);
+            else capped.set(id, cut);
           // Accepting notifies subscribers (the Inbox after its window), and one
           // may refresh from there.
           if (!accept(result) || !current()) return;
@@ -2673,7 +2797,11 @@ export function createUnread({
     const drop = (event: RelayEvent) => {
       if (!events.delete(event.id)) return;
       bytes -= eventBytes(event);
-      if (contentKind(event)) return;
+      if (contentKind(event)) {
+        const channel = channelOf(event);
+        if (channel) narrowed.add(channel);
+        return;
+      }
       for (const [name, id] of event.tags) {
         const target = name === "e" && id ? events.get(id) : undefined;
         if (target) drop(target);
@@ -2729,6 +2857,8 @@ export function createUnread({
         indexed = false;
         forget();
         known.clear();
+        capped.clear();
+        narrowed.clear();
         sampled = false;
         bytes = 0;
         error = "Unread observation capacity reached; refresh available";
@@ -2968,6 +3098,7 @@ export function createUnread({
     },
     activity,
     subscribeActivity: addActivityListener,
+    messages,
     sync,
     subscribeSync(listener) {
       const stop = reads.subscribe(listener);
@@ -3985,6 +4116,8 @@ export function createUnread({
       events.clear();
       forget();
       known.clear();
+      capped.clear();
+      narrowed.clear();
       sampled = false;
       forcedMessages.clear();
       pendingForcedMessages.clear();

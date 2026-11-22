@@ -379,12 +379,17 @@ describe("serializeNode", () => {
     });
     const text = (text: string, marks?: object[]) =>
       marks ? { type: "text", text, marks } : { type: "text", text };
-    const item = (...content: object[]) => ({ type: "list_item", content });
+    const item = (...content: object[]) => ({
+      type: "list_item",
+      attrs: { spread: false },
+      content,
+    });
     expect(copyDocument(query("[data-message-id]", body)).toJSON()).toEqual({
       type: "doc",
       content: [
         {
           type: "bullet_list",
+          attrs: { spread: false },
           content: [
             item(paragraph(text("one"))),
             item(paragraph(text("two "), text("b", [{ type: "bold" }]))),
@@ -392,10 +397,11 @@ describe("serializeNode", () => {
         },
         {
           type: "ordered_list",
-          attrs: { order: 3 },
+          attrs: { order: 3, spread: false },
           content: [
             item(paragraph(text("first")), {
               type: "bullet_list",
+              attrs: { spread: false },
               content: [item(paragraph(text("sub")))],
             }),
           ],

@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-test("generated author package exposes shared messages, captured-read Undo, host, identity names, agent sessions, decisions, and page navigation metadata", async () => {
+test("generated author package exposes shared messages, captured-read Undo, host, identity names, agent sessions, decisions, page navigation metadata, and composer send gates", async () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "buzz-author-consumer-"));
   const env = {
@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi } from "@buzz/author";
+import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, OutgoingMessage, SendGate, Seen, Notices } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -52,6 +52,9 @@ const ExamplePreview = ({ close }: PagePreviewProps) =>
   createElement("button", { type: "button", onClick: close }, "Open");
 export const inject = ["agents", "decisions", "host", "identityNames", "pages", "relay"];
 export function apply(ctx: Context) {
+  const seen: Seen | undefined = ctx.reflect.get("seen");
+  const key = "example.plugin/welcome";
+  if (seen?.has(key) === false) seen.mark(key);
   const sharingPolicy: GeneralAccessPolicy = { subject: "record", allowPublic: false, visibilityDescription: () => "Record access changes." };
   const general: ChannelGeneralAccessProps = { capability: ctx.relay.snapshot().session.channelDetails, channelId: "record", policy: sharingPolicy };
   const picker: ChannelMembersDialogProps = { session: ctx.relay.snapshot().session, channelId: "record", trigger: { current: null }, close() {},
@@ -59,11 +62,24 @@ export function apply(ctx: Context) {
     memberActions: { canAdd: true, pending: false, async change(change: MemberChange, signal: AbortSignal) { void [change.expectedRole, signal.aborted]; } },
     accessSettings: createElement(ctx.conversation.ui.GeneralAccess, general), shareLink: "buzz://plugin?id=example.plugin" };
   createElement(ctx.conversation.ui.MembersDialog, picker);
+  const gate: SendGate = { id: "later", hold: (message: OutgoingMessage) => message.text === "Later" };
+  ctx.conversation.registerSendGate(gate);
+  const held: OutgoingMessage = { channelId: "record", text: "Later", recipients: [], references: [], attachments: [], picks: {} };
+  const sent: Promise<string> = ctx.conversation.publish(ctx.relay.snapshot().session, held);
+  void sent;
   type HostPickerKeys = "agents" | "communities" | "navigator" | "signal" | "visit" | "canOpenLink" | "onOpenLink" | "onOpenMessage";
   const pickerHasNoHostProps: Extract<keyof ChannelMembersDialogProps, HostPickerKeys> extends never ? true : false = true;
   void pickerHasNoHostProps;
   // @ts-expect-error Host navigation visits are not plugin props.
   createElement(ctx.conversation.ui.MembersDialog, { ...picker, visit: true });
+  const editorRef: { current: DocumentEditorHandle | null } = { current: null };
+  const selection: DocumentEditorSelection = { start: 0, end: 1, source: false };
+  const editor: DocumentEditorProps = { ref: editorRef, value: "**Hello**", onChange(value) { void value.length; }, editing: true, source: false, onSourceChange() {}, linkOpen: false, onLinkOpenChange() {}, onSave() {}, maxLength: 32768, destinations: [{label: "Reference", href: "buzz://plugin?id=example.plugin"}] };
+  createElement(ctx.conversation.ui.DocumentEditor, editor);
+  editorRef.current?.focusSelection(selection);
+  // @ts-expect-error Source mode must be controlled with a boolean.
+  const invalidEditor: DocumentEditorProps = { ...editor, source: "Markdown" };
+  void invalidEditor;
   const ui: PluginUi | undefined = ctx.reflect.get("ui");
   if (ui) {
     void createElement(ui.Dialog, { open: true, onOpenChange: (open: boolean) => void open, title: "Edit",
@@ -79,6 +95,14 @@ export function apply(ctx: Context) {
     const capturedRead: Promise<ReadMutationResult> =
       unread.markCapturedMessagesRead(["example-message-id"]);
     void capturedRead.then(({ undo }) => undo?.());
+  }
+  if (typeof unread.messages === "function") {
+    const listed = unread.messages("example-channel", 50);
+    const more: true | undefined = listed.truncated ?? listed.incomplete;
+    for (const item of listed.items ?? []) {
+      const rootId: string | undefined = item.rootId;
+      void [item.id, item.createdAt, item.authorId, rootId, more];
+    }
   }
   for (const item of conversations.items) {
     for (const message of item.messages) {
@@ -103,6 +127,8 @@ export function apply(ctx: Context) {
   const host: Host = ctx.host;
   const upload: HostByteUpload = { url: "https://api.example.com/upload", field: "image", name: "image.png", contentType: "image/png" };
   void host.uploadBytesOnce?.(new Uint8Array([1]), upload, { callId: crypto.randomUUID() });
+  const copied: Promise<void> | undefined = host.writeClipboardText?.("copied");
+  void copied;
   const tool: AddedTool = { name: "example_image", description: "Read an image", inputSchema: {},
     async call(client: BuzzClient, context: AddedToolContext): Promise<AddedToolReply> {
       void [context.channel, context.root, context.topLevel, context.wholeChannel];
@@ -211,6 +237,11 @@ export function apply(ctx: Context) {
   backdrops?.register({ id: "glow", component: () => null });
   // @ts-expect-error A backdrop must be a React component.
   backdrops?.register({ id: "bad-glow", component: "div" });
+  const notices: Notices | undefined = ctx.reflect.get("notices");
+  const picked: Promise<string | undefined> | undefined = notices?.show({ title: "Allow?", actions: [{ id: "yes", label: "Allow", prominent: true }] }, { signal: new AbortController().signal });
+  void picked;
+  // @ts-expect-error A notice needs a title.
+  void notices?.show({ description: "No title" });
   const sidebar: SidebarSections | undefined = ctx.reflect.get("sidebarSections");
   sidebar?.register(section);
   // @ts-expect-error Sidebar contribution versions are explicit.
@@ -278,10 +309,40 @@ import type { createServices } from "@buzz/author";
     await writeFile(
       join(dir, "document-consumer.ts"),
       `
-import type { Context, MarkdownProps, PanelWorkspaceItem, PanelWorkspaceProps, PanelSplit } from "@buzz/author";
-export const inject = ["react", "conversation", "panels"];
+import type { ComponentProps } from "react";
+import type { Agents, Context, MarkdownProps, PanelWorkspaceItem, PanelWorkspaceProps, PanelSplit } from "@buzz/author";
+export const inject = ["react", "agents", "conversation", "panels"];
 export function apply(ctx: Context) {
   const React = ctx.react;
+  type TranscriptProps = ComponentProps<NonNullable<Agents["ui"]>["Transcript"]>;
+  type Agent = TranscriptProps["agent"];
+  function Activity(agent: Agent) {
+    const Transcript = ctx.agents.ui?.Transcript;
+    if (!Transcript) return null;
+    const props: TranscriptProps = {
+      agent,
+      read: async () => ({
+        turns: [{
+          turnId: "turn-1", channelId: "chan-1", threadRootId: null,
+          triggeringEventIds: ["a".repeat(64)], newSession: true, config: [],
+          startedAt: 1_700_000_000_000, endedAt: 1_700_000_001_000,
+          outcome: "ended", partial: false,
+          items: [
+            { id: "m-1", at: 1_700_000_000_500, type: "message", text: "Done", posted: true, messageId: "b".repeat(64) },
+          ],
+        }],
+      }),
+      readKey: "chan-1",
+      working: false,
+      reading: "Reading…",
+      missing: null,
+      failed: "Could not read transcript",
+    };
+    return React.createElement(Transcript, props);
+  }
+  void Activity;
+  // @ts-expect-error Agents.ui is optional on older hosts and must be checked.
+  void ctx.agents.ui.Transcript;
   const document: MarkdownProps = { content: "**Hello**", scale: "document", openLink: () => false };
   function Reader() {
     ctx.panels.useTabTitle?.("A page", React.createElement("span", null, "A"));
