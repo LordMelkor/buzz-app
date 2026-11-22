@@ -487,6 +487,48 @@ it("expands the clipped session opener without rereading it, and Refresh reads n
   expect(loadedEntries()).toHaveLength(131);
 });
 
+it("keeps the first preview row when a send starts a new Codex thread for the same conversation", async () => {
+  const binding = { threadId: "missing", workspace: "/w" };
+  const previous = recordedTurn("previous", 130);
+  const live = recordedTurn("live", 3, 3, true);
+  const started = deferred<void>();
+  const pending = deferred<Wire>();
+  const tag = sessionTag("a".repeat(64), { channelId: "channel" });
+  const f = fixture({
+    saved: { [savedKey]: binding },
+    threads: [{ id: "archive", name: `Sol · ${tag}`, updatedAt: 1 }],
+    turns: (thread) => {
+      if (thread === "new") {
+        started.resolve();
+        return pending.promise;
+      }
+      return { result: { data: thread === "archive" ? [previous] : [] } };
+    },
+    rolloutPath: () => "/sessions/test.jsonl",
+  });
+  const sessions = vi.spyOn(f.runtime, "sessions").mockReturnValue([]);
+  const mounted = render(<f.tabs.ActivityTab {...f.props()} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^View transcript/ }),
+  );
+  await screen.findByRole("button", { name: "Load earlier activity" });
+  const prior = loadedEntries();
+  expect(prior[0]).toBe("item:previous-2");
+
+  binding.threadId = "new";
+  sessions.mockReturnValue([{ key: savedKey, status: "Working", detail: "" }]);
+  mounted.rerender(<f.tabs.ActivityTab {...f.props()} />);
+  await started.promise;
+  const whileReading = loadedEntries();
+  await act(async () => pending.resolve({ result: { data: [live] } }));
+  await screen.findByText("Message live-2", { selector: "summary span" });
+  expect.soft(whileReading).toEqual(prior);
+  expect(loadedEntries()).toEqual([
+    ...prior,
+    ...live.items.map((item) => `item:${item.id}`),
+  ]);
+});
+
 it.each(["Load earlier activity", "Refresh transcript", "linked message"])(
   "keeps the prior turn and all live rows, and honors %s during a stop read",
   async (action) => {

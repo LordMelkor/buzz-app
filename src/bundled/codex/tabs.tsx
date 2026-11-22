@@ -130,7 +130,7 @@ const CONVERSATION_LIMIT = 30;
 const PREVIEW_ITEMS = 128;
 type TranscriptViewState = {
   start?: undefined | "full" | { turn: string; item?: string | undefined };
-  snapshot?: { transcript: CodexTranscript; working: boolean } | undefined;
+  snapshot?: { transcript: CodexTranscript; source: string } | undefined;
   reading?: AbortSignal | undefined;
 };
 
@@ -138,6 +138,7 @@ function previewTranscript(
   transcript: CodexTranscript,
   view: TranscriptViewState,
   working: boolean,
+  source: string,
 ) {
   const { turns } = transcript;
   const last = turns.at(-1);
@@ -183,7 +184,7 @@ function previewTranscript(
             partial: true,
             items: first.items.slice(offset),
           };
-        view.snapshot = { transcript, working };
+        view.snapshot = { transcript, source };
         return { ...transcript, partial: true as const, turns: visible };
       }
     }
@@ -1262,13 +1263,14 @@ export function createTabs(
       start: focus ? "full" : undefined,
     }).current;
     const [again, setAgain] = useState(0);
+    const source = JSON.stringify([conversation.threadId, working]);
     useLayoutEffect(() => {
-      if (view.snapshot?.working !== working) view.snapshot = undefined;
+      if (view.snapshot?.source !== source) view.snapshot = undefined;
       if (focus && view.start !== "full") {
         view.start = "full";
         setAgain((n) => n + 1);
       }
-    }, [working, focus, view]);
+    }, [source, focus, view]);
     const loadEarlier = () => {
       view.start = "full";
       if (!view.reading || view.reading.aborted) setAgain((n) => n + 1);
@@ -1283,7 +1285,7 @@ export function createTabs(
         try {
           const full = await read(signal);
           signal.throwIfAborted();
-          return full && previewTranscript(full, view, working);
+          return full && previewTranscript(full, view, working, source);
         } finally {
           if (view.reading === signal) view.reading = undefined;
         }
@@ -1309,7 +1311,7 @@ export function createTabs(
             }
           );
         })}
-        readAgain={String(again)}
+        readAgain={JSON.stringify([conversation.threadId, again])}
         onRefreshRequested={() => {
           view.snapshot = undefined;
           view.start = "full";
@@ -1536,7 +1538,7 @@ export function createTabs(
             onBack={back}
           >
             <TranscriptView
-              key={JSON.stringify([agent.key, open.key, open.threadId])}
+              key={JSON.stringify([agent.key, open.key])}
               agent={agent}
               conversation={open}
               working={views.get(open.key)?.status === "Working"}
