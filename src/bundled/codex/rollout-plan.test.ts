@@ -193,6 +193,16 @@ it("accepts a trailing earlier start without reading either prefix", () => {
   });
 });
 
+it("uses an earlier complete start before a later shown trailing start", () => {
+  const bytes = large.size - 512;
+  const read = { lines: [earlier], trailing: [shownStart], bytes };
+  expect(afterWindow(firstRange, undefined, read, shown)).toEqual({
+    kind: "accept",
+    lines: [earlier, shownStart],
+    cache: { from: firstRange.from, bytes, lines: [earlier] },
+  });
+});
+
 it("joins retained and complete records for cache and shows the trailing records separately", () => {
   const held = { from: 10, bytes: 4096, lines: [shownStart] };
   const range = { from: 4096, start: 4096, end: 8192, align: false };
