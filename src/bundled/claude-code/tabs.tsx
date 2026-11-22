@@ -13,6 +13,7 @@ import { ProviderDialogActions } from "../../features/agents/ProviderDialogActio
 // Claude's provider controls, New agent choices, and agent settings.
 import {
   Fragment,
+  type ContextType,
   type ReactNode,
   useContext,
   useEffect,
@@ -85,6 +86,155 @@ import {
   useSettingsDraft,
   type SettingGroup,
 } from "./settings-draft";
+
+type Focus = ContextType<typeof TranscriptFocus>;
+function initialHistory(input: string, focus: Focus) {
+  return { input, focus, attempt: focus ? 1 : 0, loading: false };
+}
+type Turns = readonly TranscriptTurn[];
+type History = ClaudeTranscript & { partial?: true };
+type Stamp = { again: string; working: boolean; refresh: number };
+type Settled = Stamp & { result: History };
+type Begin = Omit<Stamp, "refresh"> & {
+  id: symbol;
+  input: string;
+  attempt: number;
+};
+type Operation = Begin &
+  Stamp &
+  (
+    | { phase: "tail"; held: Turns; prior: Settled }
+    | { phase: "poll"; held: Turns; prior?: Settled | undefined }
+    | { phase: "preview" | "full" }
+  );
+export type ReaderState = {
+  refresh: number;
+  full?: { input: string; loaded: boolean };
+  active?: Operation | undefined;
+  settled?: Settled | undefined;
+};
+type Outcome = { failed?: true } & (
+  | {
+      type: "poll" | "tail";
+      turns?: Turns | undefined;
+      overlap?: "observe" | "observed";
+    }
+  | { type: "full" | "preview"; result?: History | undefined }
+);
+type ReaderEvent =
+  | (Outcome & { id: symbol })
+  | ({ type: "begin"; held?: Turns | undefined } & Begin)
+  | { type: "refresh"; input: string }
+  | { type: "abort"; id: symbol };
+
+export function focusHistory(
+  history: ReturnType<typeof initialHistory> | undefined,
+  input: string,
+  focus: Focus,
+  full?: ReaderState["full"],
+) {
+  if (history?.input !== input) return initialHistory(input, focus);
+  if (
+    focus &&
+    history.focus !== focus &&
+    !(full?.input === input && full.loaded)
+  )
+    return { ...history, focus, attempt: history.attempt + 1 };
+  return history;
+}
+
+function validatedTail(held: Turns, turns?: Turns | undefined) {
+  if (!turns?.length) return turns;
+  const from = held.findIndex((turn) => turn.turnId === turns[0]?.turnId);
+  if (
+    from < 0 ||
+    held
+      .slice(from)
+      .some((turn, index) => turn.turnId !== turns[index]?.turnId) ||
+    turns.some(
+      (turn, index) =>
+        turn.startedAt <
+        ((turns[index - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
+    )
+  )
+    return undefined;
+  return turns;
+}
+
+/** Keep acquisition and publication tied to the same operation across a fallback read. */
+export function transition(state: ReaderState, event: ReaderEvent) {
+  const { active, refresh, settled: prior } = state;
+  const next = { ...state };
+  const fallback = (op: Begin) =>
+    !op.attempt && next.full?.input !== op.input ? "preview" : "full";
+  if (event.type === "refresh") {
+    next.refresh++;
+    if (next.full?.input !== event.input)
+      next.full = { input: event.input, loaded: false };
+  } else if (event.type === "begin") {
+    const { type: _type, held, ...start } = event;
+    const op = { ...start, refresh };
+    if (held) next.active = { ...op, phase: "poll", held, prior };
+    else {
+      next.settled = undefined;
+      next.active =
+        prior?.again === op.again &&
+        prior.refresh === refresh &&
+        prior.working !== op.working &&
+        !prior.result.partial &&
+        !prior.result.incomplete
+          ? { ...op, phase: "tail", held: prior.result.turns, prior }
+          : { ...op, phase: fallback(op) };
+    }
+  } else {
+    if (
+      !active ||
+      active.id !== event.id ||
+      (event.type !== "abort" && event.type !== active.phase)
+    )
+      return { state, ignored: true as const };
+    next.active = undefined;
+    if (event.type === "abort") return { state: next };
+    const { input, again, working, refresh } = active;
+    let result: History | undefined;
+    if ("held" in active && (event.type === "poll" || event.type === "tail")) {
+      const { overlap } = event;
+      const turns =
+        overlap === "observed"
+          ? event.turns
+          : validatedTail(active.held, event.turns);
+      if (
+        !turns &&
+        !event.failed &&
+        overlap !== "observed" &&
+        next.full?.input !== input
+      )
+        next.full = { input, loaded: false };
+      if (overlap === "observe") return { state: { ...next, active }, turns };
+      const prior = active.prior;
+      if (prior && turns) result = withLatest(prior.result, turns);
+      if (active.phase === "poll") {
+        next.settled = prior && result ? { ...prior, result } : undefined;
+        return { state: next, turns };
+      }
+      if (!turns?.length || !result) {
+        const { held: _held, prior: _prior, ...start } = active;
+        next.active = { ...start, phase: fallback(active) };
+        return { state: next };
+      }
+    } else if (event.type === "preview" || event.type === "full") {
+      result = event.result;
+      if (!event.failed) {
+        if (event.type === "full")
+          next.full = { input, loaded: Boolean(result) };
+        else if (result) result = { ...result, partial: true };
+        else next.active = { ...active, phase: "full" };
+      }
+    }
+    next.settled = result && { again, working, refresh, result };
+  }
+  return { state: next };
+}
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -1003,22 +1153,17 @@ export function createTabs({
     const workspace = readConfig(agent.config).workspace;
     const input = JSON.stringify([workspace, conversation.sessionId]);
     const focus = useContext(TranscriptFocus);
-    const [history, setHistory] = useState({
+    const reader = useRef<ReaderState>({ refresh: 0 });
+    const [history, setHistory] = useState(() =>
+      focusHistory(undefined, input, focus),
+    );
+    const nextHistory = focusHistory(
+      history,
       input,
       focus,
-      attempt: focus ? 1 : 0,
-      loading: false,
-    });
-    const fullHistory = useRef<{ input: string; loaded: boolean }>(undefined);
-    if (history.input !== input) {
-      setHistory({ input, focus, attempt: focus ? 1 : 0, loading: false });
-    } else if (
-      focus &&
-      history.focus !== focus &&
-      !(fullHistory.current?.input === input && fullHistory.current.loaded)
-    ) {
-      setHistory({ ...history, focus, attempt: history.attempt + 1 });
-    }
+      reader.current.full,
+    );
+    if (nextHistory !== history) setHistory(nextHistory);
     const loadEarlier = () =>
       setHistory((old) =>
         old.loading
@@ -1029,100 +1174,71 @@ export function createTabs({
               loading: true,
             },
       );
-    type History = ClaudeTranscript & { partial?: true };
     const again = JSON.stringify([input, history.attempt]);
-    const refreshCount = useRef(0);
-    const settled = useRef<{
-      again: string;
-      refresh: number;
-      working: boolean;
-      result: History;
-    }>(undefined);
-    async function latestTurns(
-      signal: AbortSignal,
-      held: readonly TranscriptTurn[],
-    ) {
-      const turns = await runtime.latestTurns(
-        conversation,
-        workspace,
-        working,
-        signal,
-        held,
-      );
+    function dispatch(event: ReaderEvent) {
+      const step = transition(reader.current, event);
+      reader.current = step.state;
+      return step;
+    }
+    async function run(signal: AbortSignal, held?: Turns | undefined) {
       signal.throwIfAborted();
-      if (turns && !turns.length) return turns;
-      const from = held.findIndex((turn) => turn.turnId === turns?.[0]?.turnId);
-      if (
-        !turns ||
-        from < 0 ||
-        held
-          .slice(from)
-          .some((turn, index) => turn.turnId !== turns[index]?.turnId) ||
-        turns.some(
-          (turn, index) =>
-            turn.startedAt <
-            ((turns[index - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
-        )
-      ) {
-        if (fullHistory.current?.input !== input)
-          fullHistory.current = { input, loaded: false };
-        return undefined;
+      const id = Symbol();
+      const abort = () => dispatch({ type: "abort", id });
+      signal.addEventListener("abort", abort);
+      const args = [conversation, workspace, working, signal] as const;
+      async function read(op: Operation) {
+        const type = op.phase;
+        if (type === "poll" || type === "tail") {
+          const turns = await runtime.latestTurns(...args, op.held);
+          signal.throwIfAborted();
+          const observed = dispatch({ type, id, turns, overlap: "observe" });
+          return { type, turns: observed.turns, overlap: "observed" as const };
+        }
+        const result =
+          type === "full"
+            ? await runtime.transcript(...args)
+            : await runtime.transcriptPreview(...args);
+        return { type, result };
       }
-      return turns;
+      try {
+        const start = {
+          id,
+          input,
+          again,
+          working,
+          attempt: history.attempt,
+          held,
+        };
+        let step = dispatch({ type: "begin", ...start });
+        while (step.state.active) {
+          const op = step.state.active;
+          let outcome: Outcome;
+          try {
+            outcome = await read(op);
+          } catch (error) {
+            step = dispatch({ type: op.phase, id, failed: true });
+            signal.throwIfAborted();
+            if (!step.state.active || step.ignored) throw error;
+            continue;
+          }
+          step = dispatch({ ...outcome, id });
+          if (step.ignored) {
+            signal.throwIfAborted();
+            throw new DOMException("Read superseded", "AbortError");
+          }
+        }
+        return step;
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
     }
     return (
       <TranscriptPanel
         agent={agent}
-        onRefreshRequested={() => {
-          refreshCount.current++;
-          if (fullHistory.current?.input !== input)
-            fullHistory.current = { input, loaded: false };
-        }}
+        onRefreshRequested={() => dispatch({ type: "refresh", input })}
         read={async (signal) => {
-          const refresh = refreshCount.current;
-          const prior = settled.current;
-          settled.current = undefined;
-          let result: History | undefined;
           try {
-            if (
-              prior?.again === again &&
-              prior.refresh === refresh &&
-              prior.working !== working &&
-              !prior.result.partial &&
-              !prior.result.incomplete
-            ) {
-              const turns = await latestTurns(signal, prior.result.turns).catch(
-                () => undefined,
-              );
-              signal.throwIfAborted();
-              if (turns?.length) result = withLatest(prior.result, turns);
-            }
-            if (
-              !result &&
-              !history.attempt &&
-              fullHistory.current?.input !== input
-            ) {
-              const tail = await runtime.transcriptPreview(
-                conversation,
-                workspace,
-                working,
-                signal,
-              );
-              signal.throwIfAborted();
-              if (tail) result = { ...tail, partial: true };
-            }
-            if (!result) {
-              result = await runtime.transcript(
-                conversation,
-                workspace,
-                working,
-                signal,
-              );
-              signal.throwIfAborted();
-              fullHistory.current = { input, loaded: Boolean(result) };
-            }
-            if (result) settled.current = { again, working, refresh, result };
-            return result;
+            return (await run(signal)).state.settled?.result;
           } finally {
             if (history.loading && !signal.aborted) {
               setHistory((current) =>
@@ -1131,20 +1247,7 @@ export function createTabs({
             }
           }
         }}
-        readLatest={async (signal, held) => {
-          const prior = settled.current;
-          let result: History | undefined;
-          try {
-            const turns = await latestTurns(signal, held);
-            signal.throwIfAborted();
-            if (prior && turns) result = withLatest(prior.result, turns);
-            return turns;
-          } finally {
-            if (!signal.aborted)
-              settled.current =
-                prior && result ? { ...prior, result } : undefined;
-          }
-        }}
+        readLatest={async (signal, held) => (await run(signal, held)).turns}
         readKey={`${conversation.key}\u0000${workspace}`}
         readAgain={again}
         working={working}
