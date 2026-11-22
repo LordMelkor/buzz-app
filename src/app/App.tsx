@@ -36,6 +36,7 @@ import { UpdateReview } from "../bundled/agents/UpdateReview";
 import { TeamUpdateReview } from "../bundled/agents/TeamUpdateReview";
 import { AppOverlays } from "../features/pages/AppOverlays";
 import { InterruptedNotice } from "../features/agents/InterruptedNotice";
+import { ShellNotices } from "../features/notices/ShellNotices";
 import {
   useCallback,
   useEffect,
@@ -831,6 +832,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
             relay={services.relay}
           />
           <InterruptedNotice agents={services.agents} />
+          <ShellNotices notices={services.notices} plugins={plugins} />
           <MediaMenuDownloadNotice />
           <CreationReview agents={services.agents} />
           <UpdateReview agents={services.agents} />

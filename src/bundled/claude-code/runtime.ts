@@ -1,3 +1,4 @@
+import { readSubthread } from "../../features/relay/subthread";
 import { ownerInstructions } from "../../features/agent-harness/plugin-instructions";
 import {
   ProjectSource,
@@ -27,6 +28,7 @@ import { executionSpawn } from "./execution";
 // the in-process Buzz tools, signed by the agent's native-held key; the runtime
 // only reports a turn that fails.
 import type { Context } from "../../buzz-mcp/client";
+import type { InvocationSubthread } from "../../features/agents/session-admission";
 import { RESUMED_PROMPT } from "../../buzz-mcp/prompt";
 import { type Listing, respond } from "../../buzz-mcp/rpc";
 import {
@@ -55,6 +57,7 @@ import {
   conversationFolder,
   conversationKey,
   existingFolder,
+  startingFolder,
 } from "../../features/agents/conversation-folders";
 import type {
   Agent,
@@ -76,14 +79,22 @@ import {
   wakeLands,
 } from "../../features/agent-harness/plugin-wake";
 import type { ClaudeModel, Settled, Spawn, ToolServer } from "./claude";
-import { appClient, readFile } from "../../buzz-mcp/app-client";
+import { appClient, readFile, relayKeyOf } from "../../buzz-mcp/app-client";
 import {
   MemoryReads,
   READ_TIMEOUT_MS,
   recentNotesSection,
 } from "../../features/agent-harness/core-memory";
 import { readAuthorNames } from "../../features/agent-harness/author-names";
-import { readProject } from "../../features/agent-harness/project";
+import {
+  readProject,
+  worksElsewhere,
+} from "../../features/agent-harness/project";
+import {
+  placeOf,
+  replacedSections,
+  sectionsOf,
+} from "../../features/agent-harness/sections/compose";
 import {
   referencedFolders,
   referencedSkills,
@@ -93,6 +104,7 @@ import type {
   SessionPlace,
   SessionControlAction,
   SessionState,
+  SessionUsage,
 } from "../../features/agents/service";
 import {
   CONTEXT_LIMIT,
@@ -127,6 +139,7 @@ import {
 } from "./transcript";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { standaloneSessions } from "../../features/agents/standalone-sessions";
+import { withWakes } from "../../features/agents/session-usage";
 
 /** The effort levels Claude lists, which a session can switch to between
  * turns. Claude runs `max` as `xhigh` in a stream-json session, so it is not
@@ -362,6 +375,9 @@ export class ClaudeRuntime {
   /** A failed turn's error as its report says it, such as where to fix
    * Claude's credentials. */
   explain: (error: string) => string = (error) => error;
+  /** Whether the Usage plugin is on, asked as each one-off turn starts: only
+   * then is the turn's key kept with its session, for Usage. */
+  usageOn: () => boolean = () => false;
 
   private executionKey(agent: AgentKey, conversation: string) {
     const scope = this.reads(agent)?.scope;
@@ -376,6 +392,16 @@ export class ClaudeRuntime {
     if (!reads) throw new Error("Buzz is not connected");
     return reads.scope
       ? conversationFolder(this.storage, reads.scope, agent, key)
+      : undefined;
+  }
+  /** `folder`, for a launching session, which records that a conversation
+   * without one starts in the workspace. */
+  private startFolder(agent: AgentKey, key: string | undefined) {
+    if (!key || this.target) return undefined;
+    const reads = this.reads(agent);
+    if (!reads) throw new Error("Buzz is not connected");
+    return reads.scope
+      ? startingFolder(this.storage, reads.scope, agent, key)
       : undefined;
   }
   /** Where the conversation's sessions ran: its own folder, or else the
@@ -909,6 +935,14 @@ export class ClaudeRuntime {
       this.notices.get(conversation.agent) ?? new Map(),
     );
   }
+  /** `sessions` with, for each a standalone turn started, the key it ran
+   * under. */
+  withWakes(agent: AgentKey, sessions: readonly SessionUsage[]) {
+    return withWakes(
+      sessions,
+      standaloneSessions(this.storage, "claude-code", agent).list(),
+    );
+  }
   /** What each of the agent's sessions started with. */
   private prompts(agent: AgentKey) {
     return sessionPrompts(this.storage, "claude-code", agent);
@@ -975,7 +1009,7 @@ export class ClaudeRuntime {
   private readonly controls = new SessionControls(() => this.notify());
   private controlKey(agent: Agent, place: SessionPlace) {
     return scopedSessionKey(
-      config(agent.config).scope,
+      place.isolated ? "thread" : config(agent.config).scope,
       place.channelId,
       place.root,
     );
@@ -1238,13 +1272,38 @@ export class ClaudeRuntime {
     if (wake && !wakeLands(wake, topLevel)) return ignored?.();
     // Frozen with the policy: a scope change while this waits must not move
     // its prompt to another conversation than the one it is delivered to.
-    const { key, source } = await this.key(
+    const native = await this.key(
       settings.scope,
       agent,
       event,
       channel,
       topLevel,
     );
+    const route =
+      !topLevel && native.source.root
+        ? await delivery.routeConversation?.(
+            {
+              source: native.source,
+              conversation: {
+                channelId: channel,
+                ...(native.key === COMMUNITY_SESSION
+                  ? { community: true }
+                  : native.key !== channel
+                    ? { root: native.source.root }
+                    : {}),
+              },
+            },
+            signal,
+          )
+        : undefined;
+    const key = route
+      ? scopedSessionKey("thread", channel, route.parent)
+      : native.key;
+    const source = route
+      ? { channelId: channel, root: route.parent }
+      : native.source;
+    const replyRoot =
+      route?.parent ?? threadReference(event)?.rootId ?? event.id;
     await rememberCommunitySource(this.storage, agent.key, key, channel);
     const admission = (deferred: boolean) =>
       delivery.prepareSession?.(
@@ -1252,7 +1311,9 @@ export class ClaudeRuntime {
           source: wake
             ? {
                 channelId: channel,
-                ...(source.root && wake.root ? { root: wake.root } : {}),
+                ...(source.root && wake.root
+                  ? { root: route?.parent ?? wake.root }
+                  : {}),
               }
             : source,
           conversation: {
@@ -1260,7 +1321,7 @@ export class ClaudeRuntime {
             ...(key === COMMUNITY_SESSION
               ? { community: true }
               : key !== channel
-                ? { root: threadReference(event)?.rootId ?? event.id }
+                ? { root: replyRoot }
                 : {}),
           },
         },
@@ -1301,6 +1362,7 @@ export class ClaudeRuntime {
             : lifetime;
           await runtime.run({
             ...delivery,
+            routeConversation: async () => route,
             ...(session ? { session } : {}),
             ...(sessionContext ? { sessionContext } : {}),
             signal: accepted,
@@ -1349,6 +1411,9 @@ export class ClaudeRuntime {
         const admitted = await admission(deferred);
         session = admitted?.session ?? session;
         sessionContext = admitted?.context ?? sessionContext;
+        const turnContext = [sessionContext, route?.turnContext]
+          .filter(Boolean)
+          .join("\n\n");
         // `fresh` is for a session that has been shown nothing yet.
         let acceptProject: (() => void) | undefined;
         const prompt = async (fresh: boolean) => {
@@ -1365,6 +1430,7 @@ export class ClaudeRuntime {
             fresh,
             solo,
             () => !interrupted && (!current || current()),
+            route,
           );
           acceptProject = turn.acceptProject;
           const text = turnPrompt({
@@ -1402,10 +1468,10 @@ export class ClaudeRuntime {
           key === channel ||
           (key === COMMUNITY_SESSION && !source.root)
             ? undefined
-            : (threadReference(event)?.rootId ?? event.id);
+            : replyRoot;
         const notes = agent.notes?.(channel, noteRoot) ?? [];
         const text = [
-          sessionContext,
+          turnContext,
           this.review(entry, prepared, notes, channel, noteRoot, key),
         ]
           .filter(Boolean)
@@ -1421,7 +1487,8 @@ export class ClaudeRuntime {
               ? { channel }
               : {
                   channel,
-                  root: threadReference(event)?.rootId ?? event.id,
+                  root: replyRoot,
+                  ...(route ? { sourceRoot: route.root } : {}),
                 }),
         };
         submitted = true;
@@ -1438,14 +1505,14 @@ export class ClaudeRuntime {
                     noteRoot,
                     key,
                   );
-                  return [sessionContext, text].filter(Boolean).join("\n\n");
+                  return [turnContext, text].filter(Boolean).join("\n\n");
                 },
               }
             : {}),
           steer: steerPrompt(text),
           fresh: async () =>
             [
-              sessionContext,
+              turnContext,
               this.review(
                 entry,
                 (await prompt(true)).text,
@@ -1458,9 +1525,7 @@ export class ClaudeRuntime {
               .filter(Boolean)
               .join("\n\n"),
           ...(contextRoot ? { contextRoot } : {}),
-          activityScope: topLevel
-            ? channel
-            : (threadReference(event)?.rootId ?? event.id),
+          activityScope: topLevel ? channel : replyRoot,
           ...(step ? { step } : {}),
           delivered: () => acceptProject?.(),
           ...(acknowledged ? { acknowledged } : {}),
@@ -1495,9 +1560,7 @@ export class ClaudeRuntime {
     const done = handed.then(
       async () => {
         const result = await delivered;
-        return key === COMMUNITY_SESSION &&
-          interrupted &&
-          (!submitted || result.undelivered)
+        return reserved && interrupted && (!submitted || result.undelivered)
           ? { ...result, ok: false, stopped: true as const }
           : result;
       },
@@ -1541,18 +1604,19 @@ export class ClaudeRuntime {
       entry.policies.delete(key);
       this.notify();
     });
+    interruptible?.(() => {
+      interrupted = true;
+      return submitted ? entry.sessions.interrupt(key) : Promise.resolve();
+    });
     // Deliveries keep their order: a later one waits on this handover, and
     // one with nothing to wait for is handed over before `run` returns.
     if (!wait && !handoff.deferred && !admittedDeferred) await handed;
     // The turn outlives `run`, which the host is told so it shows it as working.
     workingUntil(done);
-    interruptible?.(() => {
-      interrupted = true;
-      return submitted ? entry.sessions.interrupt(key) : Promise.resolve();
-    });
     this.notify();
     this.watch(done, async (error) => {
-      if (error) await this.report(agent, channel, event, error, topLevel);
+      if (error)
+        await this.report(agent, channel, event, error, topLevel, route);
     });
     if (solo && named && settings.scope !== "community")
       void this.offerTitle(done, agent.key, key, settings.workspace, named);
@@ -1875,6 +1939,7 @@ export class ClaudeRuntime {
     event: EventData,
     error: string,
     topLevel: boolean,
+    route?: InvocationSubthread,
   ) {
     return agent
       .publish({
@@ -1884,7 +1949,15 @@ export class ClaudeRuntime {
           ["h", channel],
           ...(topLevel
             ? []
-            : [["e", threadReference(event)?.rootId ?? event.id, "", "reply"]]),
+            : [
+                ...(route ? [["e", route.root, "", "root"]] : []),
+                [
+                  "e",
+                  route?.parent ?? threadReference(event)?.rootId ?? event.id,
+                  "",
+                  "reply",
+                ],
+              ]),
           ["p", agent.owner],
         ],
       })
@@ -1928,6 +2001,7 @@ export class ClaudeRuntime {
     fresh = false,
     solo = topLevel,
     current = () => true,
+    route?: InvocationSubthread,
   ) {
     const reads = this.reads(agent.key);
     const [summary, memory] = await Promise.all([
@@ -1939,7 +2013,7 @@ export class ClaudeRuntime {
     entry.memory = memory;
     const dm = summary?.dm === true;
     const thread = threadReference(event);
-    const rootId = thread?.rootId ?? event.id;
+    const rootId = route?.root ?? thread?.rootId ?? event.id;
     // The conversation it was admitted to, not the scope as it is now.
     const scope: Scope = scopeOfSession(key, channelId);
     // Sharing a session does not mean it has seen every thread in the channel.
@@ -1956,21 +2030,29 @@ export class ClaudeRuntime {
     const reading = solo
       ? readProject(
           canvas && owner ? () => canvas(channelId, owner) : undefined,
-          Boolean(reads && this.folder(agent.key, key)),
+          worksElsewhere(
+            reads ? this.folder(agent.key, key) : undefined,
+            sectionsOf(entry.handle, key),
+          ),
         )
       : Promise.resolve(undefined);
     let earlier: readonly EventData[] = [];
     // A chat its owner is still creating has nothing earlier to read.
     if (reads && !summary?.starting && (thread || dm || topLevel))
       try {
+        const budget = AbortSignal.timeout(CONVERSATION_READ_TIMEOUT_MS);
         const events = await reads.read(
           thread && !topLevel
             ? [
-                { ids: [rootId], "#h": [channelId], limit: 1 },
+                {
+                  ids: [...new Set([rootId, ...(route ? [route.parent] : [])])],
+                  "#h": [channelId],
+                  limit: route ? 2 : 1,
+                },
                 { kinds: CHAT, "#h": [channelId], "#e": [rootId], limit: 200 },
               ]
             : [{ kinds: CHAT, "#h": [channelId], limit: CONTEXT_LIMIT + 1 }],
-          AbortSignal.timeout(CONVERSATION_READ_TIMEOUT_MS),
+          budget,
         );
         earlier = events
           .filter(
@@ -1983,10 +2065,20 @@ export class ClaudeRuntime {
               item.created_at <= event.created_at,
           )
           .sort((a, b) => a.created_at - b.created_at);
+        if (route && event.id !== route.parent) {
+          earlier = (
+            await readSubthread(
+              earlier,
+              { channel: channelId, root: route.root, anchor: route.parent },
+              CHAT,
+              (filters) => reads.read(filters, budget),
+            )
+          ).events;
+        }
       } catch (error) {
+        earlier = [];
         console.warn("Claude could not read the conversation", error);
       }
-    // A session already has its own replies; a new one is shown them too.
     const unseen = earlier.filter(
       (item) =>
         item.created_at > seen && (!seen || item.pubkey !== agent.pubkey),
@@ -2041,7 +2133,14 @@ export class ClaudeRuntime {
         ...(summary?.name ? { name: summary.name } : {}),
         dm,
       },
-      ...(thread ? { thread } : {}),
+      ...(route
+        ? {
+            thread: { rootId: route.parent, parentId: route.parent },
+            sourceRoot: route.root,
+          }
+        : thread
+          ? { thread }
+          : {}),
       context: unseen,
       contextRoot,
       total: earlier.length + 1,
@@ -2105,7 +2204,7 @@ export class ClaudeRuntime {
               return entry.sessions.captureProtectionContext(conversation);
             },
             relayAuthor: this.reads(agent)?.relayAuthor?.(),
-            signingAuthority: this.reads(agent)?.workflowAuthority(),
+            signingAuthority: relayKeyOf(this.reads(agent)),
             read: (path) =>
               this.target
                 ? this.target.readFile(path, { cwd })
@@ -2178,9 +2277,11 @@ export class ClaudeRuntime {
         );
         // Its transcript names no conversation, so only this says it is the
         // agent's, for its usage; the saved prompts drop old sessions.
+        // Its key is kept only while Usage is on.
         if (once)
           void standaloneSessions(this.storage, "claude-code", agent).add(
             session,
+            this.usageOn() ? once : undefined,
           );
       },
       // The saved prompt shows the base sections again when a session
@@ -2216,10 +2317,9 @@ export class ClaudeRuntime {
           entry.memory,
           addedKey(this.added()),
           this.credentials,
-          // The base prompt's sections: a change gives an idle session the
-          // new prompt at its next turn.
-          entry.handle?.promptSections?.(),
         ]),
+      // A change gives the session the new prompt at its next turn.
+      sections: (key) => replacedSections(sectionsOf(entry.handle, key)),
       launch: async (key) => {
         const { workspace, instructions, scope } = entry.config;
         const gate = entry.handle?.protection;
@@ -2228,7 +2328,7 @@ export class ClaudeRuntime {
         gate?.assertAvailable();
         // A conversation given its own folder starts there, never in the
         // workspace, which stays within reach as an absolute path.
-        const assigned = this.folder(agent, key);
+        const assigned = await this.startFolder(agent, key);
         const resolve = this.host.resolveDirectory?.bind(this.host);
         const folder = assigned && (await existingFolder(resolve, assigned));
         const home = folder && (await resolve?.(workspace));
@@ -2245,6 +2345,7 @@ export class ClaudeRuntime {
         const directories = home ? [home, ...(shared ?? [])] : shared;
         const cwd = folder || workspace;
         const handle = entry.handle;
+        const sections = sectionsOf(handle, key);
         return {
           ...where(entry.config),
           cwd,
@@ -2282,7 +2383,8 @@ export class ClaudeRuntime {
             team: entry.team,
             ...(memory === undefined ? {} : { memory }),
             notes,
-            sections: handle?.promptSections?.(),
+            sections,
+            place: placeOf(key),
           }),
         };
       },

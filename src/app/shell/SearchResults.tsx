@@ -89,6 +89,7 @@ import {
 } from "./SearchFilterGuide";
 import { MatchRank, matchName, matchRank } from "../../features/search/match";
 import { useUnreadFirstPreference } from "../../features/search/unread-first-preference";
+import { messageSortPreference } from "../../features/search/message-sort-preference";
 import {
   noSearchUsage,
   readSearchUsage,
@@ -183,6 +184,11 @@ const noMembers: readonly string[] = [];
  * neither is a result. */
 const isSearchAction = (key: string) =>
   key === "more-messages" || key === "ask";
+
+/** The viewer is in this conversation now: a saved row or a guest's read-only
+ * one counts; a public channel read after leaving does not. */
+const joined = (channel: ChannelSummary) =>
+  !channel.readOnly || !!channel.cached || channel.viewerRole === "guest";
 
 function useDelayedSearch(pending: boolean) {
   const [slow, setSlow] = useState(false);
@@ -728,7 +734,9 @@ export function SearchResults({
   const [askAgent, setAskAgent] = useState<MentionRecipient>();
   // Search unmounts as it closes, so each opening reads previews afresh.
   const [previews] = useState<PreviewCache>(() => new Map());
-  const [sort, setSort] = useState<SearchSort>("relevance");
+  // Each opening starts from the saved order; the Sort menu overrides it
+  // for this search only.
+  const [sort, setSort] = useState<SearchSort>(messageSortPreference);
   // The chip or a single resolved `in:` limits results to one conversation.
   const effectiveChannelId = scopedChannelId ?? operatorChannelId;
   const canRerank = useCanRerank(decisions);
@@ -1638,11 +1646,7 @@ export function SearchResults({
   const suggestions = channels
     .filter(
       (channel) =>
-        (!channel.readOnly ||
-          channel.cached ||
-          channel.viewerRole === "guest") &&
-        !channel.archived &&
-        !sidebarHidden(channel),
+        joined(channel) && !channel.archived && !sidebarHidden(channel),
     )
     .sort(
       (a, b) =>
@@ -1855,11 +1859,20 @@ export function SearchResults({
           channel?.channelType === "dm"
             ? `Direct message: ${whereOf(message.channelId)}`
             : whereOf(message.channelId),
-        author: nameOf(
-          message.workflowOwnerId ?? message.authorId,
-          message.channelId,
-        ),
+        // As the row shows it: a workflow's output isn't its owner's own.
+        author: message.workflowOwnerId
+          ? workflowLabel(nameOf(message.workflowOwnerId, message.channelId))
+          : nameOf(message.authorId, message.channelId),
         mine: message.authorId === session.viewer,
+        // As message rows decide: whoever owns the agent, its profile or
+        // envelope says so; the viewer's own agents are known here too.
+        // Workflow output is automation too, not its owner's own message.
+        agent:
+          !!message.agentEnvelope ||
+          !!message.workflowOwnerId ||
+          !!profiles.get(message.authorId)?.isAgent ||
+          knownAgents.has(message.authorId),
+        member: !!channel && joined(channel),
       };
     },
     held: movedFor === searchKey,

@@ -94,7 +94,6 @@ import {
   ChatCircleIcon,
   FolderSimpleIcon,
   MinusIcon,
-  PencilSimpleIcon,
   PlusIcon,
   XIcon,
 } from "../../shared/design-system/icons";
@@ -699,7 +698,7 @@ export function ChannelInventory({
           aria-description="Unsent draft"
           selected={selected}
           aria-current={selected ? "page" : undefined}
-          icon={<PencilSimpleIcon size={16} />}
+          icon={<PlusIcon size={16} />}
           onClick={() => {
             if (selected) soloDraftInput()?.focus();
             else void navigator.open(destination);
@@ -1740,7 +1739,11 @@ export function ChannelInventory({
     },
     [lifecycleCallbacks, openSuccessor],
   );
-  const workspaceNewAction = (workspace: string, name: string) => (
+  const workspaceNewAction: WorkspaceSidebarComposition["newAction"] = (
+    workspace,
+    name,
+    menuAnchor,
+  ) => (
     <WorkspaceNewMenu
       key={`${scope}:${workspace}`}
       scope={scope}
@@ -1748,6 +1751,7 @@ export function ChannelInventory({
       name={name}
       channelAvailable={queries.channelCreation.available}
       dmAvailable={queries.directMessages.available}
+      menuAnchor={menuAnchor}
       choose={(action, trigger) => {
         if (relay.snapshot().session !== queries) return;
         if (action === "chat") newChat(workspace);

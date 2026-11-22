@@ -393,6 +393,8 @@ function setup(
     conversationFolder: () => undefined,
     setConversationInstructions: vi.fn(async () => {}),
     conversationInstructions: async () => undefined,
+    setConversationSections: vi.fn(async () => {}),
+    conversationSections: async () => undefined,
     note: () => false,
     classifier: () => "unavailable",
     saveTeam: vi.fn(async (change: TeamChange) => {
@@ -489,6 +491,7 @@ function setup(
     registerTab: () => {},
     controlAttention: () => {},
     recommend: () => {},
+    gatewayHarnesses: () => {},
     registerSessionRouter: () => {},
     registerExecution: () => {},
     bindExecution: async () => {},

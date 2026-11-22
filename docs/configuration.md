@@ -178,12 +178,24 @@ Native goose forwarding removes `Authorization` before sending discovery or
 inference requests to the gateway. The gateway must authenticate callers
 separately; Buzz context headers supply attribution, not authentication.
 
+Local Codex uses its own configured provider for model discovery and inference.
+Buzz adds context to eligible turns when the active provider's `base_url`
+has the descriptor's gateway origin. Codex keeps the provider's configured
+mount path. The provider ID can be any custom ID made of letters, digits,
+underscores or hyphens.
+
 With it set, a local agent membership in a listed community routes through the
 gateway only when the relay's NIP-11 `read_state_snapshot.community_id` is
 exactly the listed ID, the descriptor gives the agent type's declared harness
 an upstream, the gateway's access check succeeds, and the check's `harnesses`
-list names that harness. Any other field in the check's answer is the
-gateway's to enforce and is ignored. A type with no declared harness, no
+list names that harness. A bundled plugin can supply that list for the launch
+instead, with `ctx.agents.gatewayHarnesses(source)`; see
+[Plugin architecture](plugin-architecture.md). When that list is empty, or
+the plugin fails or answers late, no access check runs and every agent keeps
+its existing behavior, with nothing sent to the gateway. A harness a
+non-empty list leaves out keeps its existing behavior too, and its turns never
+wait for, or recheck, an access check. Any other field in the check's
+answer is the gateway's to enforce and is ignored. A type with no declared harness, no
 upstream, or a harness the gateway doesn't list keeps its existing behavior.
 While an access check is in flight, such as the first one at startup or the
 re-check after the gateway refuses a request, a turn waits for it for up to 5
@@ -207,12 +219,23 @@ harness's own turn activity for other turns, which receive it as
 later message supersedes it. That choice is made before dispatch; a turn whose
 gateway access is revoked after dispatch fails visibly and is never
 replayed. A type that declares its harness with `mode: "attribution"`, as
-Claude Code does, only adds the gateway's headers where its own checks allow,
+Claude Code and Codex do, only adds the gateway's headers where its own checks allow,
 so none of this holds or fails its turns: it takes the route as it stands
 without waiting, and any blocked route, a pending check or a 401/403
 included, runs the turn unattributed with the note "Ran without gateway
-attribution" and the reason. Memberships in other communities and hosted
-agents are unchanged.
+attribution" and the reason. Before a plugin's harness list is known, such a
+turn runs unattributed at once with a note saying Buzz was still deciding
+which agents use the gateway; once the list is known and leaves its harness
+out, or in a community the descriptor doesn't list, it runs with no note. Once goose runs through the gateway, a goose
+agent's wake anchored in a conversation shows the "Ran without the agent
+gateway" note beside its prompt in Activity only while the app that ran it
+keeps running; a reload, or goose compacting the prompt out of its history,
+drops it. A standalone run (`runOnce`) shows none. Memberships in
+other communities and hosted agents are unchanged.
+Goose forwarding supports Thread and Channel session scope. A Goose turn
+eligible for forwarding fails in Community scope, where requests from
+different conversations can steer the same active turn.
+
 See `src/features/agents/gateway/` for the shared route, session and request
 context contract that harnesses consume.
 

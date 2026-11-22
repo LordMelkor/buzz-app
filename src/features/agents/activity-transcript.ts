@@ -141,7 +141,7 @@ export const STEER = "new-message-arrived-while-you-were-working";
 const EVENT_TAGS = new Set(["buzz-event", STEER]);
 
 /** Wrappers inside a base section's text: part of that text, not framing. */
-const INLINE = new Set(["owner-section"]);
+const INLINE = new Set(["owner-section", "plugin-section"]);
 
 /** Split top-level `<tag attrs>` … `</tag>` prompt framing; other text is kept. */
 export function promptSections(text: string): PromptSection[] {
@@ -766,4 +766,35 @@ function buildTranscript(
       return turn;
     }),
   };
+}
+
+/** `turns` with each notice right after the prompt it was kept for, by the
+ * prompt's id. A notice whose message the harness never took matches no
+ * prompt, so it shows nowhere rather than on another turn. */
+export function withNotices(
+  turns: readonly TranscriptTurn[],
+  notices: ReadonlyMap<string, string>,
+): TranscriptTurn[] {
+  return turns.map((turn) =>
+    turn.items.some((item) => item.type === "prompt" && notices.has(item.id))
+      ? {
+          ...turn,
+          items: turn.items.flatMap((item): TranscriptItem[] => {
+            const text =
+              item.type === "prompt" ? notices.get(item.id) : undefined;
+            return text
+              ? [
+                  item,
+                  {
+                    id: `${item.id}:notice`,
+                    at: item.at,
+                    type: "status",
+                    text,
+                  },
+                ]
+              : [item];
+          }),
+        }
+      : turn,
+  );
 }

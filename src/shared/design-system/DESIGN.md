@@ -146,6 +146,13 @@ with square trigger corners so the hover fill follows the flat row dividers.
 The disclosure spans the group's inner width; its trigger and content retain the
 group's horizontal inset, so text has padding inside the hover fill. No divider
 separates the trigger from its expanded content.
+Use `Accordion variant="popout"` to widen the open card and its panel body
+for reading or editing. The trigger stays aligned with the collapsed rows.
+The open card supplies the border between adjoining disclosure
+rows. Use it on its own or directly inside a row-layout SettingsGroup. In a
+SettingsGroup, leave space around the group for the card to extend into.
+Callers supply the panel body and decide whether it scrolls. For a bounded
+reading area, provide a keyboard focus target and place actions below it.
 Standalone triggers use the settings container shape and spacing; the chevron
 is decorative, and the entire row expands the content. `Select variant="preference"` uses the same
 label and compact choice control without adding a group container.
@@ -445,6 +452,7 @@ Sign in, Cancel, and Sign out at narrow widths with enlarged text.
 | Settings card/destination | Settings navigation, content column, contribution lifetime/error boundary | Content Header/grouping and controls; registration title is navigation metadata, not rendered content hierarchy |
 | Channel launcher or menu contribution | Placement, surrounding header/menu, target selection | The supported launcher/item only; preserve host action sizing and lifecycle |
 | Message/link/attachment renderer | Surrounding message and navigation contracts | Content inside that boundary; no duplicate author/actions or nested interactive target where the contract forbids it |
+| Notice (`ctx.notices`) | Placement in the toast stack on every page, the info ToastNotice, its buttons and Dismiss, and the plugin's name | The title, an optional description and up to three actions, and what each answer means; anything but an allow is a refusal |
 
 Source plugins can import the shared components directly. External plugins must
 use the actual supported author contract and exposed CSS roles; source paths are
@@ -530,15 +538,23 @@ Tab strips keep their own wider horizontal fade.
 
 Every sidebar heading row, including collapsible channel groups and Solo
 workspaces, is a `NavigationSectionHeading`. It is auto layout: the label fills
-and truncates, actions hug the trailing edge, and the row fills its list. Never
-position heading actions absolutely or reserve trailing padding for them; a
-row that must work at every sidebar width cannot depend on a fixed gap. Use
+and truncates, actions hug the trailing edge, and the row fills its list.
+Keep ordinary actions in flow. The passive metadata slot described below
+provides a reference for its overlay. Use
 `disclosure` when the label is the feature's own collapse trigger, and
 `revealActions` or `data-navigation-reveal` for quiet parts such as the chevron.
 Revealed parts show on hover, keyboard focus, an open heading menu or while
 one of them has focus, and always show on touch; a focused control is never
-invisible. Hidden actions take no width, like a hidden auto layout
-child, so a long label keeps its words at large text sizes and narrow widths. When a host already names a list, as
+invisible. Hidden actions take no width, so a long label keeps its words at
+large text sizes and narrow widths. A heading with an accessory keeps space
+for its quiet actions beside the accessory so all controls stay in place.
+When a heading has passive metadata, it defines a compact trailing hover
+target. Quiet controls appear on slot hover or whenever a control has focus.
+They can overlay an adjacent accessory. Without an accessory, the slot fits
+the full action strip and keeps it clear of the title. Touch keeps the actions
+and accessory side by side so each can be tapped. Metadata changes preserve
+the accessory and the native controls that appear in both layouts.
+When a host already names a list, as
 the sidebar's Team and Solo tabs do, omit its heading rather than hiding or
 overlaying it; any actions it still needs take a headingless heading row.
 Top-bar pills and picker options are not sidebar rows and keep their own recipes.
@@ -1516,6 +1532,11 @@ keeps only the fade.
 ToastProvider mounts one headless [Sonner](https://sonner.emilkowal.ski) Toaster
 in the host, portaled outside the app layout to the top right. Features and
 plugins use the shared Toast API, never their own Toaster or direct Sonner calls.
+Installed plugins reach the stack through `ctx.notices`
+([shell notices](../../../docs/plugin-architecture.md#shell-notices)): they
+supply the words and up to three actions, and the host draws them as an info
+ToastNotice that the person can always dismiss, with the plugin's name in
+`text-caption` below the words.
 Toast cards reuse `floating-surface`, including its `--shadow-panel` elevation; the
 scrollable viewport leaves room for the shadow and keyboard focus.
 Buzz owns the floating surface, semantic colors, type roles, Button and IconButton;
@@ -1538,12 +1559,15 @@ Sonner is the toast behavior owner; other matching controls use Base UI. ToastNo
 owns its state and recovery: unmounting the source removes its notification,
 without reporting user dismissal. Gate notices from hidden Settings sections
 explicitly; portals do not inherit a hidden ancestor. Keep form errors and
-blocked-page recovery inline. Relay connection recovery is the exception: it
+blocked-page recovery inline. Relay connection recovery is one exception: it
 retries on its own, so after a 30-second quiet delay it shows one buttonless
 notice in the toast stack on every page, and other surfaces do not repeat it.
-A community's refusal of the account is the other exception: it affects every
+A community's refusal of the account is another exception: it affects every
 page, so its one notice stays in the toast stack with the actions that
-fixes it, and pages it leaves empty only say why.
+fixes it, and pages it leaves empty only say why. A plugin's notice is the
+third: it asks the person about work that waits on their answer, wherever they
+are. It belongs to the plugin's request: the plugin takes it down when the
+request ends, and it closes when the plugin stops.
 Channel LiveStatus keeps failures that recovery does not retry in the
 conversation flow immediately above the composer, with bounded overflow, so Send
 and companion-panel controls remain usable. Its retry policy and diagnostics
@@ -1566,7 +1590,7 @@ height on non-Mac shells. Mac uses a 12px top inset and an 8px right inset. Inte
 chrome aligns the card with the room/content divider. On touch,
 notices form a bounded scrolling list. Trailing actions wrap below the message
 when their intrinsic width cannot fit beside it.
-F6 enters notifications, Tab reaches actions. Modals remain above the stack. Content updates do not restart expiry; timeout changes do.
+F6 enters notifications, Tab reaches actions. Modals remain above the stack. While a modal is open, F6 moves only through notices that set `reachableOverModal` (a plugin's notice with actions), then back into the modal. Tab past a notice's last control, or Shift+Tab out of it, also returns to the modal. Keyboard focus that returns to the modal shows its focus ring. If a notice covers that control or its ring, focus moves to the modal's first visible control that no notice covers. Content updates do not restart expiry; timeout changes do.
 
 Tabs with content use renderPanel, which lets Base UI connect each tab and panel.
 Route navigation uses NavigationItem with aria-current instead, except for the
