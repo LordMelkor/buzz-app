@@ -4,6 +4,7 @@ import {
   fakeSpawn as fakeGoose,
   flush,
 } from "../../../bundled/goose/goose-testing";
+import { checkReplyChunking } from "../../../../tests/reply-chunking";
 import { GOOSE } from "../../../bundled/goose/goose";
 import { AgentProcess } from "../../../bundled/goose/sessions";
 import type {
@@ -256,27 +257,17 @@ describe("starting a harness", () => {
     });
   });
 
-  it("delivers complete stdout replies in order and holds the unfinished reply", async () => {
-    const harness = fakeHarness();
-    const acp = await start(harness);
-    const delivered: unknown[] = [];
-    const replies = [1, 2, 3].map(() =>
-      acp.request("example", {}).then((answer) => delivered.push(answer)),
-    );
-    const lines = harness
-      .sent("example")
-      .map(({ id }, index) =>
-        JSON.stringify({ jsonrpc: "2.0", id, result: index + 1 }),
-      );
-    const stdout = harness.started[0]?.options.onStdout;
-    stdout?.(" \r\n" + lines[0]?.slice(0, 5));
-    stdout?.(lines[0]?.slice(5) + "\r");
-    stdout?.("\n  " + lines[1] + " \n\n" + lines[2]);
-    await Promise.all(replies.slice(0, 2));
-    expect(delivered).toEqual([1, 2]);
-    stdout?.("\n");
-    await Promise.all(replies);
-    expect(delivered).toEqual([1, 2, 3]);
+  it("delivers the same ACP replies at every stdout split", async () => {
+    await checkReplyChunking(async () => {
+      const harness = fakeHarness({ silent: ["example"] });
+      const acp = await start(harness);
+      const replies = [1, 2, 3].map(() => acp.request("example", {}));
+      return {
+        replies,
+        ids: harness.sent("example").map((request) => request.id),
+        stdout: (data) => harness.started[0]?.options.onStdout?.(data),
+      };
+    });
   });
 
   it("refuses a harness that cannot take Buzz tools over HTTP MCP", async () => {

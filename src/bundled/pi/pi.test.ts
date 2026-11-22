@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { checkReplyChunking } from "../../../tests/reply-chunking";
 import { AGENT_KEY } from "../../features/agents/membership";
 import hostSource from "./host.mjs?raw";
 import manifest from "./manifest.json";
@@ -101,6 +102,29 @@ it("reads messages split across chunks, and several in one", async () => {
     conversation: 1,
     type: "step",
     tool: "bash",
+  });
+});
+
+it("delivers the same Pi replies at every stdout split", async () => {
+  await checkReplyChunking(async () => {
+    const written = deferred();
+    const hold = deferred();
+    const host = fakeHost({
+      example: ({ sequence }) => {
+        if (sequence === 3) written.resolve();
+        return hold.promise;
+      },
+    });
+    const pi = new Pi(() => host.spawn, handlers());
+    const replies = [1, 2, 3].map((sequence) =>
+      pi.request("example", { sequence }),
+    );
+    await written.promise;
+    return {
+      replies,
+      ids: host.requests("example").map((request) => request.id),
+      stdout: (data) => host.processes[0]?.options.onStdout?.(data),
+    };
   });
 });
 
