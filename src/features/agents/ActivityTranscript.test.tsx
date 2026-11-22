@@ -418,17 +418,22 @@ it("shows no time for an entry with a zero, non-finite or invalid time", () => {
 });
 
 it.each([
-  ["ended", 2000, undefined, "Completed"],
-  ["working", undefined, undefined, "Working"],
-  ["ended", 2000, "Command failed", "Failed"],
-  ["unknown", undefined, undefined, "Status unknown"],
+  ["ended", 2000, undefined, undefined, "Completed"],
+  ["working", undefined, undefined, undefined, "Working"],
+  ["working", undefined, "ended", undefined, "Completed"],
+  ["working", undefined, "error", undefined, "Failed"],
+  ["working", undefined, "stopped", undefined, "Stopped"],
+  ["working", undefined, "unknown", undefined, "Status unknown"],
+  ["ended", 2000, undefined, "Command failed", "Failed"],
+  ["unknown", undefined, undefined, undefined, "Status unknown"],
 ] as const)(
-  "shows only the turn status for %s/%s/%s",
-  (state, endedAt, error, label) => {
+  "shows only the turn status for %s/%s/%s/%s",
+  (state, endedAt, outcome, error, label) => {
     const turn = {
       turnId: "status",
       startedAt: 1000,
       endedAt,
+      outcome,
       error,
       channelId: "channel",
       threadRootId: "a".repeat(64),
@@ -444,10 +449,11 @@ it.each([
         state={() => state}
       />,
     );
-    if (state === "working") {
+    if (label === "Working") {
       expect(container.querySelector("header")).toBeNull();
       expect(screen.getAllByText("Working")).toHaveLength(1);
     } else {
+      expect(screen.queryByText("Working")).not.toBeInTheDocument();
       expect(container.querySelector("header")).toHaveTextContent(label);
       expect(container.querySelector("header time") !== null).toBe(!!endedAt);
     }
