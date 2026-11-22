@@ -46,6 +46,7 @@ import { SidebarRowRenderer } from "../../features/channel-navigation/SidebarRow
 import { TeamRowChannelGroup } from "../../features/channel-navigation/RegionChannelGroup";
 import { ContributionBoundary } from "../../features/conversation/ContributionBoundary";
 import {
+  pluginRowSectionKey,
   sidebarRow,
   type RegisteredSidebarRows,
 } from "../../features/channel-navigation/sidebar-rows-service";
@@ -506,12 +507,7 @@ function ContributedChannelRow({
   );
   const unread = useSyncExternalStore(subscribe, snapshot, snapshot);
   const live = useLiveChannelSummary(session.channels, channel);
-  const pluginSection =
-    channel.channelType === "solo"
-      ? sectionKey.startsWith("group:")
-        ? sectionKey.slice(6)
-        : ""
-      : sectionKey;
+  const pluginSection = pluginRowSectionKey(channel, sectionKey);
   const row = useMemo(
     () => sidebarRow(live, pluginSection, unread),
     [live, pluginSection, unread],

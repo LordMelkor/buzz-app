@@ -405,13 +405,20 @@ export async function admittedApiRequest(
     body: unknown,
     status: number,
   ) => string | Pick<ApiFailure, "error" | "code"> | undefined,
+  migrationWrite = false,
 ): Promise<Response> {
   return lane.run(
     async () => {
       const response = await request();
       if (response.ok) return response;
       const failure = await readApiFailure(response, reason);
-      if (failure.quota === "api" && failure.retryAfterMs !== undefined)
+      // The relay adds Retry-After to the migration budget's refusals. The
+      // shared API quota response has no such header, even for a tagged write.
+      if (
+        failure.quota === "api" &&
+        failure.retryAfterMs !== undefined &&
+        !(migrationWrite && response.headers.has("retry-after"))
+      )
         lane.pause(failure.retryAfterMs);
       const headers = new Headers(response.headers);
       headers.delete("content-length");

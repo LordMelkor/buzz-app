@@ -55,6 +55,11 @@ export function apply(ctx: Context) {
   const seen: Seen | undefined = ctx.reflect.get("seen");
   const key = "example.plugin/welcome";
   if (seen?.has(key) === false) seen.mark(key);
+  const relaySession = ctx.relay.snapshot().session;
+  if (relaySession.supportsMigrationWrites === true) {
+    void relaySession.channelCreation.create({ name: "Imported", visibility: "private", migration: "example-import" });
+    void relaySession.memberAdditions.add("channel", "person", { migration: "example-import" });
+  }
   const sharingPolicy: GeneralAccessPolicy = { subject: "record", allowPublic: false, visibilityDescription: () => "Record access changes." };
   const general: ChannelGeneralAccessProps = { capability: ctx.relay.snapshot().session.channelDetails, channelId: "record", policy: sharingPolicy };
   const picker: ChannelMembersDialogProps = { session: ctx.relay.snapshot().session, channelId: "record", trigger: { current: null }, close() {},

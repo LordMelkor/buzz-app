@@ -81,6 +81,25 @@ Agent tool names match `/^[a-z][a-z0-9_]{0,63}$/` and are unique across plugins;
 
 For `ctx.agents.ui.Transcript`, give each turn a unique `turnId` that stays the same across reads. Return a new turn when it changes. Leave previously returned turns and their items untouched.
 
+## Migration writes
+
+Check `ctx.relay.snapshot().session.supportsMigrationWrites === true` before
+starting an import that needs migration labels. Older hosts omit this property.
+The property confirms that the host signs the label. Relay support for throttling
+depends on the connected community.
+
+Pass `migration: "example-import"` in `session.channelCreation.create(input)`
+and in `session.memberAdditions.add(channelId, pubkey, options)`. The host signs
+`["migration", source]` on channel creation (kind 9007) and membership additions
+(kind 9000). The source must be a nonempty string. The tag classifies workload.
+The normal access checks still apply.
+
+The host batches membership additions by source. A migration batch that fails
+delivery stops and reports the error. If a successful batch only adds some of
+its members, the host keeps the source on individual additions for the rest.
+Both calls report relay migration throttling with an error that starts with
+`rate-limited:`. Pause the import before issuing another write when you see it.
+
 ## Host access (`manifest.host`)
 
 Declare in `manifest.json` the commands, processes, network origins and files your plugin uses, then add `"host"` to `inject`. The host's own APIs only do what's declared, so this is how they get wired up. It isn't a security boundary: plugin code runs in the app and can reach past it.

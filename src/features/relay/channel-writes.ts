@@ -11,6 +11,7 @@ import {
   soloAgentOwnership,
 } from "./solo-admins";
 import { isBatchAddition } from "../channel-members/members";
+import { isMigrationSource } from "./migration";
 import { withdraw } from "./withdraw";
 import type { ChannelQueries, ChannelSummary } from "./contracts";
 import type { RelayReader } from "./reader";
@@ -701,10 +702,14 @@ export function createChannelWrites(
         labels?: readonly string[] | undefined;
         /** NIP-CL system channel: left out of reads that do not name it. */
         system?: boolean | undefined;
+        migration?: string | undefined;
       }> = {},
     ) {
       writer();
       identifier(id);
+      const { migration } = options;
+      if (migration !== undefined && !isMigrationSource(migration))
+        throw new Error("Use a nonempty migration source.");
       const labelTags = channelLabelTags(options.labels ?? []);
       const name = canonicalDetailsName(title);
       const about = description?.trim();
@@ -733,6 +738,7 @@ export function createChannelWrites(
             ...(about ? [["about", about]] : []),
             ...(ttlSeconds ? [["ttl", String(ttlSeconds)]] : []),
             ...labelTags,
+            ...(migration ? [["migration", migration]] : []),
           ],
         },
         undefined,
