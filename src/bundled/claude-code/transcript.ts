@@ -506,12 +506,14 @@ export async function readLatestTurns(
   const size = await sizeOf(spawn, path, signal);
   const { from, text } = await readTail(spawn, path, signal, size);
   const tooLarge = () => {
+    if (!working) return undefined;
     const last = oversized.get(path);
     if (last !== undefined && Date.now() - last < OVERSIZED_READ_MS) return [];
     oversized.set(path, Date.now());
     return undefined;
   };
   if (text === undefined) return tooLarge();
+  const boundary = from && !working ? { uncertain: false } : undefined;
   const turns = claudeTurns(
     text,
     {
@@ -521,7 +523,9 @@ export async function readLatestTurns(
     },
     working,
     nameOf,
+    boundary,
   );
+  if (boundary?.uncertain) return undefined;
   const first = turns[0];
   const whole = turns.filter((turn) => !turn.partial);
   if (

@@ -23,8 +23,11 @@ import {
 } from "react";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { TranscriptFocus } from "../../features/agents/ActivityTranscript";
-import type { ClaudeTranscript } from "./transcript";
-import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
+import { type ClaudeTranscript, TURN_LIMIT } from "./transcript";
+import {
+  TranscriptPanel,
+  withLatest,
+} from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
@@ -997,7 +1000,11 @@ export function createTabs({
     working: boolean;
   }) {
     const workspace = readConfig(agent.config).workspace;
-    const input = JSON.stringify([workspace, conversation.sessionId]);
+    const input = JSON.stringify([
+      agent.key,
+      workspace,
+      conversation.sessionId,
+    ]);
     const focus = useContext(TranscriptFocus);
     const [history, setHistory] = useState({
       input,
@@ -1005,7 +1012,12 @@ export function createTabs({
       attempt: focus ? 1 : 0,
       loading: false,
     });
-    const fullHistory = useRef<{ input: string; loaded: boolean }>(undefined);
+    const again = JSON.stringify([input, history.attempt]);
+    const fullHistory = useRef<{
+      input: string;
+      loaded: boolean;
+      live?: { again: string; result: ClaudeTranscript } | undefined;
+    }>(undefined);
     if (history.input !== input) {
       setHistory({ input, focus, attempt: focus ? 1 : 0, loading: false });
     } else if (
@@ -1026,16 +1038,81 @@ export function createTabs({
             },
       );
     const requireFullHistory = () => {
-      if (fullHistory.current?.input !== input)
-        fullHistory.current = { input, loaded: false };
+      const prior = fullHistory.current;
+      fullHistory.current = {
+        input,
+        loaded: prior?.input === input && prior.loaded,
+      };
     };
+    async function latest(
+      signal: AbortSignal,
+      held: ClaudeTranscript["turns"],
+    ) {
+      const intent = fullHistory.current;
+      let turns: ClaudeTranscript["turns"] | undefined;
+      try {
+        turns = await runtime.latestTurns(
+          conversation,
+          workspace,
+          working,
+          signal,
+          held,
+        );
+      } catch (error) {
+        if (!signal.aborted && intent) intent.live = undefined;
+        throw error;
+      }
+      signal.throwIfAborted();
+      if (turns && !turns.length) return turns;
+      const from = held.findIndex((turn) => turn.turnId === turns?.[0]?.turnId);
+      if (
+        !turns ||
+        from < 0 ||
+        (intent?.loaded && from + turns.length > TURN_LIMIT) ||
+        (!working && from + turns.length !== held.length) ||
+        held
+          .slice(from)
+          .some(
+            (turn, i) =>
+              turn.turnId !== turns[i]?.turnId ||
+              turn.startedAt !== turns[i]?.startedAt,
+          ) ||
+        turns.some(
+          (turn, i) =>
+            turn.startedAt <
+            ((turns[i - 1] ?? held[from - 1])?.startedAt ?? -Infinity),
+        )
+      ) {
+        if (fullHistory.current?.input !== input) requireFullHistory();
+        if (intent) intent.live = undefined;
+        return undefined;
+      }
+      if (intent?.live) {
+        const result = withLatest(intent.live.result, turns);
+        intent.live = result ? { again, result } : undefined;
+      }
+      return turns;
+    }
     return (
       <TranscriptPanel<ClaudeTranscript & { partial?: true }>
         agent={agent}
         onRefreshRequested={requireFullHistory}
         read={async (signal) => {
           const args = [conversation, workspace, working, signal] as const;
+          const intent = fullHistory.current;
+          const prior = intent?.live;
+          if (intent) intent.live = undefined;
           try {
+            if (!working && prior?.again === again) {
+              const turns = await latest(signal, prior.result.turns).catch(
+                () => undefined,
+              );
+              signal.throwIfAborted();
+              if (turns?.at(-1)?.endedAt !== undefined) {
+                const result = withLatest(prior.result, turns);
+                if (result) return result;
+              }
+            }
             if (!history.attempt && fullHistory.current?.input !== input) {
               const preview = await runtime.transcriptPreview(...args);
               signal.throwIfAborted();
@@ -1043,7 +1120,16 @@ export function createTabs({
             }
             const result = await runtime.transcript(...args);
             signal.throwIfAborted();
-            fullHistory.current = { input, loaded: Boolean(result) };
+            if (fullHistory.current === intent) {
+              fullHistory.current = {
+                input,
+                loaded: Boolean(result),
+                live:
+                  working && result && !result.incomplete
+                    ? { again, result }
+                    : undefined,
+              };
+            }
             return result;
           } finally {
             if (history.loading && !signal.aborted) {
@@ -1053,27 +1139,9 @@ export function createTabs({
             }
           }
         }}
-        readLatest={async (signal, held) => {
-          const turns = await runtime.latestTurns(
-            conversation,
-            workspace,
-            working,
-            signal,
-            held,
-          );
-          signal.throwIfAborted();
-          if (turns && !turns.length) return turns;
-          const from = held.findIndex(
-            (turn) => turn.turnId === turns?.[0]?.turnId,
-          );
-          if (!turns || from < 0) {
-            requireFullHistory();
-            return undefined;
-          }
-          return turns;
-        }}
+        readLatest={latest}
         readKey={`${conversation.key}\u0000${workspace}`}
-        readAgain={JSON.stringify([input, history.attempt])}
+        readAgain={again}
         working={working}
         reading="Reading the Claude session…"
         failed="Could not read the Claude session"

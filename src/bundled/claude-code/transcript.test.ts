@@ -600,7 +600,7 @@ it.each(["queued steer", "user steer"] as const)(
 );
 
 it.each(["discarded", "retained"] as const)(
-  "handles an orphan result in the %s turn without inventing a tool",
+  "handles a clipped tool result in the %s turn on preview, poll and stop",
   async (location) => {
     const clippedResult = [
       { type: "tool_result", tool_use_id: "earlier-tool", content: "result" },
@@ -627,17 +627,25 @@ it.each(["discarded", "retained"] as const)(
       false,
       signal,
     );
-    if (location === "retained") expect(preview).toBeUndefined();
-    else
-      expect(preview?.turns).toMatchObject([
-        {
-          partial: false,
-          items: [
-            { type: "prompt", text: "visible complete prompt" },
-            { type: "message", text: "visible reply" },
-          ],
-        },
-      ]);
+    const visibleTurns = [
+      {
+        partial: false,
+        items: [
+          { type: "prompt", text: "visible complete prompt" },
+          { type: "message", text: "visible reply" },
+        ],
+      },
+    ];
+    const latest = (working: boolean) =>
+      runtime.latestTurns(conversation, "~/.buzz", working, signal, []);
+    await expect(latest(true)).resolves.toMatchObject(visibleTurns);
+    if (location === "retained") {
+      expect(preview).toBeUndefined();
+      await expect(latest(false)).resolves.toBeUndefined();
+    } else {
+      expect(preview?.turns).toMatchObject(visibleTurns);
+      await expect(latest(false)).resolves.toMatchObject(visibleTurns);
+    }
   },
 );
 
@@ -1348,30 +1356,44 @@ it("requests a full read when a clipped turn contains a delivered steer", async 
 
 it("reads a turn larger than the chunk in full only every 30 s, keeping what is shown between", async () => {
   clock = 0;
-  const { spawn } = host({
-    "./-Users-me--buzz/session-1.jsonl": [
-      line("user", prompt("only")),
-      line("assistant", [{ type: "text", text: "x".repeat(3 << 20) }]),
-      line("assistant", [{ type: "text", text: "done" }]),
-    ].join("\n"),
-  });
-  const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
-  const latest = () =>
-    readLatestTurns(
+  const files = { [savedPath]: line("user", prompt("only")) };
+  const { spawn, home } = host(files);
+  const signal = new AbortController().signal;
+  const append = (content: string) => {
+    files[savedPath] +=
+      `\n${line("assistant", [{ type: "text", text: content }])}`;
+    writeFileSync(join(home, ".claude/projects", savedPath), files[savedPath]);
+  };
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_000_000);
+  const latest = (working = true) =>
+    readLatestTurns(spawn, "~/.buzz", conversation, working, signal);
+  try {
+    expect((await latest())?.[0]?.turnId).toBe("u1");
+    append("x".repeat(3 << 20));
+    await expect(latest()).resolves.toBeUndefined();
+    vi.setSystemTime(1_000_000 + OVERSIZED_READ_MS - 1);
+    await expect(latest()).resolves.toEqual([]);
+    vi.setSystemTime(1_000_000 + OVERSIZED_READ_MS);
+    await expect(latest()).resolves.toBeUndefined();
+    await expect(latest()).resolves.toEqual([]);
+    append("final reply");
+    await expect(latest(false)).resolves.toBeUndefined();
+    const stopped = await readTranscript(
       spawn,
       "~/.buzz",
       conversation,
-      true,
-      new AbortController().signal,
+      false,
+      signal,
     );
-  // Undefined reads it in full; none keeps what is shown.
-  await expect(latest()).resolves.toBeUndefined();
-  now.mockReturnValue(1_000_000 + OVERSIZED_READ_MS - 1);
-  await expect(latest()).resolves.toEqual([]);
-  now.mockReturnValue(1_000_000 + OVERSIZED_READ_MS);
-  await expect(latest()).resolves.toBeUndefined();
-  await expect(latest()).resolves.toEqual([]);
-  now.mockRestore();
+    expect(stopped?.turns).toHaveLength(1);
+    expect(stopped?.turns[0]?.endedAt).toBe(3000);
+    expect(stopped?.turns[0]?.items.at(-1)).toMatchObject({
+      text: "final reply",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("shows a session's prompt once over the latest turns it swaps in", async () => {

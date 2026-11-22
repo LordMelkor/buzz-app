@@ -508,6 +508,13 @@ const sessionPrompt = (text: string, event = text) =>
       content: `<buzz-event>\n${JSON.stringify({ id: event, content: text })}\n</buzz-event>`,
     },
   });
+const sessionReply = (text: string) =>
+  JSON.stringify({
+    uuid: `reply: ${text.slice(0, 40)}`,
+    type: "assistant",
+    timestamp: "2026-10-09T10:01:00Z",
+    message: { content: [{ type: "text", text }] },
+  });
 
 function longTranscript() {
   localStorage.setItem(
@@ -579,21 +586,27 @@ function longTranscript() {
 }
 
 it("keeps an untouched tail on working changes until earlier activity is requested", async () => {
-  const { Activity, path, gap, startCompaction } = longTranscript();
+  const { Activity, path, gap, fileReads, startCompaction } = longTranscript();
   render(<Activity agent={agent()} save={vi.fn()} />);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /^View transcript/ }));
   const summary = { selector: "summary span" };
   await screen.findByText("newest", summary);
+  const before = fileReads().length;
   appendFileSync(path, `\n${gap}\n${sessionPrompt("while working")}`);
   const finish = startCompaction();
-  await screen.findByText("while working", summary);
-  expect(screen.queryByText("earlier", summary)).toBeNull();
-  appendFileSync(path, `\n${sessionPrompt("after working")}`);
-  await act(finish);
+  try {
+    await screen.findByText("while working", summary);
+    expect(screen.queryByText("earlier", summary)).toBeNull();
+    expect(fileReads().slice(before)).toEqual(["read-page"]);
+    appendFileSync(path, `\n${sessionPrompt("after working")}`);
+  } finally {
+    await act(finish);
+  }
   await screen.findByText("after working", summary);
   expect(screen.queryByText("earlier", summary)).toBeNull();
   expect(screen.getByText("Earlier activity is not loaded.")).toBeVisible();
+  expect(fileReads().slice(before)).toEqual(["read-page", "read-page"]);
   const load = screen.getByRole("button", { name: /load earlier activity/i });
   chmodSync(path, 0);
   await user.click(load);
@@ -608,7 +621,7 @@ it("keeps an untouched tail on working changes until earlier activity is request
 });
 
 it("loads the missing history when a working session grows past the held tail", async () => {
-  const { Activity, path, gap, startCompaction } = longTranscript();
+  const { Activity, path, gap, fileReads, startCompaction } = longTranscript();
   render(<Activity agent={agent()} save={vi.fn()} />);
   await userEvent.click(
     screen.getByRole("button", { name: /^View transcript/ }),
@@ -621,6 +634,15 @@ it("loads the missing history when a working session grows past the held tail", 
     await vi.waitFor(() =>
       screen.getByText("while working", { selector: "summary span" }),
     );
+    const before = fileReads().length;
+    chmodSync(path, 0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_READ_MS);
+    });
+    await vi.waitFor(() => expect(screen.getByRole("alert")).toBeVisible());
+    expect(screen.getByText(partialHistory)).toBeVisible();
+    expect(fileReads().slice(before)).not.toContain("read");
+    chmodSync(path, 0o600);
     appendFileSync(path, `\n${gap}\n${sessionPrompt("after the gap")}`);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(LIVE_READ_MS);
@@ -667,6 +689,141 @@ async function expectFullPreviewHistory(first = "earlier") {
   expect(screen.getByText("newest", transcriptSummary)).toBeVisible();
   expect(screen.queryByText(partialHistory)).toBeNull();
 }
+
+function expectTurnStatus(item: HTMLElement, status: string) {
+  const turn = item.closest("article");
+  if (!turn) throw new Error("Missing transcript turn");
+  expect(within(turn).getByText(status)).toBeVisible();
+}
+
+async function openFortyNineTurnTranscript() {
+  const fixture = await openLongTranscript();
+  const { load, path, gap, summary } = fixture;
+  const older = Array.from({ length: 48 }, (_, i) =>
+    sessionPrompt(`older turn ${i + 1}`),
+  );
+  writeFileSync(path, [...older, gap, sessionPrompt("newest")].join("\n"));
+  await userEvent.click(load);
+  expect(await summary("older turn 1")).toBeVisible();
+  return fixture;
+}
+
+it("keeps all 50 held turns when stopping with a two-turn tail", async () => {
+  const { path, startCompaction, fileReads, summary } =
+    await openFortyNineTurnTranscript();
+  const before = fileReads().length;
+  appendFileSync(path, `\n${sessionPrompt("new request")}`);
+  const finish = startCompaction();
+  try {
+    expectTurnStatus(await summary("new request"), "Working");
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+    expect(fileReads().slice(before)).toEqual(["read"]);
+    appendFileSync(path, `\n${sessionReply("final reply")}`);
+  } finally {
+    await act(finish);
+  }
+  expectTurnStatus(await summary("final reply"), "Completed");
+  await expectFullPreviewHistory("older turn 1");
+  expect(screen.getAllByRole("article")).toHaveLength(50);
+  expect(fileReads().slice(before)).toEqual(["read", "read-page"]);
+});
+
+it("reads canonical history when a 51st turn first appears at stop", async () => {
+  const { path, startCompaction, fileReads, summary } =
+    await openFortyNineTurnTranscript();
+  const before = fileReads().length;
+  const latestWindow = "Showing the latest 50 turns.";
+  appendFileSync(path, `\n${sessionPrompt("working request")}`);
+  const finish = startCompaction();
+  try {
+    expectTurnStatus(await summary("working request"), "Working");
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+    expect(screen.queryByText(latestWindow)).toBeNull();
+    appendFileSync(
+      path,
+      `\n${sessionPrompt("request at stop")}\n${sessionReply("reply to the new request")}`,
+    );
+  } finally {
+    await act(finish);
+  }
+  expectTurnStatus(await summary("reply to the new request"), "Completed");
+  await expectFullPreviewHistory("older turn 2");
+  expect(screen.getByText("working request", transcriptSummary)).toBeVisible();
+  expect(screen.getByText("request at stop", transcriptSummary)).toBeVisible();
+  expect(screen.queryByText("older turn 1", transcriptSummary)).toBeNull();
+  expect(screen.getAllByRole("article")).toHaveLength(50);
+  expect(screen.getByText(latestWindow)).toBeVisible();
+  expect(fileReads().slice(before)).toEqual(["read", "read-page", "read"]);
+});
+
+it("reads the final reply when an oversized turn stops", async () => {
+  const { load, path, startCompaction, summary } = await openLongTranscript();
+  await userEvent.click(load);
+  await expectFullPreviewHistory();
+  appendFileSync(
+    path,
+    `\n${sessionReply(`Long output\n${"x".repeat(3 << 20)}`)}\n${sessionReply("draft reply")}`,
+  );
+  const finish = startCompaction();
+  try {
+    expect(await summary("draft reply")).toBeVisible();
+    appendFileSync(path, `\n${sessionReply("final oversized reply")}`);
+  } finally {
+    await act(finish);
+  }
+  expectTurnStatus(await summary("final oversized reply"), "Completed");
+  await expectFullPreviewHistory();
+});
+
+it("reads corrected earlier history when work stops with Refresh queued behind a poll", async () => {
+  const {
+    load,
+    path,
+    gap,
+    startCompaction,
+    fileReads,
+    holdNextFileProcess,
+    summary,
+  } = await openLongTranscript();
+  await userEvent.click(load);
+  await expectFullPreviewHistory();
+  const before = fileReads().length;
+  appendFileSync(path, `\n${sessionPrompt("working request")}`);
+  const poll = holdNextFileProcess("read-page");
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const finish = startCompaction();
+  try {
+    await vi.waitFor(() =>
+      screen.getByText("working request", transcriptSummary),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_READ_MS);
+    });
+    await poll.started;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh transcript" }));
+    writeFileSync(
+      path,
+      [
+        sessionPrompt("corrected earlier", earlierEvent),
+        gap,
+        sessionPrompt("newest"),
+        sessionPrompt("working request"),
+        sessionReply("reply at stop"),
+      ].join("\n"),
+    );
+  } finally {
+    vi.useRealTimers();
+    try {
+      await act(finish);
+    } finally {
+      await act(async () => poll.release());
+    }
+  }
+  expect(await summary("reply at stop")).toBeVisible();
+  await expectFullPreviewHistory("corrected earlier");
+  expect(screen.queryByText("earlier", transcriptSummary)).toBeNull();
+  expect(fileReads().slice(before)).toEqual(["read", "read-page", "read"]);
+});
 
 it.each(["Refresh transcript", "Load earlier activity"])(
   "keeps the preview visible while %s loads full history",
@@ -852,7 +1009,8 @@ it("retries each focused opening once after Load earlier fails", async () => {
 });
 
 it("retries a missing transcript on focus and reuses successfully loaded history", async () => {
-  const { Activity, path, fileReads } = longTranscript();
+  const { Activity, path, fileReads, startCompaction, holdNextFileProcess } =
+    longTranscript();
   const focus = {
     events: [earlierEvent],
     inputs: readerInputs(),
@@ -870,8 +1028,23 @@ it("retries a missing transcript on focus and reuses successfully loaded history
   const load = await screen.findByRole("button", {
     name: /load earlier activity/i,
   });
-  rmSync(path);
   await userEvent.click(load);
+  await expectFullPreviewHistory();
+  appendFileSync(path, `\n${sessionPrompt("working request")}`);
+  const finish = startCompaction();
+  expectTurnStatus(
+    await screen.findByText("working request", transcriptSummary),
+    "Working",
+  );
+  appendFileSync(path, `\n${sessionPrompt("new turn at stop")}`);
+  const tail = holdNextFileProcess("read-page");
+  await act(finish);
+  try {
+    await tail.started;
+    rmSync(path);
+  } finally {
+    await act(async () => tail.release());
+  }
   await screen.findByText(/no transcript for this conversation/);
   writeFileSync(path, sessionPrompt("restored", earlierEvent));
   Element.prototype.scrollIntoView = () => {};
