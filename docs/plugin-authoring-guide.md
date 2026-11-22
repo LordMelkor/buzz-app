@@ -390,7 +390,8 @@ harnesses use: the Refresh header, live refreshes while `working` is true
 file diffs, prompt sections and context use. A turn that is over carries
 `endedAt`, or `outcome` (`ended`, `stopped`, `error` or `unknown`) when its end
 time is not known. While `working` is true the view draws a turn that has
-neither as working. The plugin still owns its
+neither as working. Use `at: 0` when an item's timestamp is unknown. For a
+tool with an unknown start time, omit `completedAt`. The plugin still owns its
 conversation list and marks its own sent-message items with `posted: true` and
 `messageId`. Derive its props from `@buzz/author` with
 `ComponentProps<NonNullable<Agents["ui"]>["Transcript"]>`.
