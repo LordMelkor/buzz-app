@@ -821,8 +821,15 @@ it("keeps the session divider and prompt when a working turn shifts the 50-turn 
   await sessionPrompts(localStore(), "claude-code", agent().key).save("kept", [
     { label: "Instructions", text: "Saved session instructions" },
   ]);
-  const { load, path, gap, fileReads, startCompaction, summary } =
-    await openLongTranscript();
+  const {
+    load,
+    path,
+    gap,
+    fileReads,
+    holdNextFileProcess,
+    startCompaction,
+    summary,
+  } = await openLongTranscript();
   const older = Array.from({ length: 50 }, (_, i) =>
     sessionPrompt(`turn ${i}`),
   );
@@ -831,8 +838,11 @@ it("keeps the session divider and prompt when a working turn shifts the 50-turn 
   await summary("turn 1");
   const before = fileReads().length;
   appendFileSync(path, `\n${sessionPrompt("during")}`);
+  const page = holdNextFileProcess("read-page");
   const finish = startCompaction();
   try {
+    await page.started;
+    await act(async () => page.release());
     await summary("during");
     appendFileSync(path, `\n${sessionPrompt("finished")}`);
   } finally {
