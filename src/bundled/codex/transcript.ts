@@ -592,6 +592,77 @@ async function hasShownPrefix(
   return false;
 }
 
+function windowRange(from: number, end: number, append = false) {
+  const align = !append && from > 0;
+  return { from, start: align ? from - 1 : from, end, align };
+}
+
+export function planRollout(
+  known: Rollout | undefined,
+  oldest: string,
+  file: Rollout["file"],
+) {
+  const { size } = file;
+  let held: RecordedWindow | undefined;
+  if (
+    known?.oldest === oldest &&
+    known.file.id === file.id &&
+    (size > known.file.size ||
+      (size === known.file.size && file.modified === known.file.modified))
+  ) {
+    if (known.content === "over-limit")
+      return { kind: "held", content: known.content } as const;
+    if (size - known.content.from <= READ_LIMIT) held = known.content;
+  }
+  if (held && size === held.bytes)
+    return { kind: "held", content: held } as const;
+  if (size === 0) return { kind: "empty" } as const;
+  const from = held?.bytes ?? (size <= READ_LIMIT ? 0 : size - TAIL_BYTES);
+  const range = windowRange(from, size, Boolean(held));
+  return { kind: "read", range, held } as const;
+}
+
+type Prefix = {
+  limit?: boolean;
+  cut?: boolean;
+  first?: "earlier" | "shown" | null;
+};
+
+/** Probe the maximum cut before the initial cut. Keep the first record classification across probes. */
+export function afterWindow(
+  range: ReturnType<typeof windowRange>,
+  held: RecordedWindow | undefined,
+  read: Awaited<ReturnType<typeof readWindow>>,
+  shown: Set<string>,
+  prefix: Prefix = {},
+) {
+  const { from, end: size } = range;
+  const limitStart = size - READ_LIMIT;
+  if (!held && from > 0 && from !== limitStart) {
+    const first =
+      prefix.first !== undefined
+        ? prefix.first
+        : (firstTurn(read.lines, shown) ??
+          firstTurn(read.trailing, shown) ??
+          null);
+    if (first !== "earlier") {
+      const probe = (at: "limit" | "cut", end: number) =>
+        ({ kind: "probe", at, end, first }) as const;
+      if (prefix.limit === undefined) return probe("limit", limitStart);
+      if (prefix.limit) return { kind: "limit", cache: "over-limit" } as const;
+      if (first && prefix.cut === undefined) return probe("cut", from);
+      if (!first || prefix.cut)
+        return { kind: "widen", range: windowRange(limitStart, size) } as const;
+    }
+  }
+  const lines = held ? held.lines.concat(read.lines) : read.lines;
+  const cache =
+    read.bytes !== undefined && lines.length <= CACHE_RECORDS
+      ? { from: held?.from ?? from, bytes: read.bytes, lines }
+      : undefined;
+  return { kind: "accept", lines: lines.concat(read.trailing), cache } as const;
+}
+
 async function rollout(
   spawn: Spawn,
   directory: string,
@@ -601,68 +672,50 @@ async function rollout(
 ) {
   const oldest = turns[0]?.turnId;
   if (!oldest) return [];
-  const file = await rolloutStat(spawn, directory, path, signal);
-  const { size } = file;
+  const source = [spawn, directory, path, signal] as const;
+  const file = await rolloutStat(...source);
   const known = rollouts.get(path);
   const tooLarge = () =>
     new Error(`The turns shown take more than 50 MB of ${path}`);
-  let held: RecordedWindow | undefined;
-  if (
-    known?.oldest === oldest &&
-    known.file.id === file.id &&
-    (size > known.file.size ||
-      (size === known.file.size && file.modified === known.file.modified))
-  ) {
-    known.file = file;
-    if (known.content === "over-limit") throw tooLarge();
-    if (size - known.content.from <= READ_LIMIT) held = known.content;
+  const plan = planRollout(known, oldest, file);
+  if (plan.kind === "held") {
+    rollouts.set(path, { oldest, file, content: plan.content });
+    if (plan.content === "over-limit") throw tooLarge();
+    return plan.content.lines;
   }
-  if (held && size === held.bytes) return held.lines;
   rollouts.delete(path);
-  if (size === 0) return [];
+  if (plan.kind === "empty") return [];
 
   const remember = (content: Rollout["content"]) => {
     rollouts.set(path, { oldest, file, content });
     for (const old of rollouts.keys())
       if (rollouts.size > 2) rollouts.delete(old);
   };
-  let from = held?.bytes ?? (size <= READ_LIMIT ? 0 : size - TAIL_BYTES);
-  const readAt = (start: number) =>
-    readWindow(
-      spawn,
-      directory,
-      path,
-      signal,
-      !held && start > 0 ? start - 1 : start,
-      size,
-      !held && start > 0,
-    );
-  let read = await readAt(from);
-  if (!held && from > 0) {
-    const shown = new Set(turns.map((turn) => turn.turnId));
-    const first =
-      firstTurn(read.lines, shown) ?? firstTurn(read.trailing, shown);
-    if (first !== "earlier") {
-      const limitStart = size - READ_LIMIT;
-      if (
-        await hasShownPrefix(spawn, directory, path, signal, limitStart, shown)
-      ) {
-        remember("over-limit");
+  let range = plan.range;
+  const readAt = ({ start, end, align }: typeof range) =>
+    readWindow(...source, start, end, align);
+  let read = await readAt(range);
+  const shown = new Set(range.align ? turns.map((turn) => turn.turnId) : []);
+  const prefix: Prefix = {};
+  for (;;) {
+    const step = afterWindow(range, plan.held, read, shown, prefix);
+    switch (step.kind) {
+      case "probe":
+        prefix.first = step.first;
+        prefix[step.at] = await hasShownPrefix(...source, step.end, shown);
+        break;
+      case "widen":
+        range = step.range;
+        read = await readAt(range);
+        break;
+      case "limit":
+        remember(step.cache);
         throw tooLarge();
-      }
-      if (
-        !first ||
-        (await hasShownPrefix(spawn, directory, path, signal, from, shown))
-      ) {
-        from = limitStart;
-        read = await readAt(from);
-      }
+      case "accept":
+        if (step.cache) remember(step.cache);
+        return step.lines;
     }
   }
-  const lines = held ? held.lines.concat(read.lines) : read.lines;
-  if (read.bytes !== undefined && lines.length <= CACHE_RECORDS)
-    remember({ from: held?.from ?? from, bytes: read.bytes, lines });
-  return lines.concat(read.trailing);
 }
 
 /** The latest turns of all the conversation's threads, oldest first, from a
