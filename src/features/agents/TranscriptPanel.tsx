@@ -85,6 +85,43 @@ export function withLatest<T extends Transcript>(
   };
 }
 
+const dataPrototypes = new Set([Object.prototype, Array.prototype, null]);
+const { get, getPrototypeOf, ownKeys } = Reflect;
+const sameFields: (a: unknown, b: unknown) => boolean = (a, b) => {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  try {
+    const proto = getPrototypeOf(a);
+    if (proto !== getPrototypeOf(b) || !dataPrototypes.has(proto)) return false;
+    const keys = ownKeys(a);
+    if (keys.length !== ownKeys(b).length) return false;
+    if (!keys.every((key) => Object.hasOwn(b, key))) return false;
+    return keys.every((key) => sameFields(get(a, key), get(b, key)));
+  } catch {
+    return false;
+  }
+};
+const enumerableFields = (value: Transcript) =>
+  Object.keys(value).length === ownKeys(value).length;
+function reuseTurns<T extends Transcript>(prior: T, next: T) {
+  try {
+    if (prior === next || !enumerableFields(next)) return next;
+    const plain = getPrototypeOf(next) === Object.prototype;
+    const held = new Map(prior.turns.map((turn) => [turn.turnId, turn]));
+    const counts = new Map<string, number>();
+    for (const { turnId } of [...prior.turns, ...next.turns])
+      counts.set(turnId, (counts.get(turnId) ?? 0) + 1);
+    const turns = next.turns.map((turn) => {
+      const old = counts.get(turn.turnId) === 2 && held.get(turn.turnId);
+      return old && sameFields(old, turn) ? old : turn;
+    });
+    const shown = plain ? { ...next, turns } : next;
+    return enumerableFields(prior) && sameFields(prior, shown) ? prior : shown;
+  } catch {
+    return next;
+  }
+}
+
 /** `read` for `key`: in full on open, on `refresh`, and when `again` or
  * `working` changes; while working, `readLatest` (or `read` without it)
  * {@link LIVE_READ_MS}, or twice the read's duration if longer, after each
@@ -235,6 +272,7 @@ export function useLiveTranscript<T extends Transcript>({
       reading.then(
         (transcript) => {
           if (abort.signal.aborted) return;
+          if (prior && transcript) transcript = reuseTurns(prior, transcript);
           if (transcript !== undefined) return settle({ transcript });
           // The latest turns don't continue what it holds.
           running.current = undefined;

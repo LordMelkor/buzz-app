@@ -23,7 +23,11 @@ import {
   useLiveTranscript,
   withLatest,
 } from "./TranscriptPanel";
-import type { Transcript, TranscriptTurn } from "./activity-transcript";
+import type {
+  Transcript,
+  TranscriptItem,
+  TranscriptTurn,
+} from "./activity-transcript";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -33,15 +37,15 @@ afterEach(() => {
 });
 
 /** A read whose calls each settle when the test says. */
-function reads() {
+function reads<T = string>() {
   const calls: {
     key: string;
     signal: AbortSignal;
-    resolve(value: string | undefined): void;
+    resolve(value: T | undefined): void;
     reject(error: Error): void;
   }[] = [];
   const read = (key: string) => (signal: AbortSignal) =>
-    new Promise<string | undefined>((resolve, reject) =>
+    new Promise<T | undefined>((resolve, reject) =>
       calls.push({ key, signal, resolve, reject }),
     );
   return { calls, read };
@@ -95,7 +99,7 @@ function nth<T>(items: readonly T[], index: number) {
   if (!item) throw new Error(`No read ${index}`);
   return item;
 }
-const settle = (call: { resolve(value: string): void }, value: string) =>
+const settle = <T,>(call: { resolve(value: T): void }, value: T) =>
   act(async () => call.resolve(value));
 
 it("reads on open and keeps its result while the next read runs", async () => {
@@ -372,6 +376,316 @@ const turn = (turnId: string, text = turnId) =>
     startedAt: 1,
     items: [{ id: text }],
   }) as unknown as TranscriptTurn;
+
+function reuseTurn(turnId: string, items: TranscriptItem[] = []) {
+  return {
+    turnId,
+    channelId: "channel",
+    threadRootId: null,
+    triggeringEventIds: ["request"],
+    sessionId: "session",
+    newSession: false,
+    config: ["model", "effort"],
+    startedAt: 1,
+    partial: false,
+    items,
+  } satisfies TranscriptTurn;
+}
+
+function toolTurn(turnId: string, answer: string) {
+  return reuseTurn(turnId, [
+    {
+      id: "run",
+      at: 1,
+      type: "tool",
+      toolCallId: "run",
+      title: "Run script",
+      kind: "execute",
+      status: "completed",
+      input: "script",
+      output: "done",
+      diffs: [],
+      paths: ["script.sh"],
+      truncated: false,
+      children: [{ id: "child", at: 2, type: "message", text: answer }],
+    },
+  ]);
+}
+
+type TurnSnapshot = Transcript & {
+  more: boolean;
+  details?: { author: string };
+};
+
+function readTurnSnapshots(working = false) {
+  const full = reads<TurnSnapshot>();
+  const latest = reads<readonly TranscriptTurn[]>();
+  const view = renderHook(() =>
+    useLiveTranscript({
+      read: full.read("conversation"),
+      readLatest: latest.read("conversation"),
+      key: "conversation",
+      again: "",
+      working,
+      agentKey: "agent",
+    }),
+  );
+  function snapshot() {
+    const shown = view.result.current.shown.transcript;
+    if (!shown) throw new Error("Transcript did not settle");
+    return shown;
+  }
+  return {
+    full: full.calls,
+    latest: latest.calls,
+    refresh: () => act(() => view.result.current.refresh()),
+    snapshot,
+    loading: () => view.result.current.loading,
+  };
+}
+
+it("reuses accepted transcript turns across a live send at the turn limit", async () => {
+  const reader = readTurnSnapshots(true);
+  const turns = Array.from({ length: TURN_LIMIT }, (_, index) =>
+    toolTurn(`turn ${index}`, "before the send"),
+  );
+  const details = { author: "provider" };
+  await settle(nth(reader.full, 0), { turns, more: false, details });
+  const previousLast = nth(turns, TURN_LIMIT - 1);
+  const sent = reuseTurn("sent", [
+    {
+      id: "sent-message",
+      at: 3,
+      type: "message",
+      text: "A posted message",
+      posted: true,
+      messageId: "message",
+    },
+  ]);
+  act(() => vi.advanceTimersByTime(LIVE_READ_MS));
+  await settle(nth(reader.latest, 0), [
+    toolTurn(previousLast.turnId, "before the send"),
+    sent,
+  ]);
+
+  const accepted = reader.snapshot();
+  expect(accepted.turns.map(({ turnId }) => turnId)).toEqual([
+    ...turns.slice(1).map(({ turnId }) => turnId),
+    "sent",
+  ]);
+  expect(accepted.turns[0]).toBe(turns[1]);
+  expect(accepted.turns.at(-2)).toBe(previousLast);
+  expect(accepted.turns.at(-1)).toBe(sent);
+  expect(accepted.more).toBe(true);
+  expect(accepted.details).toBe(details);
+});
+
+it("reuses accepted transcript turns by unique ID on Refresh while preserving the incoming window", async () => {
+  const reader = readTurnSnapshots();
+  const first = reuseTurn("first");
+  const moved = reuseTurn("moved");
+  const repeatedBefore = reuseTurn("repeated before");
+  const repeatedAfter = reuseTurn("repeated after");
+  await settle(nth(reader.full, 0), {
+    more: false,
+    turns: [
+      first,
+      moved,
+      reuseTurn("removed"),
+      repeatedBefore,
+      reuseTurn(repeatedBefore.turnId),
+      repeatedAfter,
+    ],
+    details: { author: "previous" },
+  });
+  const incoming = Object.freeze([
+    reuseTurn(moved.turnId),
+    reuseTurn("added"),
+    reuseTurn(repeatedAfter.turnId),
+    reuseTurn(repeatedBefore.turnId),
+    reuseTurn(first.turnId),
+    reuseTurn(repeatedAfter.turnId),
+  ]);
+  const details = { author: "refreshed" };
+  reader.refresh();
+  await settle(nth(reader.full, 1), { more: true, turns: incoming, details });
+
+  const accepted = reader.snapshot();
+  expect(accepted.turns.map(({ turnId }) => turnId)).toEqual([
+    "moved",
+    "added",
+    "repeated after",
+    "repeated before",
+    "first",
+    "repeated after",
+  ]);
+  expect(accepted.turns[0]).toBe(moved);
+  expect(accepted.turns[1]).toBe(incoming[1]);
+  expect(accepted.turns[2]).toBe(incoming[2]);
+  expect(accepted.turns[3]).toBe(incoming[3]);
+  expect(accepted.turns[4]).toBe(first);
+  expect(accepted.turns[5]).toBe(incoming[5]);
+  expect(accepted.more).toBe(true);
+  expect(accepted.details).toBe(details);
+});
+
+it.each(["cyclic data", "unreadable field"])(
+  "settles a Refresh containing %s and keeps the other equal turn",
+  async (kind) => {
+    function extensionTurn() {
+      const extension: Record<string, unknown> = {};
+      if (kind === "cyclic data") extension.self = extension;
+      else
+        Object.defineProperty(extension, "value", {
+          enumerable: true,
+          get() {
+            throw new Error("Field is unavailable");
+          },
+        });
+      return { ...reuseTurn("extension"), extension };
+    }
+    const reader = readTurnSnapshots();
+    const stable = reuseTurn("stable");
+    await settle(nth(reader.full, 0), {
+      more: false,
+      turns: [extensionTurn(), stable],
+    });
+    const incoming = extensionTurn();
+    reader.refresh();
+    expect(reader.loading()).toBe(true);
+    await settle(nth(reader.full, 1), {
+      more: false,
+      turns: [incoming, reuseTurn("stable")],
+    });
+    expect(reader.loading()).toBe(false);
+    expect(reader.snapshot().turns[0]).toBe(incoming);
+    expect(reader.snapshot().turns[1]).toBe(stable);
+  },
+);
+
+it("keeps a frozen transcript through an equal Refresh and updates changed metadata", async () => {
+  const reader = readTurnSnapshots();
+  const held = Object.freeze({
+    turns: [toolTurn("first", "same reply")],
+    more: false,
+    details: { author: "original" },
+  });
+  await settle(nth(reader.full, 0), held);
+  reader.refresh();
+  await settle(nth(reader.full, 1), {
+    ...held,
+    turns: [toolTurn("first", "same reply")],
+    details: { author: "original" },
+  });
+  expect(reader.snapshot()).toBe(held);
+
+  const details = { author: "updated" };
+  reader.refresh();
+  await settle(nth(reader.full, 2), {
+    ...held,
+    turns: [toolTurn("first", "same reply")],
+    details,
+  });
+  expect(reader.snapshot().details).toBe(details);
+  expect(reader.snapshot().turns[0]).toBe(held.turns[0]);
+});
+
+it.each(["inherited", "non-enumerable"])(
+  "preserves %s metadata from the incoming transcript",
+  async (kind) => {
+    const reader = readTurnSnapshots();
+    const stable = reuseTurn("stable");
+    await settle(nth(reader.full, 0), { turns: [stable], more: false });
+    const incoming: TurnSnapshot = {
+      turns: [reuseTurn("stable")],
+      more: false,
+    };
+    const details = { author: "incoming" };
+    if (kind === "inherited") Object.setPrototypeOf(incoming, { details });
+    else Object.defineProperty(incoming, "details", { value: details });
+    reader.refresh();
+    await settle(nth(reader.full, 1), incoming);
+
+    expect(reader.snapshot().details).toBe(details);
+  },
+);
+
+it("settles a Refresh whose metadata cannot be compared", async () => {
+  const reader = readTurnSnapshots();
+  const stable = reuseTurn("stable");
+  await settle(nth(reader.full, 0), {
+    turns: [stable],
+    more: false,
+    details: { author: "original" },
+  });
+  const details = Object.defineProperty({ author: "unavailable" }, "author", {
+    get() {
+      throw new Error("Author is unavailable");
+    },
+  });
+  reader.refresh();
+  await settle(nth(reader.full, 1), {
+    turns: [reuseTurn("stable")],
+    more: false,
+    details,
+  });
+  expect(reader.loading()).toBe(false);
+  expect(reader.snapshot().details).toBe(details);
+  expect(reader.snapshot().turns[0]).toBe(stable);
+});
+
+it("reuses accepted transcript turns only when snapshot fields are equal", async () => {
+  const reader = readTurnSnapshots();
+  const nullRecord = () => Object.assign(Object.create(null), { key: "value" });
+  const opaque = [
+    ["functions", () => "value", () => "value"],
+    ["dates", new Date(1), new Date(1)],
+    ["maps", new Map([["key", "value"]]), new Map([["key", "value"]])],
+    ["sets", new Set(["value"]), new Set(["value"])],
+    ["regular expressions", /value/u, /value/u],
+  ] as const;
+  const fields: readonly (readonly [string, unknown, unknown, boolean])[] = [
+    ["equal dense arrays", ["first", "second"], ["first", "second"], true],
+    ["reordered dense arrays", ["first", "second"], ["second", "first"], false],
+    [
+      "different undefined keys",
+      { before: undefined },
+      { after: undefined },
+      false,
+    ],
+    ["null-prototype records", nullRecord(), nullRecord(), true],
+    ["different record prototypes", nullRecord(), { key: "value" }, false],
+    ["NaN", { value: Number.NaN }, { value: Number.NaN }, true],
+    ...opaque.flatMap(([name, before, after]) => [
+      [`distinct ${name}`, before, after, false] as const,
+      [`shared ${name}`, before, before, true] as const,
+    ]),
+  ];
+  const before = fields.map(([id, extension]) => ({
+    ...reuseTurn(id),
+    extension,
+  }));
+  const after = fields.map(([id, , extension]) => ({
+    ...reuseTurn(id),
+    extension,
+  }));
+  const corrected = toolTurn("corrected child", "updated text");
+  await settle(nth(reader.full, 0), {
+    more: false,
+    turns: [...before, toolTurn("corrected child", "old text")],
+  });
+  reader.refresh();
+  await settle(nth(reader.full, 1), {
+    more: false,
+    turns: [...after, corrected],
+  });
+
+  const { turns } = reader.snapshot();
+  fields.forEach(([name, , , equal], index) => {
+    expect(turns[index], name).toBe(equal ? before[index] : after[index]);
+  });
+  expect(turns.at(-1)).toBe(corrected);
+});
 
 it("swaps the latest turns over the end of the held transcript", () => {
   const held = { turns: [turn("1"), turn("2", "open")], more: true };

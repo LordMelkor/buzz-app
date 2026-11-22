@@ -391,6 +391,11 @@ file diffs, prompt sections and context use. The plugin still owns its
 conversation list and marks its own sent-message items with `posted: true` and
 `messageId`. Derive its props from `@buzz/author` with
 `ComponentProps<NonNullable<Agents["ui"]>["Transcript"]>`.
+The panel compares each read with the one before and keeps the turns that did
+not change, so only a changed turn draws again. Give each turn a `turnId` that
+is unique in the transcript and the same on every read. Build turn data from
+plain objects and arrays, as `JSON.parse` gives. Never change an object after a
+read returned it: a turn that changed is a new object.
 
 ```js
 export const inject = ["react", "conversation", "panels", "pages"];
