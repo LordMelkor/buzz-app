@@ -533,6 +533,23 @@ it("reuses accepted transcript turns by unique ID on Refresh while preserving th
   expect(accepted.details).toBe(details);
 });
 
+it("keeps a frozen transcript through an equal Refresh", async () => {
+  const reader = readTurnSnapshots();
+  const held = Object.freeze({
+    turns: [toolTurn("first", "same reply")],
+    more: false,
+    details: { author: "original" },
+  });
+  await settle(nth(reader.full, 0), held);
+  reader.refresh();
+  await settle(nth(reader.full, 1), {
+    ...held,
+    turns: [toolTurn("first", "same reply")],
+    details: { author: "original" },
+  });
+  expect(reader.snapshot()).toBe(held);
+});
+
 it("settles a Refresh containing cyclic extension data and keeps the other equal turn", async () => {
   function extensionTurn() {
     const extension: Record<string, unknown> = {};
