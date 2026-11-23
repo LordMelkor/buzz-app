@@ -11,6 +11,7 @@ import { ChannelHeaderMenu } from "../channels/ChannelHeaderMenu";
 import { ChannelSettingsPanel } from "../channels/ChannelSettingsPanel";
 import { ChannelMembersDialog } from "../channels/ChannelMembersDialog";
 import { UnreadOptions } from "../channels/UnreadBadge";
+import { diagnosticsAvailable } from "../../features/developer/mode";
 import { ChannelBody } from "../channels/ChannelBody";
 import {
   historyPanel,
@@ -404,7 +405,9 @@ export function BestieConversation({
                   secondary.openConversationLink(channel.id, target)
                 }
               >
-                <UnreadOptions session={session} channelId={channel.id} />
+                {diagnosticsAvailable && (
+                  <UnreadOptions session={session} channelId={channel.id} />
+                )}
               </ChannelSettingsPanel>
             ),
           },

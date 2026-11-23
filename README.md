@@ -116,7 +116,7 @@ Some parts change less than others:
 - **Likely to break:** reading relay data, anything added to conversations or
   the sidebar, agent hooks, and UI added to pages Buzz owns.
 
-See [plugin architecture](docs/plugin-architecture.md) to build one.
+See [plugins](docs/plugins.md) to build one.
 
 ## Build from source
 
@@ -128,14 +128,14 @@ bin/just desktop
 
 Hermit in `bin/` pins every tool. Desktop builds also need the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). See
-[contributing](docs/contributing.md) for development setup, live relay
-development, testing and hooks, and [plugin architecture](docs/plugin-architecture.md)
+[contributing](CONTRIBUTING.md) for development setup, live relay
+development, testing and hooks, and [plugins](docs/plugins.md)
 to build plugins.
 
 ## Project resources
 
-- [Contributing](docs/contributing.md)
-- [Plugin architecture and the `buzzodz` CLI](docs/plugin-architecture.md)
+- [Contributing](CONTRIBUTING.md)
+- [Plugins](docs/plugins.md)
 - [Contextual identity names: cross-client spec and fixtures](src/bundled/identity-naming/README.md)
 - [Mention rules: cross-client spec and fixtures](src/bundled/mentions/README.md)
 - [@buzzdotxyz on X](https://x.com/buzzdotxyz)

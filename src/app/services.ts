@@ -64,6 +64,7 @@ import {
 import { createUpdates } from "../features/updates/updates";
 import { PanelsService } from "../features/panels/service";
 import { BackdropsService } from "../features/backdrops/service";
+import { NoticesService } from "../features/notices/service";
 import { SubjectLiftService } from "../features/messages/subject-lift";
 import { pluginUi } from "../features/plugin-ui/service";
 import { Context } from "@deepseek-ai/cordis";
@@ -129,6 +130,7 @@ export function createServices() {
   const sidebarRows = new SidebarRowsService(ctx);
   const panels = new PanelsService(ctx);
   const backdrops = new BackdropsService(ctx);
+  const notices = new NoticesService(ctx);
   new SubjectLiftService(ctx);
   ctx.provide("ui", pluginUi);
   const accountActions = new AccountActionsService(ctx);
@@ -464,6 +466,7 @@ export function createServices() {
     sidebarRows,
     panels,
     backdrops,
+    notices,
     plugins,
     federatedIdentity,
     firstRunFederatedIdentity,

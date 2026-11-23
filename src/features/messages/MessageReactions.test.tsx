@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ConversationPresentation } from "../conversation/ConversationPresentation";
+import { ReactionDelivery } from "../conversation/ReactionTool";
 import { MessageReactionControls, MessageReactions } from "./MessageReactions";
 import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
 import { createRelaySession } from "../relay/session";
@@ -24,7 +25,7 @@ import {
   signed,
 } from "../relay/testing";
 import type { LiveCallbacks } from "../relay/live";
-import type { RelayEvent } from "../relay/events";
+import type { ReadFilter, RelayEvent } from "../relay/events";
 import type {
   ComposerTool,
   ContributionReader,
@@ -103,9 +104,23 @@ async function harness(
 ) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   let live!: LiveCallbacks;
+  /** The events the relay has when asked for one by ID. */
+  const check = { has: [] as RelayEvent[], asked: [] as ReadFilter[] };
   const owner = createRelaySession(
     {
       ...wire.transport,
+      query(filters, signal) {
+        const strong = filters.filter(
+          (filter) => filter.consistency === "strong" && filter.ids,
+        );
+        if (!strong.length) return wire.transport.query(filters, signal);
+        check.asked.push(...strong);
+        return Promise.resolve(
+          check.has.filter((event) =>
+            strong.some((filter) => filter.ids?.includes(event.id)),
+          ),
+        );
+      },
       ...(media ? { media } : {}),
       writer: { sign: async (template) => signed(viewer, template), publish },
       subscribe(callbacks) {
@@ -160,7 +175,12 @@ async function harness(
       )
     );
   }
-  return { ...owner, live, wire, publish, Controls };
+  /** The session runs three reads at a time. Answers the scripted ones still
+   * open, so a read that follows is not queued behind them. */
+  const idle = () => {
+    for (const open of wire.pending.splice(0)) open.respond([]);
+  };
+  return { ...owner, live, wire, publish, check, idle, Controls };
 }
 it("shows one bubble per emoji, counts unique people, and removes all my duplicate events", async () => {
   const mine = react(),
@@ -452,6 +472,219 @@ it("keeps failed first-reaction delivery visible and retries the same event", as
     await flush();
   });
   expect(publish.mock.calls[1]?.[0]).toEqual(original);
+});
+/** Past 15 minutes the relay refuses the old signed event, so Retry signs a new one. */
+it.each([
+  ["a failed reaction", false],
+  ["an unconfirmed removal of a reaction", true],
+] as const)(
+  "retries %s as a new event once the relay no longer takes the old one",
+  async (_name, removal) => {
+    let outcome: "refuse" | "lose" | "accept" = removal ? "lose" : "refuse";
+    const publish = vi.fn(async (event: RelayEvent) => {
+      if (event.created_at < Math.floor(Date.now() / 1000) - 15 * 60)
+        throw new PublishRejected("Too old");
+      if (outcome === "refuse") throw new PublishRejected("Nope");
+      if (outcome === "lose") throw new Error("Connection lost");
+    });
+    const mine = react();
+    const h = await harness(removal ? [mine] : [], publish);
+    render(<h.Controls />);
+    fireEvent.click(
+      removal
+        ? screen.getByRole("button", { name: "👍: You" })
+        : within(screen.getByTestId("reaction-controls")).getByRole("button", {
+            name: "Choose reaction",
+          }),
+    );
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    const [stuck] = h.session.outbox?.snapshot() ?? [];
+    expect(stuck?.delivery).toBe(removal ? "unknown" : "failed");
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 16 * 60_000);
+    outcome = "accept";
+    h.idle();
+    fireEvent.click(screen.getByRole("button", { name: "Retry reaction" }));
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    const sent = publish.mock.calls.at(-1)?.[0];
+    expect(sent?.id).not.toBe(stuck?.event.id);
+    expect(sent?.kind).toBe(stuck?.event.kind);
+    expect(sent?.content).toBe(stuck?.event.content);
+    expect(sent?.tags.filter(([name]) => name === "client-id")).toHaveLength(1);
+    expect(h.session.outbox?.snapshot().map((item) => item.event.id)).toEqual([
+      sent?.id,
+    ]);
+    expect(screen.queryByRole("button", { name: "Retry reaction" })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    vi.restoreAllMocks();
+  },
+);
+it.each([
+  ["a double click", "double"],
+  ["a send that throws", "send"],
+  ["a dismissal that fails", "dismiss"],
+] as const)(
+  "retries an expired reaction once and reports a problem: %s",
+  async (_name, mode) => {
+    let open = false;
+    const publish = vi.fn(async (event: RelayEvent) => {
+      if (event.created_at < Math.floor(Date.now() / 1000) - 15 * 60)
+        throw new PublishRejected("Too old");
+      if (!open) throw new PublishRejected("Nope");
+    });
+    const h = await harness([], publish);
+    const view = render(<h.Controls />);
+    fireEvent.click(
+      within(screen.getByTestId("reaction-controls")).getByRole("button", {
+        name: "Choose reaction",
+      }),
+    );
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    const [stuck] = h.session.outbox?.snapshot() ?? [];
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
+    open = true;
+    const real = h.session.outbox;
+    if (!real) throw new Error("No outbox");
+    // The session's outbox is frozen, so the failing calls go through a copy.
+    if (mode !== "double") {
+      view.unmount();
+      const outbox = {
+        ...real,
+        send: (...args: Parameters<typeof real.send>) => {
+          if (mode === "send") throw new Error("Outbox is closed");
+          return real.send(...args);
+        },
+        dismiss: (...args: Parameters<typeof real.dismiss>) =>
+          mode === "dismiss"
+            ? Promise.reject(new Error("Could not clear the old update"))
+            : real.dismiss(...args),
+      };
+      render(
+        <ReactionDelivery
+          session={{ ...h.session, outbox }}
+          messageId={root.id}
+        />,
+      );
+    }
+    const button = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Retry reaction",
+    });
+    fireEvent.click(button);
+    if (mode === "double") {
+      fireEvent.click(button);
+      expect(button.disabled).toBe(true);
+    }
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    const sent = publish.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.id !== stuck?.event.id);
+    if (mode === "send") {
+      expect(sent).toHaveLength(0);
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Outbox is closed",
+      );
+      expect(button.disabled).toBe(false);
+    } else if (mode === "dismiss") {
+      expect(sent).toHaveLength(1);
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Could not clear the old update",
+      );
+    } else {
+      expect(sent).toHaveLength(1);
+      expect(screen.queryByRole("alert")).toBeNull();
+    }
+    vi.restoreAllMocks();
+  },
+);
+/** Past 15 minutes, with the relay's answers to the old and the new event. */
+async function expiredUnconfirmedReaction(
+  relayHas: boolean,
+  fresh: () => Promise<void>,
+) {
+  const publish = vi.fn(async (event: RelayEvent) => {
+    if (event.created_at < Math.floor(Date.now() / 1000) - 15 * 60)
+      throw new PublishRejected("Too old");
+    await fresh();
+  });
+  publish.mockImplementationOnce(async () => {
+    throw new Error("Connection lost");
+  });
+  const h = await harness([], publish);
+  render(<h.Controls />);
+  fireEvent.click(
+    within(screen.getByTestId("reaction-controls")).getByRole("button", {
+      name: "Choose reaction",
+    }),
+  );
+  await act(async () => {
+    await flush();
+    await flush();
+  });
+  const [original] = h.session.outbox?.snapshot() ?? [];
+  expect(original?.delivery).toBe("unknown");
+  const sent = publish.mock.calls[0]?.[0];
+  if (relayHas && sent) h.check.has.push(sent);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
+  h.idle();
+  fireEvent.click(screen.getByRole("button", { name: "Retry reaction" }));
+  await act(async () => {
+    await flush();
+    await flush();
+    await flush();
+  });
+  return { h, publish, original };
+}
+it("does not send a new reaction when the relay already has the unconfirmed one", async () => {
+  const { h, publish, original } = await expiredUnconfirmedReaction(
+    true,
+    async () => {},
+  );
+  expect(h.check.asked).toEqual([
+    {
+      kinds: [7],
+      ids: [original?.event.id],
+      authors: [viewer.pubkey],
+      limit: 1,
+      consistency: "strong",
+    },
+  ]);
+  expect(publish).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Retry reaction" })).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(
+    h.session.outbox
+      ?.snapshot()
+      .some((item) => ["failed", "unknown"].includes(item.delivery)),
+  ).toBe(false);
+  vi.restoreAllMocks();
+});
+it("treats a duplicate answer to the new reaction as delivered, not failed", async () => {
+  const { h, publish, original } = await expiredUnconfirmedReaction(
+    false,
+    async () => {
+      throw new PublishRejected("duplicate: reaction already exists");
+    },
+  );
+  expect(h.check.asked).toHaveLength(1);
+  expect(publish).toHaveBeenCalledTimes(2);
+  expect(publish.mock.calls.at(-1)?.[0].id).not.toBe(original?.event.id);
+  expect(screen.queryByRole("button", { name: "Retry reaction" })).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(h.session.outbox?.snapshot()).toEqual([]);
+  vi.restoreAllMocks();
 });
 it("prevents duplicate submissions and unavailable-message actions", async () => {
   const h = await harness();

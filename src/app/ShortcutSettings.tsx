@@ -37,6 +37,7 @@ import {
   useSendWithModEnterPreference,
 } from "../features/messages/send-key-preference";
 import type { PluginManager } from "../plugins/manager";
+import { ownerName } from "../plugins/owner";
 import { editKeyPreference } from "../features/messages/edit-key-preference";
 
 type Row = Readonly<{
@@ -202,18 +203,9 @@ function useShortcutGroups({
     bindings.subscribe,
     bindings.snapshot,
   );
-  const { configuration } = useSyncExternalStore(
-    plugins.subscribe,
-    plugins.snapshot,
-  );
+  const owners = useSyncExternalStore(plugins.subscribe, plugins.snapshot);
   const sendWithModEnter = useSendWithModEnterPreference();
 
-  const pluginName = (id: string) =>
-    (configuration.status === "ready"
-      ? configuration.catalog.plugins.find(
-          (plugin) => plugin.manifest.id === id,
-        )?.manifest.name
-      : undefined) ?? id;
   const row = (
     key: string,
     shortcut: NormalizedShortcut,
@@ -256,7 +248,7 @@ function useShortcutGroups({
     },
     ...[...new Set(contributed.map((shortcut) => shortcut.pluginId))]
       .map((pluginId) => {
-        const label = pluginName(pluginId);
+        const label = ownerName(owners, pluginId);
         return {
           id: `plugin:${pluginId}`,
           label,
@@ -326,7 +318,7 @@ export function ShortcutSettings({
 }: {
   shortcuts: ShortcutsService;
   bindings: ShortcutBindings;
-  /** Display names for plugin groups come from the catalog. */
+  /** Names plugin groups: a host-owned feature's manifest first, then the catalog. */
   plugins: Pick<PluginManager, "subscribe" | "snapshot">;
   apple?: boolean;
   /** Packaged desktop build, where close/quit chords belong to the shell. */

@@ -125,6 +125,7 @@ import { TEAM_MOVES_KEY, TeamMoves } from "./team-migration";
 import { NoTeamChannel, type TeamSent } from "./team-ops";
 import { importedTeamId } from "./config-channels";
 import { STANDALONE_DEADLINE_MS } from "../agent-harness/standalone";
+import { NoticesService, type ShownNotice } from "../notices/service";
 import { readTeams, writeTeams, type AgentRecord } from "./store";
 import { createPluginRequests } from "../../plugins/requests";
 import {
@@ -21287,6 +21288,8 @@ describe("full external agent access", () => {
     return {
       ...f,
       write,
+      send,
+      server,
       message,
       names,
       call: (name: string, args: object) =>
@@ -21366,6 +21369,126 @@ describe("full external agent access", () => {
         "result.isError",
         true,
       );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("ends a plugin tool's wait when the agent cancels that call or the connection closes", async () => {
+    const f = await fixture();
+    try {
+      const started = runnerGate();
+      let waiting = 0;
+      const tasks = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "buzz.tasks", revision: "one" }),
+      });
+      await tasks.plugin({
+        inject: ["agents"],
+        apply: (plugin: Context) =>
+          plugin.agents.addTool({
+            name: "tasks_wait",
+            description: "Wait for its call to end.",
+            inputSchema: { type: "object" },
+            call: (client) =>
+              new Promise((_, reject) => {
+                const { signal } = client;
+                if (!signal) reject(new Error("no signal"));
+                else
+                  signal.addEventListener("abort", () => reject(signal.reason));
+                if (++waiting === 2) started.resolve();
+              }),
+          }),
+      });
+      const wait = (id: number) =>
+        f.send({
+          id,
+          method: "tools/call",
+          params: { name: "tasks_wait", arguments: {} },
+        });
+      const cancel = (requestId: number) =>
+        f.send({ method: "notifications/cancelled", params: { requestId } });
+      const first = wait(101);
+      const second = wait(102);
+      await started.promise;
+      await cancel(999);
+      await cancel(101);
+      expect(await first).toMatchObject({
+        id: 101,
+        result: {
+          isError: true,
+          content: [{ text: "The agent cancelled this request" }],
+        },
+      });
+      await f.server.close();
+      await expect(second).rejects.toThrow("This agent connection has closed");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("lets a plugin's tool wait for its owner's answer to a notice, which the agent's cancel withdraws", async () => {
+    const f = await fixture();
+    try {
+      const notices = new NoticesService(f.ctx);
+      const files = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "example.files", revision: "one" }),
+      });
+      await files.plugin({
+        inject: ["agents"],
+        apply: (plugin: Context) =>
+          plugin.agents.addTool({
+            name: "files_delete",
+            description: "Delete a file, once the owner allows it.",
+            inputSchema: { type: "object" },
+            async call(client) {
+              const answer = await plugin.reflect.get("notices")?.show(
+                {
+                  title: "Let Echo delete a.txt?",
+                  actions: [{ id: "once", label: "Allow once" }],
+                },
+                { signal: client.signal },
+              );
+              return `answered ${answer}`;
+            },
+          }),
+      });
+      const shown = () =>
+        new Promise<ShownNotice>((resolve) => {
+          const stop = notices.subscribe(() => {
+            const [notice] = notices.snapshot();
+            if (notice) {
+              stop();
+              resolve(notice);
+            }
+          });
+        });
+      const asked = shown();
+      const call = f.call("files_delete", {});
+      const notice = await asked;
+      expect(notices.snapshot()).toHaveLength(1);
+      expect(notice).toMatchObject({
+        title: "Let Echo delete a.txt?",
+        plugin: "example.files",
+      });
+      notice.pick("once");
+      expect((await call).result).toMatchObject({
+        content: [{ text: "answered once" }],
+      });
+      expect(notices.snapshot()).toEqual([]);
+      const reasked = shown();
+      const cancelled = f.send({
+        id: 901,
+        method: "tools/call",
+        params: { name: "files_delete", arguments: {} },
+      });
+      await reasked;
+      expect(notices.snapshot()).toHaveLength(1);
+      await f.send({
+        method: "notifications/cancelled",
+        params: { requestId: 901 },
+      });
+      expect(notices.snapshot()).toEqual([]);
+      await cancelled;
     } finally {
       await f.cleanup();
     }

@@ -219,8 +219,22 @@ function RegionFrame({
   const { retryReveal, revealAgain } = sidebar;
   const open = !sidebar.collapsed.includes(sectionKey);
   const { channels, live } = region;
-  const destination = useMemo(
-    () => ({
+  const destination = useMemo(() => {
+    const active = () =>
+      !!binding &&
+      service.snapshot().binding === binding &&
+      !!source &&
+      service.sources().includes(source);
+    const runAction = async (action: () => void | Promise<void>) => {
+      if (!active()) return;
+      setActionError(false);
+      try {
+        await action();
+      } catch {
+        if (active()) setActionError(true);
+      }
+    };
+    return {
       channels,
       live,
       session,
@@ -228,28 +242,24 @@ function RegionFrame({
       pendingClick,
       scope,
       current,
-      active: () =>
-        !!binding &&
-        service.snapshot().binding === binding &&
-        !!source &&
-        service.sources().includes(source),
+      active,
+      runAction,
       retryReveal,
-    }),
-    [
-      channels,
-      live,
-      session,
-      navigator,
-      pendingClick,
-      scope,
-      current,
-      binding,
-      service,
-      source,
-      retryReveal,
-    ],
-  );
-  const { active } = destination;
+    };
+  }, [
+    channels,
+    live,
+    session,
+    navigator,
+    pendingClick,
+    scope,
+    current,
+    binding,
+    service,
+    source,
+    retryReveal,
+  ]);
+  const { runAction } = destination;
   useLayoutEffect(() => {
     if (!revealRequest) return;
     if (revealRequest === current) revealAgain(sectionKey);
@@ -276,15 +286,8 @@ function RegionFrame({
   } catch {
     /* Actions do not fail the region body. */
   }
-  const run = async (action: Pick<SoloRegionAction, "onSelect">) => {
-    if (!active()) return;
-    setActionError(false);
-    try {
-      await action.onSelect();
-    } catch {
-      if (active()) setActionError(true);
-    }
-  };
+  const run = (action: Pick<SoloRegionAction, "onSelect">) =>
+    runAction(() => action.onSelect());
   const recovery = (
     <>
       <p role={region.reason === "failed" ? "alert" : "status"}>
@@ -550,4 +553,5 @@ const destinationUi = {
   Card: RegionCard,
   Disclosure: SoloDisclosure,
   ChannelGroup: RegionChannelGroup,
+  headerMenuActions: true as const,
 };

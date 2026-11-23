@@ -218,7 +218,7 @@ it("retries a guest addition as a guest", async () => {
   );
 });
 
-it("retries a guest batch per person as guests, each as a new addition", async () => {
+it("passes the saved receipt, role, and source when retrying a migration batch", async () => {
   const { add } = show({
     ...invitation,
     event: {
@@ -228,6 +228,7 @@ it("retries a guest batch per person as guests, each as a new addition", async (
         ["p", "one"],
         ["p", "two"],
         ["role", "guest"],
+        ["migration", "slack"],
       ],
     },
     recovery: { key: "member-add:batch:operation", value: "1" },
@@ -235,8 +236,24 @@ it("retries a guest batch per person as guests, each as a new addition", async (
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() =>
     expect(add.mock.calls).toEqual([
-      ["channel", "one", { role: "guest" }],
-      ["channel", "two", { role: "guest" }],
+      [
+        "channel",
+        "one",
+        {
+          role: "guest",
+          migration: "slack",
+          batchReceipt: invitation.event.id,
+        },
+      ],
+      [
+        "channel",
+        "two",
+        {
+          role: "guest",
+          migration: "slack",
+          batchReceipt: invitation.event.id,
+        },
+      ],
     ]),
   );
 });

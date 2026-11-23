@@ -110,11 +110,15 @@ test("working badges align in their rows and clear the Solo actions button", asy
     const restingWidth = await titleWidth();
     await expect.poll(labelMask).toBe("none");
     await chat.hover({ position: { x: 24, y: 14 } });
+    await expect(action).toHaveCSS("opacity", "0");
+    await expect(preview).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expect(preview).toHaveCount(0);
+    await action.hover();
     await expect(action).toHaveCSS("opacity", "1");
     await expect.poll(labelMask).toContain("linear-gradient");
     await expect.poll(actionClearance).toBeGreaterThanOrEqual(0);
     await expect.poll(titleWidth).toBe(restingWidth);
-    await expect(preview).toBeVisible();
     await page.mouse.move(0, 0);
     // The preview temporarily owns Tab while its dismissal is in flight.
     await expect(preview).toHaveCount(0);
@@ -205,19 +209,16 @@ const newOptions = (page) =>
 // Solo's New chat action stays in its heading at every scale.
 function controlsAgainstHeading(button) {
   const heading = button.closest(".navigation-section-heading");
-  const summary = heading.querySelector("summary").getBoundingClientRect();
   const control = button.getBoundingClientRect();
   const box = heading.getBoundingClientRect();
   const center = (rect) => rect.top + rect.height / 2;
   return {
-    afterHeadingLabel: control.left >= summary.right - 0.5,
     centered: Math.abs(center(control) - center(box)) < 1,
-    withinHeading: control.right <= box.right + 0.5,
+    withinHeading: control.left >= box.left && control.right <= box.right + 0.5,
   };
 }
 
 const expectedHeadingControls = {
-  afterHeadingLabel: true,
   centered: true,
   withinHeading: true,
 };
@@ -504,10 +505,8 @@ test("a presence badge preserves the sidebar avatar center and header insets", a
   }
 });
 
-// The sidebar is fluid, like auto layout: rows and headings fill their list,
-// a heading's label fills and its actions hug, and nothing floats over or
-// reserves space for anything else. Workspaces and built-in sections share
-// these bounds even at the narrowest sidebar width.
+// Labels fill their rows and action overlays stay inside them, even at the
+// narrowest sidebar width.
 test("the unified sidebar fills its rows and keeps heading actions in their row at any width", async ({
   page,
   app,
@@ -599,23 +598,24 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
         const actions = heading.querySelector(
           ":scope > .navigation-section-heading-actions",
         );
-        // Hidden quiet actions give their width to the label, like a hidden
-        // auto layout child; their clipped buttons are not laid out parts.
+        // The two reveal modes keep hidden actions out of hit testing.
         const collapsed =
           actions?.hasAttribute("data-navigation-reveal") &&
           getComputedStyle(actions).opacity === "0";
         if (collapsed) {
           const style = getComputedStyle(actions);
-          const content =
-            actions.clientWidth -
-            parseFloat(style.paddingInlineStart) -
-            parseFloat(style.paddingInlineEnd);
-          if (content > 0.5)
-            problems.push(`${name}: hidden actions take space`);
+          const noContentWidth =
+            actions.dataset.navigationReveal === "overlay"
+              ? style.position === "absolute"
+              : style.maxWidth === "0px" && style.overflow === "hidden";
+          if (!noContentWidth || style.pointerEvents !== "none")
+            problems.push(
+              `${name}: hidden actions affect layout or hit testing`,
+            );
         }
         for (const part of heading.querySelectorAll("*")) {
           if (!shown(part)) continue;
-          if (collapsed && actions.contains(part) && part !== actions) continue;
+          if (actions?.contains(part)) continue;
           const rect = part.getBoundingClientRect();
           if (rect.width <= 1 && rect.height <= 1) continue;
           if (/absolute|fixed/.test(getComputedStyle(part).position))
@@ -643,9 +643,14 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
             parseFloat(style.paddingInlineStart)
           )
             problems.push(`${name}: reserves trailing space`);
-          // Starred and custom workspaces can lead with an icon.
-          const leading = trigger.firstElementChild?.firstElementChild;
-          if (leading) leadingEdges.push(leading.getBoundingClientRect().left);
+          // A caret or an icon can precede the title in visual order.
+          const parts = [...trigger.children].filter(shown);
+          if (parts.length)
+            leadingEdges.push(
+              Math.min(
+                ...parts.map((part) => part.getBoundingClientRect().left),
+              ),
+            );
         }
         const buttons =
           actions && !collapsed ? [...actions.children].filter(shown) : [];
@@ -687,6 +692,8 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
     // Revealing the action must keep the title at its resting width.
     const restingWidth = await titleWidth();
     await chat.hover({ position: { x: 24, y: 14 } });
+    await expect(action).toHaveCSS("opacity", "0");
+    await action.hover();
     await expect.poll(titleWidth).toBe(restingWidth);
     await expect(action).toHaveCSS("opacity", "1");
     await page.mouse.move(0, 0);
@@ -754,7 +761,9 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
   await page.mouse.move(0, 0);
   for (const action of [create, options])
     await expect.poll(() => seen(action)).toBe(0);
+  const restingHeading = await work.boundingBox();
   await work.hover();
+  expect(await work.boundingBox()).toEqual(restingHeading);
   for (const action of [create, options])
     await expect.poll(() => seen(action)).toBe(1);
   const center = (locator) =>
@@ -765,7 +774,7 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
   await expect
     .poll(async () => Math.abs((await center(create)) - (await center(work))))
     .toBeLessThan(1);
-  // Revealed, the actions take their width back: after the title, in the row.
+  // The overlay stays within the heading while the label spans the row.
   const placed = await options.evaluate((button) => {
     const row = button
       .closest(".navigation-section-heading")
@@ -776,7 +785,7 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
     const title = actions.previousElementSibling.getBoundingClientRect();
     const slot = actions.getBoundingClientRect();
     return (
-      title.right <= slot.left + 0.5 &&
+      Math.abs(title.right - row.right) < 0.5 &&
       [...actions.querySelectorAll("button")].every((part) => {
         const rect = part.getBoundingClientRect();
         return rect.left >= slot.left - 0.5 && rect.right <= row.right + 0.5;
@@ -784,4 +793,35 @@ test("the unified sidebar fills its rows and keeps heading actions in their row 
     );
   });
   expect(placed).toBe(true);
+  await options.hover();
+  await expect.poll(() => seen(options)).toBe(1);
+  const workspaceMenu = page.getByRole("menu", {
+    name: "More actions for Work",
+  });
+  await expect(workspaceMenu).toHaveCount(0);
+  await options.click();
+  await expect(workspaceMenu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(workspaceMenu).toHaveCount(0);
+  await expect(options).toBeFocused();
+  await page.mouse.move(0, 0);
+  await expect.poll(() => seen(options)).toBe(1);
+
+  const team = sidebar.locator('button[data-channel-id="beta"]');
+  const teamAction = sidebar.getByRole("button", { name: "Actions for Beta" });
+  const label = team.locator(".navigation-item-label");
+  const restingTeam = await label.boundingBox();
+  for (const x of [16, 56]) {
+    await team.hover({ position: { x, y: 14 } });
+    await expect(teamAction).toHaveCSS("opacity", "1");
+    await expect.poll(() => seen(options)).toBe(0);
+    expect(await label.boundingBox()).toEqual(restingTeam);
+  }
+  await teamAction.hover();
+  const teamMenu = page.getByRole("menu", { name: "Actions for Beta" });
+  await expect(teamMenu).toHaveCount(0);
+  await teamAction.click();
+  await expect(
+    teamMenu.getByRole("menuitem", { name: "Copy link" }),
+  ).toBeVisible();
 });

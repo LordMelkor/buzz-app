@@ -60,7 +60,9 @@ import type {
   SidebarSections,
 } from "../../features/channel-navigation/sidebar-sections-service";
 import {
+  pluginRowSectionKey,
   sidebarRow,
+  sidebarRowMenuItems,
   sidebarRowSortModes,
   sortSidebarRows,
   type SidebarRows,
@@ -1347,6 +1349,38 @@ export function ChannelInventory({
         </MenuItem>,
       );
     }
+    for (const item of sidebarRowMenuItems(
+      rowContributions,
+      sidebarRow(
+        channel,
+        pluginRowSectionKey(channel, sectionKey),
+        rowUnread.get(channel.id) ??
+          queries.unread.snapshot({ kind: "channel", channelId: channel.id }),
+      ),
+    ))
+      actions.push(
+        <ContributionBoundary
+          key={item.key}
+          fallback={null}
+          resetIdentity={rowContributions}
+        >
+          <MenuItem
+            disabled={surface?.pending ?? readWrite?.pending ?? false}
+            onClick={() => {
+              try {
+                void Promise.resolve(item.onSelect()).catch((error) =>
+                  console.error(`Row menu item failed: ${item.key}`, error),
+                );
+              } catch (error) {
+                console.error(`Row menu item failed: ${item.key}`, error);
+              }
+            }}
+          >
+            <MenuIcon>{item.icon}</MenuIcon>
+            {item.label}
+          </MenuItem>
+        </ContributionBoundary>,
+      );
     if (readable)
       actions.push(
         <ChannelReadMenuItem

@@ -788,7 +788,7 @@ it.each([{ olderUnread: false }, { olderUnread: true }])(
     } else {
       // Catch-up read every ordinary row above the read one, but a sample
       // that stopped short could still miss an unread mention, broadcast or
-      // marked message there; docs/unread.md records that residual.
+      // marked message there.
       expect(precedes(divider(), screen.getByText("First loaded unread"))).toBe(
         true,
       );

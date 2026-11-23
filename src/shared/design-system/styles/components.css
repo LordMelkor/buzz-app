@@ -1634,8 +1634,8 @@
     margin-top: var(--space-section-gap);
   }
 
-  /* Auto layout: the label fills and truncates, the actions hug. Nothing is
-     positioned over the row or reserves width for something else. */
+  /* The label fills and truncates. Quiet actions overlay it on pointer
+     devices so hover does not change the disclosure target. */
   .navigation-section-heading {
     display: flex;
     min-height: var(--size-row);
@@ -1726,6 +1726,10 @@
     .navigation-section-heading-trailing
       > .navigation-section-heading-actions[data-has-metadata]:not(
         :only-child
+      ):not(
+        :has(
+          > .navigation-section-heading-buttons[data-navigation-reveal="in-flow"]
+        )
       ) {
       display: flex;
 
@@ -1826,74 +1830,131 @@
     outline-offset: -2px;
   }
 
-  /* Quiet parts are transparent while hidden. Quiet actions also give up
-     their content width, like a hidden auto layout child, so the label takes
-     that space until they appear. They stay focusable, and a focused quiet
-     part always shows, however focus got there: a dialog closed with the
-     mouse returns focus to its trigger without the keyboard flag. */
-  .navigation-section-heading [data-navigation-reveal] {
-    opacity: 0;
-  }
+  @media (hover: hover) {
+    .navigation-section-heading {
+      position: relative;
+    }
 
-  :where(.navigation-section-heading-actions[data-has-metadata])
-    > .navigation-section-heading-buttons[data-navigation-reveal] {
-    pointer-events: none;
-  }
+    .navigation-section-heading [data-navigation-reveal] {
+      opacity: 0;
+    }
 
-  .navigation-section-heading-actions[data-navigation-reveal] {
-    max-width: 0;
-    overflow: hidden;
-  }
+    .navigation-section-heading-buttons[data-navigation-reveal] {
+      pointer-events: none;
+    }
 
-  :is(
-    .navigation-section-heading:hover,
-    html[data-keyboard-navigation] .navigation-section-heading:focus-within,
-    .navigation-section-heading:has([data-navigation-reveal]:focus-within),
-    .navigation-section-heading:has(
-      [aria-expanded="true"][aria-haspopup="menu"]
-    ),
-    [data-context-menu-present] > .navigation-section-heading
-  ) {
-    [data-navigation-reveal]:not(
-        [data-has-metadata] > .navigation-section-heading-buttons
+    .navigation-section-heading-actions[data-navigation-reveal] {
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .navigation-section-heading-actions[data-navigation-reveal="true"] {
+      max-width: 0;
+      overflow: hidden;
+    }
+
+    .navigation-section-heading-actions[data-navigation-reveal="overlay"] {
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 0;
+      background: var(--surface-sidebar, var(--surface-popover));
+    }
+
+    /* Keep the caret outside the action overlay when the title truncates. */
+    :where(
+        .navigation-section-heading[data-disclosure]:has(
+          > .navigation-section-heading-actions[data-navigation-reveal="overlay"]:not(
+              :empty
+            )
+        )
+      )
+      > .navigation-section-heading-label
+      :is(button, summary)
+      > [data-navigation-reveal] {
+      order: -1;
+    }
+
+    /* Leave room for the disclosure inset and caret at large text sizes. */
+    .navigation-section-heading[data-disclosure]
+      > .navigation-section-heading-actions[data-navigation-reveal="overlay"] {
+      max-inline-size: calc(
+        100% -
+        var(--space-2) -
+        var(--space-4) -
+        var(--space-1)
+      );
+
+      > :is([data-icon-variant], .buzz-split-button) {
+        flex-shrink: 1;
+        min-inline-size: 0;
+      }
+    }
+
+    /* In-flow actions can replace metadata from anywhere on the heading. */
+    :is(
+        .navigation-section-heading:hover
+          > .navigation-section-heading-trailing
+          > .navigation-section-heading-actions[data-has-metadata]:has(
+            > [data-navigation-reveal="in-flow"]
+          ),
+        .navigation-section-heading-actions[data-has-metadata]:hover,
+        html[data-keyboard-navigation]
+          .navigation-section-heading-actions[data-has-metadata]:focus-within,
+        .navigation-section-heading-actions[data-has-metadata]:focus-within:not(
+          .buzz-sidebar-navigation:hover *
+        ),
+        .navigation-section-heading-actions[data-has-metadata]:has(
+          [aria-expanded="true"][aria-haspopup="menu"]
+        ),
+        [data-context-menu-present]
+          > .navigation-section-heading
+          > .navigation-section-heading-trailing
+          > [data-has-metadata]
       ) {
-      opacity: 1;
-      max-width: none;
-      overflow: visible;
+      > [data-navigation-reveal] {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      > [data-navigation-reveal-rest] {
+        visibility: hidden;
+      }
     }
-  }
 
-  /* The metadata-sized slot owns hover. The overlay can extend over the
-     accessory without contributing to layout or making the whole row hot. */
-  :is(
-    .navigation-section-heading-actions[data-has-metadata]:hover,
-    .navigation-section-heading-actions[data-has-metadata]:focus-within,
-    .navigation-section-heading-actions[data-has-metadata]:has(
-      [aria-expanded="true"][aria-haspopup="menu"]
-    ),
-    [data-context-menu-present]
-      > .navigation-section-heading
-      > .navigation-section-heading-trailing
-      > [data-has-metadata]
-  ) {
-    > [data-navigation-reveal] {
-      opacity: 1;
-      pointer-events: auto;
-    }
-    > [data-navigation-reveal-rest] {
-      visibility: hidden;
+    /* Focus returned from a dialog stays visible when the pointer is outside
+       the sidebar. Within the sidebar, the hovered row owns its actions. */
+    :is(
+        .navigation-section-heading:hover,
+        html[data-keyboard-navigation] .navigation-section-heading:focus-within,
+        .navigation-section-heading:has(
+          > .navigation-section-heading-actions[data-navigation-reveal="true"]:focus-within
+        ),
+        .navigation-section-heading:not(.buzz-sidebar-navigation:hover *):has(
+          [data-navigation-reveal]:focus-within
+        ),
+        .navigation-section-heading:has(
+          [aria-expanded="true"][aria-haspopup="menu"]
+        ),
+        [data-context-menu-present] > .navigation-section-heading
+      ) {
+      [data-navigation-reveal]:not(
+          [data-has-metadata] > .navigation-section-heading-buttons
+        ) {
+        opacity: 1;
+
+        &.navigation-section-heading-actions[data-navigation-reveal="true"] {
+          max-width: none;
+          overflow: visible;
+        }
+
+        &.navigation-section-heading-actions > *,
+        &.navigation-section-heading-buttons {
+          pointer-events: auto;
+        }
+      }
     }
   }
 
   @media (hover: none) {
-    .navigation-section-heading [data-navigation-reveal] {
-      opacity: 1;
-      max-width: none;
-      overflow: visible;
-    }
-    .navigation-section-heading-buttons[data-navigation-reveal] {
-      pointer-events: auto;
-    }
     .navigation-section-heading [data-navigation-reveal-rest] {
       visibility: hidden;
     }

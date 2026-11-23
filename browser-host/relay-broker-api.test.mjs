@@ -1875,6 +1875,7 @@ test("real outbox creates, invites and sends", async () => {
         ["visibility", "open"],
         ["channel_type", "stream"],
         ["ttl", "604800"],
+        ["migration", "slack"],
       ],
     });
     await vi.waitFor(() =>
@@ -1890,6 +1891,8 @@ test("real outbox creates, invites and sends", async () => {
       tags: [
         ["h", id],
         ["p", "a".repeat(64)],
+        ["p", "b".repeat(64)],
+        ["migration", "slack"],
       ],
     });
     await vi.waitFor(() =>
@@ -1915,6 +1918,13 @@ test("real outbox creates, invites and sends", async () => {
     expect(h.publications.map((event) => event.kind)).toEqual([
       9007, 9007, 9000, 9,
     ]);
+    expect(
+      h.publications.map(({ tags }) =>
+        tags.filter(([name]) => name === "migration"),
+      ),
+    ).toEqual([[], [["migration", "slack"]], [["migration", "slack"]], []]);
+    for (const event of h.publications)
+      expect(verifyEvent(structuredClone(event))).toBe(true);
   } finally {
     owner?.dispose();
     traffic?.dispose();

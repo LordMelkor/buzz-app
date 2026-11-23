@@ -281,7 +281,7 @@ it("keeps drafts safe from stale Canvas, unresolved writes and access loss", asy
   );
   f.pending.push({ event: head, delivery: "unknown" });
   await expect(f.canvas.save(channel, "New", head.id)).rejects.toThrow(
-    /unresolved/,
+    /didn’t go through/,
   );
   f.pending.length = 0;
   f.canWrite.mockReturnValue(false);
@@ -452,7 +452,7 @@ it.each(["recipe", "Canvas"])(
         kind === "recipe"
           ? owner.session.channelKit.save(record.value, undefined)
           : owner.session.canvas.save(channel, "Replacement", undefined);
-      const rejected = expect(saving).rejects.toThrow(/unresolved/);
+      const rejected = expect(saving).rejects.toThrow(/didn’t go through/);
       // Drain read/admission microtasks while storage is explicitly held. No timer
       // delay can stand in for hydration, and no replacement intent may be queued.
       await vi.advanceTimersByTimeAsync(0);
@@ -780,7 +780,7 @@ it("retains an uncertain Canvas after lost ACK and CAS-refused exact retry, bloc
     );
     await expect(
       kit.canvas.save(channel, "Reviewed draft", winner.id),
-    ).rejects.toThrow(/unresolved Canvas save/);
+    ).rejects.toThrow(/earlier Canvas save.*didn’t go through/);
     expect(dismiss).not.toHaveBeenCalled();
     expect(sign).toHaveBeenCalledTimes(1);
     expect(publish.mock.calls.map(([event]) => event)).toEqual([

@@ -45,6 +45,7 @@ export function createSoloRegionFixture(viewer = "a".repeat(64)) {
   const plugins = {
     snapshot: () => ({
       configuration,
+      hostOwned: [],
       activation,
       busy: false,
       error: null,

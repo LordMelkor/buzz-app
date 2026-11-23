@@ -42,11 +42,12 @@
   display: none;
 }
 
-/* Menu activity reveals the overflow menu and swaps the source's Reveal content. */
+/* The source places the action and keeps its own Reveal content. */
 .menu [data-solo-row-action] {
   width: var(--session-action-size);
   height: var(--session-action-size);
   margin: 0;
+  pointer-events: auto;
 }
 .active {
   opacity: 0;
@@ -54,6 +55,11 @@
 @media (hover: hover) {
   .menu [data-solo-row-action] {
     opacity: 0;
+  }
+  .menu [data-solo-row-action]:is(:hover, [aria-expanded="true"]),
+  .menu:is([data-context-menu-present], :has(:focus-visible))
+    [data-solo-row-action] {
+    opacity: 1;
   }
 }
 .menu:is(
@@ -65,8 +71,7 @@
   .rest {
     opacity: 0;
   }
-  .active,
-  [data-solo-row-action] {
+  .active {
     opacity: 1;
   }
 }

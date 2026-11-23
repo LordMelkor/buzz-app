@@ -63,6 +63,7 @@ export const RegionDestinationContext = createContext<
       scope: string;
       current: string | undefined;
       active(): boolean;
+      runAction(action: () => void | Promise<void>): Promise<void>;
       retryReveal(): void;
     }
   | undefined

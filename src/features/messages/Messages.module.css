@@ -2607,6 +2607,26 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   padding-block: var(--space-2);
   margin-bottom: var(--space-2);
 }
+/* A working step stacked under its agent's comment reads as one group: the
+   row spacing between them gives way to the thread's stacked-row gap. The
+   viewer marks the pair; rows drawn inside a comment never change it. */
+.mediaReviewViewer .mediaReviewComment[data-stack-next] {
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.mediaReviewViewer .mediaReviewComment[data-stack-previous] {
+  padding-top: var(--space-half);
+}
+:where(html[data-message-density="compact"])
+  .mediaReviewViewer
+  .mediaReviewComment[data-stack-next] {
+  padding-bottom: var(--space-1);
+}
+:where(html[data-message-density="compact"])
+  .mediaReviewViewer
+  .mediaReviewComment[data-stack-previous] {
+  padding-top: var(--space-1);
+}
 .mediaReviewComment[data-selected] {
   outline: 1px solid var(--border-prominent);
   outline-offset: -1px;
@@ -2636,8 +2656,9 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   border-radius: inherit;
   clip-path: var(--media-corner-clip, none);
 }
+/* Only the gutter avatar: an avatar inside a comment keeps its own size. */
 .mediaReviewViewer .mediaReviewComment .message > :first-child,
-.mediaReviewViewer .mediaReviewComment [data-avatar-shape] {
+.mediaReviewViewer .mediaReviewComment .messageAvatar [data-avatar-shape] {
   width: 1.5rem;
   height: 1.5rem;
   min-width: 1.5rem;
@@ -3957,6 +3978,17 @@ html[data-keyboard-navigation] .activityExpansion {
   .agentAvatarGroup {
   width: var(--size-control-sm);
   height: var(--size-control-sm);
+}
+/* Media comments use 24px avatars. Size the slot, not only the image, so
+   comment and working-agent avatars share one column in every engine.
+   `.messageAvatar` keeps this above the slot sizes set by layout and density. */
+.mediaReviewViewer
+  .mediaReviewThread
+  .messageAvatar
+  :is(.nestedAvatar, .agentAvatarGroup) {
+  flex-basis: 1.5rem;
+  width: 1.5rem;
+  height: 1.5rem;
 }
 .agentAvatarGroupItem {
   position: absolute;
