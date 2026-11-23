@@ -43,6 +43,7 @@ const plugins: Pick<PluginManager, "subscribe" | "snapshot"> = (() => {
       },
       externalPluginsPaused: false,
     },
+    hostOwned: [],
     activation: {},
     busy: false,
     error: null,

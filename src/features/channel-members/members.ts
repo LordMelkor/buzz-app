@@ -380,11 +380,40 @@ async function addOneMember(
     throw new Error(
       "Retry this invitation from the agent’s profile so its eligibility can be checked.",
     );
+  const expired =
+    pending?.delivery === "failed" &&
+    Date.now() / 1000 - pending.event.created_at >= additionLifetimeSeconds;
+  // The relay refuses an expired event, so an explicit Add replaces it.
+  // Unapplied legacy invitations are retired with their own replacement below.
+  if (
+    expired &&
+    !intent.retry &&
+    !pending.acknowledged &&
+    !(soloParticipant && noRole(pending.event))
+  ) {
+    await outbox.dismiss(pending.event.id);
+    check();
+    if (journal.snapshot().some((item) => item.event.id === pending.event.id))
+      throw new Error(
+        "This addition is still in progress. Try again when it finishes.",
+      );
+    intent.dismissed = true;
+    return addOneMember(
+      session,
+      channelId,
+      pubkey,
+      signal,
+      intent,
+      receipts,
+      soloParticipant,
+      sharedJournal,
+    );
+  }
   if (soloParticipant && pending && noRole(pending.event))
     intent.id = pending.event.id;
   if (pending && !sameRole && !channel()?.members?.includes(pubkey))
     throw new Error(
-      "An addition of this member with another role is still in Outbox. Retry it there to finish it, or remove it once it shows Not sent, then try again.",
+      "This member is already being added with another role. Wait for it to finish, or add them with that role to retry it, then try again.",
     );
 
   if (pending && !pending.acknowledged)
@@ -474,13 +503,8 @@ async function addOneMember(
     throw new Error(
       "The original addition receipt is unavailable. Refresh membership before trying again.",
     );
-  if (
-    pending?.delivery === "failed" &&
-    Date.now() / 1000 - pending.event.created_at >= additionLifetimeSeconds
-  )
-    throw new Error(
-      "This addition expired. Remove its Not sent item in Outbox, then try again.",
-    );
+  if (expired)
+    throw new Error("This addition expired. Add them again to send a new one.");
 
   const send = () => {
     check();

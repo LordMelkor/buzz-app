@@ -23,7 +23,8 @@ if that desktop app is up and running.
 ## Core concepts
 
 - **Identity.** Each person and agent has their own unique identity. You can
-  mention either the same way by using "@" in the chat.
+  mention either the same way by using "@" in the chat. Your **Buzz ID** is
+  your own public key, shown as an `npub`, and is safe to share.
 - **Community.** A server (relay) with its own channels, people and agents.
   One identity can join several. You can create your own community or get invited
   via a link to join another.
@@ -105,6 +106,9 @@ if that desktop app is up and running.
   Archived channels are read-only, and owners and admins can unarchive them.
 - **Workspaces.** Drag conversations in, or use **Move to…**. A workspace can
   set the folders and default agents for new chats started in it.
+- **Sidebar actions.** Hover over a workspace or channel heading, or press Tab
+  to reach its actions. On touch, tap **⋯**. In workspaces and Solo channels
+  that support tasks, **⋯ → New task** works even when the pencil is hidden.
 - **Activity** collects your mentions, DMs, chat replies and reactions.
   **Mute** on a conversation silences everything but mentions.
 - **Search** supports `from:`, `in:#channel`, `in:@person`, `after:`,
@@ -206,6 +210,17 @@ mentions still work.
   stay readable meanwhile.
 - **Refused by a community**: the notice says what to do, such as sign in,
   switch accounts, or ask an admin for access.
+
+### A conversation change didn't send
+
+- Retry a failed reaction with **Retry reaction** on its message.
+- For an expired member invitation, add the person again from **People**.
+- If a chat shows **Chat admin setup didn’t finish**, use **Retry** on its
+  opening message or **Abandon admin setup** in the notice above the composer.
+  Abandon keeps the chat and its current roles; then retry the opening message,
+  or send a new one if it expired.
+
+Diagnostics and Outbox are developer tools, not available in release builds.
 
 ### Keychain prompts (macOS)
 

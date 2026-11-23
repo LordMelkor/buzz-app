@@ -43,6 +43,10 @@ out. CI keeps the filmstrip.
   `source-fixture.mjs` instead. For a server with its own middleware, use
   `vite-server.mjs`.
 - Unexpected network requests, console errors and page errors fail the test.
+- Fixture builds enable Channel Settings → Diagnostics by default. Set
+  `diagnostics: false` to exercise release behavior. Except with `developmentReact`,
+  builds check that Diagnostics-only text is present when enabled and absent
+  when disabled; keep `DIAGNOSTICS_LABELS` in `tests/browser/build.mjs` current.
 
 **Vite gotchas:**
 - Import `build` and `preview` from `vite-server.mjs`, not from `vite`. Vite

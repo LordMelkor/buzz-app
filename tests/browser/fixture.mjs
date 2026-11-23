@@ -134,6 +134,8 @@ export const test = base.extend({
   // the app's content the next time it renders.
   startupFailureFixture: [false, { option: true, scope: "worker" }],
   companionFixture: [false, { option: true, scope: "worker" }],
+  // Off builds the production channel settings, without Diagnostics.
+  diagnostics: [true, { option: true, scope: "worker" }],
   compiledApp: [buildApp, { scope: "worker" }],
   app: async (
     {

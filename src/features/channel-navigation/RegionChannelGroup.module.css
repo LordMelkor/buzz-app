@@ -4,7 +4,7 @@
 }
 
 @container solo-channel-group (max-width: 9rem) {
-  :is(.group, .teamRow)
+  .teamRow
     [data-solo-channel-new-task]:not(
       [data-has-metadata] *,
       [data-reserve-space] *:focus
@@ -14,14 +14,18 @@
 }
 
 @container solo-channel-group (max-width: 12rem) {
-  .group [class~="navigation-section-heading"]:has(> [data-reserve-space]) {
-    flex-wrap: wrap;
+  .group [data-solo-channel-new-task]:not(:focus) {
+    display: none;
   }
 
-  .group
-    [class~="navigation-section-heading"]:has(> [data-reserve-space])
-    > [class~="navigation-section-heading-label"] {
-    flex-basis: 100%;
+  .headerAccessory > * {
+    min-inline-size: 0;
+  }
+}
+
+@media (hover: none) {
+  .group [data-solo-channel-new-task] {
+    display: none;
   }
 }
 
@@ -71,6 +75,13 @@
     opacity: 0;
   }
 
+  /* Keep the native Actions button at the edge when the task action is present. */
+  .teamRow:has(> :first-child > [data-channel-row-action])
+    > .teamRowSlot
+    > [data-solo-channel-new-task] {
+    inset-inline-end: calc(var(--space-2) + var(--size-control-sm));
+  }
+
   /* On the row's pill the action darkens instead of gaining its own fill. */
   .teamRow
     > .teamRowSlot
@@ -79,10 +90,16 @@
     color: var(--text-navigation);
   }
 
-  /* The row stays highlighted while the pointer is on its controls. */
-  .teamRow:has(> .teamRowSlot > :not(.teamRowBody):hover)
-  > :first-child:not([data-selected])::before {
-    background: var(--affordance-panel-hover);
+  /* The portaled controls are part of the same row's hover target. */
+  .teamRow:has(> .teamRowSlot > :not(.teamRowBody):hover) > :first-child {
+    &:not([data-selected])::before {
+      background: var(--affordance-panel-hover);
+    }
+
+    & > [data-channel-row-action] {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   /* The disclosure takes the row icon's place while the row is pointed at
@@ -111,14 +128,24 @@
 
     /* The task action takes the place of the row's badges, where it shows. */
     @container solo-channel-group (width > 9rem) {
-      &:has(> .teamRowSlot > [data-solo-channel-new-task])
-        > :first-child
-        [data-channel-id] {
-        padding-inline-end: calc(var(--size-control-sm) + var(--space-1));
+      &:has(> .teamRowSlot > [data-solo-channel-new-task]) > :first-child {
+        & [data-channel-id] {
+          padding-inline-end: calc(var(--size-control-sm) + var(--space-1));
 
-        /* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector; a class selector, not [class~=], because Chromium treats [class~=] as a class-attribute feature and this :has() rule would restyle every classed element in the sidebar on unread changes. */
-        & :global(.navigation-item-trailing) {
-          display: none;
+          /* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector; a class selector, not [class~=], because Chromium treats [class~=] as a class-attribute feature and this :has() rule would restyle every classed element in the sidebar on unread changes. */
+          & :global(.navigation-item-trailing) {
+            display: none;
+          }
+        }
+
+        /* Fade before the portaled plus even while it holds the pointer. */
+        /* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector. */
+        &:has(> [data-channel-row-action]) :global(.navigation-item-label) {
+          mask-image: linear-gradient(
+            to left,
+            transparent calc(var(--size-control-sm) + var(--space-1)),
+            black calc(var(--size-control-sm) + var(--space-3))
+          );
         }
       }
     }

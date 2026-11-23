@@ -349,9 +349,18 @@ test("closing a profile beside a main thread preserves the thread destination", 
   const main = page.locator("[data-main-workspace]");
   const thread = main.locator('[role="tab"][data-tab-value^="thread:"]');
   await expect(thread).toHaveAttribute("aria-selected", "true");
-  await page
-    .getByRole("button", { name: "View Pinky profile", exact: true })
-    .click();
+  // The thread pane pushes in over 300 ms, carrying Pinky's mention ~400 px
+  // sideways. Playwright hit-tests only the first event of a click, so a
+  // mouseup after the slide misses the mention and no profile opens. The
+  // settle sees only animations already running, so first wait for the
+  // mention: the pane that carries it, and its push-in, must have mounted.
+  const mention = main.getByRole("button", {
+    name: "View Pinky profile",
+    exact: true,
+  });
+  await expect(mention).toBeVisible();
+  await animationsSettled(main, { subtree: true });
+  await mention.click();
   const panel = page.getByRole("complementary", {
     name: "Profile",
     exact: true,

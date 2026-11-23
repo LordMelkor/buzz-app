@@ -4,6 +4,7 @@ import {
   useNamesRevision,
 } from "../../features/identity-names/react";
 import { npubEncode } from "nostr-tools/nip19";
+import { publicKeyLabels } from "../../shared/identity/public-key";
 import {
   type ReactNode,
   useEffect,
@@ -1018,22 +1019,39 @@ export function SearchResults({
               Number(members.includes(right)) - Number(members.includes(left)),
           )
           .slice(0, 12)
-          .map(({ pubkey, profile, label, verified }) => {
+          .map(({ pubkey, profile, label, verified }) => ({
+            pubkey,
+            profile,
+            label,
+            // The name the label is not: a verified person's other verified
+            // name, else a handle that differs from the label.
+            name: verified
+              ? otherVerifiedName(verifiedLabel(verified, preference), verified)
+              : profile.username && profile.username !== label
+                ? `@${profile.username}`
+                : undefined,
+          }))
+          .map(({ pubkey, profile, label, name }, _, rows) => {
             const agent = selectableAgents.get(pubkey);
             const isAgent = !!agent || !!profile.isAgent;
+            // Rows that read alike name different people: a key label tells
+            // them apart, as in the recipient picker.
+            const alike = rows.filter(
+              (row) => row.label === label && row.name === name,
+            );
+            const detail = [
+              name,
+              alike.length > 1 &&
+                publicKeyLabels(alike.map((row) => row.pubkey)).get(
+                  pubkey.toLowerCase(),
+                ),
+            ]
+              .filter(Boolean)
+              .join(" · ");
             return {
               key: `author:${pubkey}`,
               label,
-              detail: [
-                verified &&
-                  otherVerifiedName(
-                    verifiedLabel(verified, preference),
-                    verified,
-                  ),
-                pubkey.slice(0, 12),
-              ]
-                .filter(Boolean)
-                .join(" · "),
+              ...(detail ? { detail } : {}),
               icon: ChatCircleIcon,
               avatar: {
                 src: avatarMedia(

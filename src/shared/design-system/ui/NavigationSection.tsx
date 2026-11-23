@@ -31,19 +31,17 @@ export type NavigationSectionTrailing = {
 };
 
 /**
- * The label fills the available width and the actions hug the trailing edge.
+ * One heading row: the label fills the available width and the actions hug the
+ * trailing edge. Use "overlay" to keep the label width on hover. Use
+ * "in-flow" when overlap would cover the label or its controls.
  *
  * `disclosure` headings collapse their section. Their label is the feature's
  * own disclosure trigger, which keeps the row's inset as its hit area and
  * focus ring. Quiet parts, `revealActions` or any descendant marked
  * `data-navigation-reveal` such as a chevron, appear on hover, keyboard focus,
- * while a menu from the heading is open or one of them has focus, and always
- * on touch. A heading with an accessory keeps the action space so its controls
- * stay in place. A stable `trailing` config keeps the contributed controls
- * mounted as metadata changes. Metadata sets the trailing hover target's
- * footprint. On pointer devices, quiet actions can overlay an adjacent accessory.
- * On touch and when there is no accessory, the slot fits the full action strip.
- * Other headings give that space to the label until actions appear.
+ * and while a menu from the heading is open. On touch, actions stay visible
+ * beside the label. A stable trailing slot keeps its accessory mounted when
+ * metadata changes. Metadata sets the hover target for an overlay reveal.
  */
 export function NavigationSectionHeading({
   actions,
@@ -54,7 +52,7 @@ export function NavigationSectionHeading({
 }: {
   actions?: ReactNode;
   disclosure?: boolean;
-  revealActions?: boolean;
+  revealActions?: boolean | "overlay" | "in-flow";
   trailing?: NavigationSectionTrailing | undefined;
   children?: ReactNode;
 }) {

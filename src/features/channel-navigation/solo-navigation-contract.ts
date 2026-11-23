@@ -126,6 +126,8 @@ export type SoloRegionProps = Readonly<{
     Workspace?: ComponentType<SoloWorkspaceProps>;
     /** A joined channel's native heading and actions around source-owned content. */
     ChannelGroup?: ComponentType<SoloChannelGroupProps>;
+    /** Workspace and ChannelGroup accept entries for their Solo overflow menus. */
+    headerMenuActions?: true;
     Chats?: ComponentType<Readonly<{ all?: boolean }>>;
     /** All ordinary chats without workspace chrome; keeps host rows and filing. */
     ChatList?: ComponentType;
@@ -140,6 +142,10 @@ export type SoloHeaderLeading = Readonly<{
   /** Render the intact controls in a non-interactive anchor, for example for a hover card. */
   wrapControls?(controls: ReactNode): ReactNode;
 }>;
+export type SoloHeaderMenuAction = Pick<
+  SoloRegionAction,
+  "id" | "label" | "onSelect"
+>;
 export type SoloChannelGroupProps = Readonly<{
   channelId: string;
   selected?: boolean;
@@ -151,6 +157,8 @@ export type SoloChannelGroupProps = Readonly<{
   /** Offered only while the host permits starting a chat from this channel. */
   onNewTask?(): void;
   headerLeading?: SoloHeaderLeading | undefined;
+  /** Entries for the Solo channel overflow. The host ignores these in Team-row placement. */
+  headerMenuActions?: readonly SoloHeaderMenuAction[] | undefined;
   /** Independent header content that stays visible when collapsed. */
   headerAccessory?: ReactNode;
   /** Compact, non-interactive content shown in place of quiet header actions. */
@@ -166,6 +174,7 @@ export type SoloWorkspaceProps = Readonly<{
   onSelect?(): void;
   onNewTask?(): void;
   headerLeading?: SoloHeaderLeading | undefined;
+  headerMenuActions?: readonly SoloHeaderMenuAction[] | undefined;
   /** Independent header content that stays visible when collapsed. */
   headerAccessory?: ReactNode;
   /** Compact, non-interactive content shown in place of quiet header actions. */

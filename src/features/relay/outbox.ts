@@ -851,7 +851,7 @@ export function createOutbox(
       throw new Error("Message is empty or too large");
     if (snapshot.length >= MAX_PENDING)
       throw new Error(
-        "Too many outstanding operations; resolve or dismiss a pending operation",
+        "Too many outstanding operations; resolve a pending operation",
       );
     // Rendered messages carry send order within their second; the optimistic
     // row and the signed event share this exact ms and created_at.

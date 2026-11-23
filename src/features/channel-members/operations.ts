@@ -11,7 +11,7 @@ type Addition = Readonly<{
 }>;
 
 const differentRole =
-  "This member is already being added with another role. Wait for it to finish or show Not sent in Outbox, then try again.";
+  "This member is already being added with another role. Wait for it to finish, then try again.";
 
 /** Session-owned continuation and recovery; closing a view never cancels intent. */
 export function createMemberAdditions(

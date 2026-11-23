@@ -117,6 +117,7 @@ import { PanelWorkspace } from "../../features/panels/PanelWorkspace";
 import { usePanelSplit } from "../../features/panels/usePanelSplit";
 import { PanelDock } from "../../features/panels/PanelDock";
 import { COMPANION_SPLIT, PanelFrame } from "../../features/panels/PanelFrame";
+import { diagnosticsAvailable } from "../../features/developer/mode";
 import { OutboxStatus } from "./OutboxStatus";
 import { RelayTimings } from "./RelayTimings";
 import { LiveStatus } from "./LiveStatus";
@@ -2143,46 +2144,55 @@ function ChannelWorkspace({
       onOpenLink={openLink}
       close={closeSettings}
     >
-      <UnreadOptions session={queries} channelId={current?.id} />
-      <LiveStatus
-        live={queries.live}
-        channelId={current?.id}
-        partialRoster={list.coverage === "partial"}
-        diagnostics
-      />
-      <p>
-        {list.coverage === "partial" ? "Partial roster" : "Roster"} ·{" "}
-        {channels.length} channels
-      </p>
-      <Button type="button" onClick={() => queries.channels.refreshList?.()}>
-        Refresh channels
-      </Button>
-      {preferences.error && <p>Saved groups and stars: {preferences.error}</p>}
-      {preferences.status !== "unsupported" && (
-        <Button
-          type="button"
-          disabled={preferences.status === "loading"}
-          onClick={preferences.reload}
-        >
-          Refresh groups and stars
-        </Button>
-      )}
-      {current && (
-        <Button
-          type="button"
-          onClick={() => queries.channels.refresh?.(current.id)}
-        >
-          Refresh messages
-        </Button>
-      )}
-      {queries.outbox ? (
-        <OutboxStatus
-          outbox={queries.outbox}
-          profiling={queries.profiling}
-          memberAdditions={queries.memberAdditions}
-        />
-      ) : (
-        <RelayTimings profiling={queries.profiling} />
+      {diagnosticsAvailable && (
+        <>
+          <UnreadOptions session={queries} channelId={current?.id} />
+          <LiveStatus
+            live={queries.live}
+            channelId={current?.id}
+            partialRoster={list.coverage === "partial"}
+            diagnostics
+          />
+          <p>
+            {list.coverage === "partial" ? "Partial roster" : "Roster"} ·{" "}
+            {channels.length} channels
+          </p>
+          <Button
+            type="button"
+            onClick={() => queries.channels.refreshList?.()}
+          >
+            Refresh channels
+          </Button>
+          {preferences.error && (
+            <p>Saved groups and stars: {preferences.error}</p>
+          )}
+          {preferences.status !== "unsupported" && (
+            <Button
+              type="button"
+              disabled={preferences.status === "loading"}
+              onClick={preferences.reload}
+            >
+              Refresh groups and stars
+            </Button>
+          )}
+          {current && (
+            <Button
+              type="button"
+              onClick={() => queries.channels.refresh?.(current.id)}
+            >
+              Refresh messages
+            </Button>
+          )}
+          {queries.outbox ? (
+            <OutboxStatus
+              outbox={queries.outbox}
+              profiling={queries.profiling}
+              memberAdditions={queries.memberAdditions}
+            />
+          ) : (
+            <RelayTimings profiling={queries.profiling} />
+          )}
+        </>
       )}
     </ChannelSettingsPanel>
   );

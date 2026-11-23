@@ -86,6 +86,7 @@ function fixture() {
       externalPluginsPaused: false,
       catalog: { profile: "test", location: "test", plugins: [plugin] },
     },
+    hostOwned: [],
     busy: false,
     activation: {},
     error: null,
