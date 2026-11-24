@@ -93,6 +93,21 @@ vi.mock("../../features/agents/gateway/route", async (importOriginal) => {
       actual.upstreamFor(harness),
   };
 });
+const env = vi.hoisted(() => ({
+  own: new Set<string>(),
+  unknown: new Set<string>(),
+  asked: 0,
+  gate: undefined as Promise<void> | undefined,
+  failure: undefined as Error | undefined,
+}));
+vi.mock("../agents/agent-env", () => ({
+  hasOwnEnv: async (agent: string) => {
+    env.asked++;
+    await env.gate;
+    if (env.failure) throw env.failure;
+    return env.unknown.has(agent) ? undefined : env.own.has(agent);
+  },
+}));
 
 const owner = "a".repeat(64);
 const pubkey = "b".repeat(64);
@@ -110,6 +125,8 @@ function deferred<T>() {
 }
 const runtimes: CodexRuntime[] = [];
 afterEach(() => {
+  env.own.clear();
+  env.unknown.clear();
   for (const runtime of runtimes) runtime.dispose();
   runtimes.length = 0;
   vi.useRealTimers();
@@ -970,6 +987,8 @@ it("hands over promptly and runs conversations independently on one server", asy
   await f.runtime.run(f.delivery("@Codex independent", "e".repeat(64)));
   await vi.waitFor(() => expect(f.starts()).toHaveLength(2));
   expect(f.spawn).toHaveBeenCalledTimes(1);
+  // The shared server runs agents, so it asks for their variables.
+  expect(f.spawn.mock.calls[0]?.[1]?.secrets).toEqual(["agent-env"]);
   f.complete(0, "FIRST");
   f.complete(1, "OTHER");
   await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(2));
@@ -1562,6 +1581,366 @@ it("does not clean or log a cleanup error after the last agent closes the server
   } finally {
     vi.useRealTimers();
     error.mockRestore();
+  }
+});
+it("starts an agent with its own list on its own server, and the rest on the shared one", async () => {
+  const f = fixture();
+  const b = second(f);
+  env.own.add("9".repeat(64));
+  try {
+    await f.runtime.run(f.delivery("@Codex first"));
+    await f.runtime.run(b.delivery("@Other second"));
+    await vi.waitFor(() => expect(servers(f)).toHaveLength(2));
+    expect(servers(f).map(([, options]) => options?.envAgent)).toEqual([
+      undefined,
+      "9".repeat(64),
+    ]);
+    expect(
+      servers(f).every(([, options]) =>
+        options?.secrets?.includes("agent-env"),
+      ),
+    ).toBe(true);
+  } finally {
+    env.own.clear();
+    f.runtime.dispose();
+  }
+});
+it("moves a restarted agent to its own server on its first list, and back on its last", async () => {
+  const f = fixture();
+  const b = second(f);
+  const other = "9".repeat(64);
+  const driver = codexRun(f.runtime);
+  if (!driver.retire) throw new Error("Codex cannot retire its agents");
+  try {
+    await f.runtime.run(f.delivery("@Codex first"));
+    await f.runtime.run(b.delivery("@Other shared"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(2));
+    expect(servers(f)).toHaveLength(1);
+    await f.complete(1, "SHARED");
+    await f.complete(0, "FIRST");
+    env.own.add(other);
+    await driver.retire(other);
+    await f.runtime.run(b.delivery("@Other own"));
+    await vi.waitFor(() => expect(servers(f)).toHaveLength(2));
+    expect(servers(f)[1]?.[1]?.envAgent).toBe(other);
+    env.own.delete(other);
+    await driver.retire(other);
+    await f.runtime.run(b.delivery("@Other shared again"));
+    // Its own server goes; its next start is on one without its list.
+    await vi.waitFor(() => expect(servers(f)).toHaveLength(3));
+    expect(servers(f).map(([, options]) => options?.envAgent)).toEqual([
+      undefined,
+      other,
+      undefined,
+    ]);
+  } finally {
+    env.own.clear();
+    f.runtime.dispose();
+  }
+});
+it("starts an agent's own server only once the disconnected shared process has exited", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const replacement = fixture();
+  const silent = deferred<void>();
+  // The old process outlives its connection until the test lets it exit.
+  f.process.end.mockResolvedValue(undefined);
+  f.process.kill.mockResolvedValue(undefined);
+  try {
+    await f.runtime.run(f.delivery("first"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    for (const method of ["thread/unsubscribe", "account/read", "config/read"])
+      f.held.set(method, silent.promise);
+    await f.complete(0, "FIRST FINISHED");
+    await f.runtime.run(f.delivery("queued follow-up"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    f.spawn.mockImplementation(replacement.spawn);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.process.end).toHaveBeenCalled();
+    // Its first list is saved, then new work comes while the old process
+    // is still stopping.
+    env.own.add(pubkey);
+    const b = second(f);
+    env.own.add("9".repeat(64));
+    await f.runtime.run(b.delivery("@Other new work"));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(servers(f).filter(([, options]) => options?.envAgent)).toHaveLength(
+      0,
+    );
+    f.exits.resolve(0);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() =>
+      expect(
+        servers(f).filter(
+          ([, options]) => options?.envAgent === "9".repeat(64),
+        ),
+      ).toHaveLength(1),
+    );
+  } finally {
+    silent.resolve();
+    env.own.clear();
+    f.runtime.dispose();
+    vi.useRealTimers();
+  }
+});
+it.each(["dispose", "retire"] as const)(
+  "drops a model preview whose presence answer comes after %s",
+  async (end) => {
+    // Previews route by the agent's live handle, as Buzz gives it.
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        host: undefined as never,
+        handle: (key) =>
+          key === pubkey ? ({ key, pubkey } as never) : undefined,
+      },
+    );
+    const agent = {
+      key: pubkey,
+      pubkey,
+      config: { workspace: "/tmp/codex-test" },
+    } as Agent;
+    env.asked = 0;
+    const answer = deferred<void>();
+    env.gate = answer.promise;
+    env.own.add(pubkey);
+    try {
+      const late = f.runtime.preview(agent);
+      late.catch(() => undefined);
+      await vi.waitFor(() => expect(env.asked).toBe(1));
+      // The ending finishes before the answer comes.
+      await (end === "dispose"
+        ? f.runtime.dispose()
+        : f.runtime.retire(pubkey));
+      answer.resolve();
+      await expect(late).rejects.toThrow();
+      expect(f.spawn).not.toHaveBeenCalled();
+      if (end === "retire") {
+        // A new preview after the retirement still starts its own server.
+        env.gate = undefined;
+        await expect(f.runtime.preview(agent)).resolves.toMatchObject({
+          current: "test-model",
+        });
+        expect(f.spawn).toHaveBeenCalledTimes(1);
+        expect(f.spawn.mock.calls[0]?.[1]?.envAgent).toBe(pubkey);
+      }
+    } finally {
+      env.gate = undefined;
+      env.asked = 0;
+      f.runtime.dispose();
+    }
+  },
+);
+it("ends a removed agent's turn quietly while its environment read is out", async () => {
+  const f = fixture();
+  const answer = deferred<void>();
+  env.gate = answer.promise;
+  env.asked = 0;
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(env.asked).toBe(1));
+    f.runtime.sync([]);
+    // Retirement and the turn settle while the read is still held.
+    await f.runtime.retire(pubkey);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.starts()).toHaveLength(0);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+    answer.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.starts()).toHaveLength(0);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  } finally {
+    env.gate = undefined;
+    env.asked = 0;
+    f.runtime.dispose();
+  }
+});
+it("ends a removed agent's run-once quietly while its environment read is out", async () => {
+  const f = fixture();
+  const answer = deferred<void>();
+  env.gate = answer.promise;
+  env.asked = 0;
+  try {
+    const running = f.runtime.runOnce({
+      delivery: f.delivery("check"),
+      key: "source/check",
+      signal: new AbortController().signal,
+      prompt: async () => "check",
+    });
+    await vi.waitFor(() => expect(env.asked).toBe(1));
+    f.runtime.sync([]);
+    await f.runtime.retire(pubkey);
+    await expect(running).resolves.toEqual({
+      ok: false,
+      error: "Codex was stopped",
+    });
+    answer.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.starts()).toHaveLength(0);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  } finally {
+    env.gate = undefined;
+    env.asked = 0;
+    f.runtime.dispose();
+  }
+});
+it("ends a run-once at its deadline while its environment read is out", async () => {
+  const f = fixture();
+  const answer = deferred<void>();
+  env.gate = answer.promise;
+  env.asked = 0;
+  const deadline = new AbortController();
+  try {
+    const running = f.runtime.runOnce({
+      delivery: f.delivery("check"),
+      key: "source/check",
+      signal: deadline.signal,
+      prompt: async () => "check",
+    });
+    await vi.waitFor(() => expect(env.asked).toBe(1));
+    deadline.abort(new Error("Deadline passed"));
+    await expect(running).resolves.toEqual({
+      ok: false,
+      error: "Deadline passed",
+    });
+    answer.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.spawn).not.toHaveBeenCalled();
+  } finally {
+    env.gate = undefined;
+    env.asked = 0;
+    f.runtime.dispose();
+  }
+});
+it("opens no server when the agent is removed just as its route is read", async () => {
+  const f = fixture();
+  const runtime = f.runtime as unknown as { route: () => Promise<void> };
+  const route = vi.spyOn(runtime, "route").mockImplementation(() => {
+    const read = Promise.resolve();
+    // Runs after the read is taken, before the start continues.
+    void read.then(() => {}).then(() => void f.runtime.retire(pubkey));
+    return read;
+  });
+  try {
+    await expect(
+      f.runtime.runOnce({
+        delivery: f.delivery("check"),
+        key: "source/check",
+        signal: new AbortController().signal,
+        prompt: async () => "check",
+      }),
+    ).resolves.toEqual({ ok: false, error: "Codex was stopped" });
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.starts()).toHaveLength(0);
+  } finally {
+    route.mockRestore();
+    f.runtime.dispose();
+  }
+});
+it("still reports a routing failure on a live agent", async () => {
+  const f = fixture();
+  env.failure = new Error("routing broke");
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+    expect(contents(f.publish)[0]).toContain("routing broke");
+    expect(f.starts()).toHaveLength(0);
+  } finally {
+    env.failure = undefined;
+    f.runtime.dispose();
+  }
+});
+it("chooses an agent's server again after its own one exits", async () => {
+  const f = fixture();
+  env.own.add(pubkey);
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(servers(f)[0]?.[1]?.envAgent).toBe(pubkey);
+    // Its last list is removed, then its process exits on its own.
+    env.own.delete(pubkey);
+    f.exits.resolve(3);
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+    await f.runtime.run(f.delivery("again"));
+    await vi.waitFor(() => expect(servers(f)).toHaveLength(2));
+    expect(servers(f)[1]?.[1]?.envAgent).toBeUndefined();
+  } finally {
+    f.runtime.dispose();
+  }
+});
+it("starts on the shared server when presence can't be read, and reads it again next time", async () => {
+  const f = fixture();
+  env.unknown.add(pubkey);
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(servers(f)[0]?.[1]?.envAgent).toBeUndefined();
+    f.exits.resolve(3);
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+    env.unknown.delete(pubkey);
+    env.own.add(pubkey);
+    await f.runtime.run(f.delivery("again"));
+    await vi.waitFor(() => expect(servers(f)).toHaveLength(2));
+    expect(servers(f)[1]?.[1]?.envAgent).toBe(pubkey);
+  } finally {
+    env.unknown.clear();
+    f.runtime.dispose();
+  }
+});
+it("starts an agent's own server again after its start fails", async () => {
+  const f = fixture();
+  env.own.add(pubkey);
+  const spawn = f.spawn.getMockImplementation();
+  f.spawn.mockImplementationOnce(async (id, options) => {
+    if (id === "app-server") throw new Error("no Codex");
+    return spawn?.(id, options) as never;
+  });
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+    expect(f.starts()).toHaveLength(0);
+    await f.runtime.run(f.delivery("again"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(servers(f).map(([, options]) => options?.envAgent)).toEqual([
+      pubkey,
+      pubkey,
+    ]);
+  } finally {
+    f.runtime.dispose();
+  }
+});
+it("keeps an agent's own server whose handshake fails tracked until its process exits", async () => {
+  const f = fixture();
+  env.own.add(pubkey);
+  f.failing.add("initialize");
+  // The failed process outlives its connection until the test lets it exit.
+  f.process.end.mockResolvedValue(undefined);
+  f.process.kill.mockResolvedValue(undefined);
+  try {
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(f.process.end).toHaveBeenCalled());
+    let retired = false;
+    const retiring = f.runtime.retire(pubkey).then(() => {
+      retired = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(retired).toBe(false);
+    f.exits.resolve(0);
+    await retiring;
+  } finally {
+    f.runtime.dispose();
   }
 });
 it("reopens the shared server after it exits", async () => {
@@ -5558,7 +5937,7 @@ it.each([false, true])(
   },
 );
 
-it("lists saved conversations newest first from storage, and moves a started one to the front", async () => {
+it("lists readable saved conversations newest first from storage, and moves a started one to the front", async () => {
   const f = fixture();
   const thread = JSON.stringify(["channel", root]);
   const channel = JSON.stringify(["channel", "channel"]);
@@ -5573,13 +5952,6 @@ it("lists saved conversations newest first from storage, and moves a started one
     }),
   );
   expect(f.runtime.conversations(pubkey)).toEqual([
-    {
-      key: elsewhere,
-      channelId: "unlisted",
-      root,
-      threadId: "newer",
-      at: 2,
-    },
     {
       key: thread,
       channelId: "channel",
@@ -9264,6 +9636,28 @@ describe("a thread that keeps the base sections it started with", () => {
     );
     return f;
   };
+
+  it("reports whether saved local conversations may restart for custom instructions", () => {
+    const empty = fixture();
+    const key = empty.delivery("check").agent.key;
+    expect(empty.runtime.mayRestartForBaseInstructions(key, scope)).toBe(false);
+    expect(resumed().runtime.mayRestartForBaseInstructions(key, scope)).toBe(
+      true,
+    );
+    expect(
+      resumed({
+        layout: 1,
+        parts: current.parts,
+      }).runtime.mayRestartForBaseInstructions(key, scope),
+    ).toBe(false);
+    const reconnecting = resumed();
+    reconnecting.snapshot.status = "connecting";
+    expect(reconnecting.runtime.mayRestartForBaseInstructions(key, scope)).toBe(
+      true,
+    );
+    empty.snapshot.status = "connecting";
+    expect(empty.runtime.mayRestartForBaseInstructions(key, scope)).toBe(false);
+  });
 
   it("saves them with a new thread and sends no update while they are current", async () => {
     const f = fixture();

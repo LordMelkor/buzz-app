@@ -5,6 +5,8 @@ import { writeJSON } from "../../features/agent-protection/json-stream";
 // plugin to run the Buzz tools, so the process holds no Buzz key.
 import type { AgentProtection } from "../../features/agent-protection/service";
 import type { GatewayProfile } from "../../features/agents/gateway/contract";
+import { pubkeyOf } from "../../features/agents/membership";
+import { hasOwnEnv } from "../agents/agent-env";
 import {
   protectionChannel,
   protectionEnvironment,
@@ -158,12 +160,21 @@ async function credentialed(connection: Connection, params: object) {
 
 export class Pi {
   private connection: Promise<Connection> | undefined;
+  /** Counts started hosts, so only the current one's exit clears it. */
+  private generation = 0;
   private requests = 0;
   private stopped = false;
+  /** Each agent's worker: `pi` is its own host (protected, or with its own
+   * environment variables), else it uses this one. `on` is the host start an
+   * unprotected route was chosen for: its exit lets the next request choose
+   * again, as does an own host's exit. */
   private hosts = new Map<
     string,
-    Promise<{ key: string; pi: Pi | undefined }>
+    Promise<{ key: string; pi: Pi | undefined; on?: Promise<Connection> }>
   >();
+  /** Counts each agent's retirements, so a start that waited across one
+   * starts nothing. */
+  private retirements = new Map<string, number>();
 
   constructor(
     private readonly spawn: () => Spawn,
@@ -172,6 +183,8 @@ export class Pi {
       agent: string,
     ) => AgentProtection | undefined,
     private readonly protectedLaunch?: ProtectedLaunch,
+    /** The agent whose own environment variables this host starts with. */
+    private readonly envAgent?: string,
   ) {}
 
   /** Asks the host, starting it first if it is not running. */
@@ -182,19 +195,38 @@ export class Pi {
       const gate = this.protection(agent);
       gate?.assertAvailable();
       const prior = this.hosts.get(agent);
+      const retirement = this.retirements.get(agent) ?? 0;
       const next = (async () => {
         const previous = await prior?.catch(() => undefined);
-        if (previous?.key === (gate?.key ?? "")) return previous;
+        if (gate && previous?.key === (gate.key ?? "")) return previous;
+        // An unprotected route holds while the host it was chosen with runs.
+        if (
+          previous &&
+          !gate &&
+          (previous.key === "env"
+            ? !!previous.pi?.running()
+            : previous.key === "" && previous.on === this.connection)
+        )
+          return previous;
         if (previous?.pi) await previous.pi.dispose();
         else if (this.connection) await this.rawRequest("close", { agent });
+        // Unreadable is none; the next start reads again.
+        const own = !gate && (await hasOwnEnv(agent)) === true;
+        // An answer that outlived a retirement or dispose starts nothing.
+        if (this.stopped || (this.retirements.get(agent) ?? 0) !== retirement)
+          throw new Error("Pi has stopped");
         const pi = gate
           ? new Pi(this.spawn, this.handlers, undefined, {
               agent,
               gate,
               runtime: () => this.rawRequest<RuntimeInfo>("runtime"),
             })
-          : undefined;
-        return { key: gate?.key ?? "", pi };
+          : own
+            ? new Pi(this.spawn, this.handlers, undefined, undefined, agent)
+            : undefined;
+        const on = pi ? undefined : this.connect();
+        on?.catch(() => undefined);
+        return { key: gate?.key ?? (own ? "env" : ""), pi, ...(on && { on }) };
       })();
       this.hosts.set(agent, next);
       const child = (await next).pi;
@@ -202,9 +234,14 @@ export class Pi {
     }
     return this.rawRequest<T>(method, params);
   }
+  /** Whether its host started and has not exited or failed to start. */
+  private running() {
+    return !!this.connection;
+  }
   /** Ends the old worker without resolving a possibly newer policy first. */
   async retire(agent: string) {
     const prior = this.hosts.get(agent);
+    this.retirements.set(agent, (this.retirements.get(agent) ?? 0) + 1);
     const retired = (async () => {
       const previous = await prior?.catch(() => undefined);
       if (previous?.pi) await previous.pi.dispose();
@@ -255,7 +292,7 @@ export class Pi {
   private connect(): Promise<Connection> {
     if (this.stopped) return Promise.reject(new Error("Pi has stopped"));
     if (!this.connection) {
-      const connecting = this.start();
+      const connecting = this.start(++this.generation);
       this.connection = connecting;
       // One that failed to start is tried again by the next request.
       connecting.catch(() => {
@@ -265,7 +302,7 @@ export class Pi {
     return this.connection;
   }
 
-  private async start(): Promise<Connection> {
+  private async start(generation: number): Promise<Connection> {
     let ready!: () => void;
     let isReady = false;
     const started = new Promise<void>((resolve) => {
@@ -365,6 +402,10 @@ export class Pi {
         : undefined;
     const processId = boot ? "pi-protected-sh" : windows ? "node" : "pi-sh";
     const starting = this.spawn()(processId, {
+      ...(!boot && {
+        secrets: ["agent-env"],
+        ...(this.envAgent && { envAgent: pubkeyOf(this.envAgent) }),
+      }),
       args:
         boot && runtime
           ? [
@@ -449,8 +490,8 @@ export class Pi {
       for (const call of connection.calls.values())
         call.reject(connection.gone);
       connection.calls.clear();
-      // The next request starts another.
-      this.connection = undefined;
+      // The next request starts another, unless one already has.
+      if (this.generation === generation) this.connection = undefined;
       ready();
     });
     await started;

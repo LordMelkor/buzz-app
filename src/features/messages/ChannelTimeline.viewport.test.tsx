@@ -1268,6 +1268,7 @@ function fillFixture({
   cachedOnly = false,
   recovering = false,
   intro = undefined as ReactNode,
+  restore = undefined as "latest" | "older" | undefined,
 } = {}) {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
@@ -1289,6 +1290,12 @@ function fillFixture({
     return frameId;
   });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  // Idle callbacks run with the frames.
+  vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  });
+  vi.stubGlobal("cancelIdleCallback", (id: number) => frames.delete(id));
   const flush = () =>
     act(() => {
       for (let round = 0; round < 5 && frames.size; round++)
@@ -1309,7 +1316,17 @@ function fillFixture({
     },
     cachedOnly ? { cachedOnly: true } : undefined,
   );
-  let events = [message(viewer, "alpha", "Latest public message", 100)];
+  const latest = message(viewer, "alpha", "Latest public message", 100);
+  let events = [latest];
+  // A revisit restores its saved reading place: the latest message, or the
+  // first older one, which the head lacks and the first page lands.
+  let older: (typeof events)[number] | undefined =
+    restore === "older" ? message(viewer, "alpha", "Older 1", 99) : undefined;
+  if (restore)
+    writeView("fill", "scroll:alpha", {
+      bottom: false,
+      anchor: { id: (older ?? latest).id, y: 0 },
+    });
   let window: ChannelWindow = {
     channelId: "alpha",
     rows: foldMessages("alpha", relay.pubkey, events),
@@ -1325,9 +1342,15 @@ function fillFixture({
   const loadOlder = vi.fn(() => {
     if (!window.loadingOlder) window = { ...window, loadingOlder: true };
   });
+  const cancelOlder = vi.fn();
   const queries = {
     ...owner.session,
-    channels: { ...owner.session.channels, loadOlder, window: () => window },
+    channels: {
+      ...owner.session.channels,
+      loadOlder,
+      cancelOlder,
+      window: () => window,
+    },
     recovery: {
       snapshot: () => recovery,
       subscribe: () => () => {},
@@ -1348,18 +1371,33 @@ function fillFixture({
   return {
     geometry,
     loadOlder,
+    cancelOlder,
     /** An older page lands, or a read ends with the given patch. */
     land(next: Partial<ChannelWindow> = {}) {
       events = [
-        message(viewer, "alpha", `Older ${events.length}`, 100 - events.length),
+        older ??
+          message(
+            viewer,
+            "alpha",
+            `Older ${events.length}`,
+            100 - events.length,
+          ),
         ...events,
       ];
+      older = undefined;
       window = {
         ...window,
         rows: foldMessages("alpha", relay.pubkey, events),
         loadingOlder: false,
         ...next,
       };
+      view.rerender(content());
+      flush();
+    },
+    /** A live message arrives below. */
+    live() {
+      events = [...events, message(viewer, "alpha", "Live", 101)];
+      window = { ...window, rows: foldMessages("alpha", relay.pubkey, events) };
       view.rerender(content());
       flush();
     },
@@ -1374,7 +1412,11 @@ function fillFixture({
 it("a settled reader at the bottom fills a screen with nothing to scroll", () => {
   const h = fillFixture();
   try {
-    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith(
+      "alpha",
+      expect.any(Number),
+      true,
+    );
   } finally {
     h.dispose();
   }
@@ -1385,7 +1427,11 @@ it("fills past a pending intro and shows it only when verified history reaches i
     intro: <article aria-label="Local introduction">Welcome</article>,
   });
   try {
-    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith(
+      "alpha",
+      expect.any(Number),
+      true,
+    );
     expect(
       screen.queryByRole("article", { name: "Local introduction" }),
     ).toBeNull();
@@ -1406,15 +1452,36 @@ it("filling reads at most five pages a visit", () => {
   try {
     for (let page = 0; page < 6; page++) h.land();
     expect(h.loadOlder).toHaveBeenCalledTimes(5);
+    // Pages after the first are full.
+    for (const call of h.loadOlder.mock.calls.slice(1))
+      expect(call).toEqual(["alpha", 200, true]);
   } finally {
     h.dispose();
   }
 });
 
-it("filling stops once the history can scroll", () => {
+it("leaving a channel cancels its read-ahead in flight", () => {
+  const h = fillFixture();
+  expect(h.loadOlder).toHaveBeenCalledOnce();
+  h.dispose();
+  expect(h.cancelOlder).toHaveBeenCalledExactlyOnceWith("alpha");
+});
+
+it("leaving after the read-ahead lands cancels nothing", () => {
+  const h = fillFixture();
+  h.land({ hasMore: false });
+  h.dispose();
+  expect(h.cancelOlder).not.toHaveBeenCalled();
+});
+
+it("filling stops once the reader has the prefetch distance above", () => {
   const h = fillFixture();
   try {
-    h.geometry.scrollHeight = 601;
+    // 6 screens above a reader at the bottom of a 600px viewport.
+    h.geometry.scrollHeight = 4200;
+    screen.getByRole("region", {
+      name: "Channel message history",
+    }).scrollTop = 3600;
     h.land();
     expect(h.loadOlder).toHaveBeenCalledOnce();
   } finally {
@@ -1449,14 +1516,52 @@ it.each([
   }
 });
 
-it("does not fill while a saved reading place is restored", () => {
-  writeView("fill", "scroll:alpha", {
-    bottom: false,
-    anchor: { id: "missing", y: 0 },
-  });
-  const h = fillFixture();
+it("reads ahead past a pending saved row without returning the reader to it", () => {
+  const h = fillFixture({ restore: "older" });
   try {
-    expect(h.loadOlder).not.toHaveBeenCalled();
+    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith(
+      "alpha",
+      expect.any(Number),
+      true,
+    );
+    h.geometry.scrollHeight = 2000;
+    viewport.scrollToIndex.mockClear();
+    h.land();
+    // The saved row landed; the reader still follows the latest message.
+    expect(screen.getByText("Older 1")).toBeVisible();
+    expect(viewport.scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    expect(viewport.scrollToIndex).not.toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ align: "start" }),
+    );
+    // Nor does a later update: the landing retired it.
+    viewport.scrollToIndex.mockClear();
+    h.live();
+    expect(viewport.scrollToIndex).not.toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ align: "start" }),
+    );
+  } finally {
+    h.dispose();
+  }
+});
+
+it("reads ahead for a revisit restored at the bottom, keeping its place", () => {
+  const h = fillFixture({ restore: "latest" });
+  try {
+    expect(h.loadOlder).toHaveBeenCalledExactlyOnceWith(
+      "alpha",
+      expect.any(Number),
+      true,
+    );
+    viewport.scrollToIndex.mockClear();
+    h.land();
+    // The saved message, now behind the landed row, keeps its place.
+    expect(viewport.scrollToIndex).toHaveBeenCalledExactlyOnceWith(1, {
+      align: "start",
+      offset: 0,
+    });
+    expect(h.loadOlder).toHaveBeenCalledTimes(2);
   } finally {
     h.dispose();
   }

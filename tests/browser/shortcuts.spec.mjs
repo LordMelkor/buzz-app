@@ -352,8 +352,8 @@ async function wheelToScaledHistoryTop(page, history, messageIds) {
 }
 
 test.describe("scaled history", () => {
-  test.use({ historyCounts: { alpha: 21, beta: 0 } });
-  // Twenty rows fill one page; the extra row proves the virtualized paging edge.
+  test.use({ historyCounts: { alpha: 300, beta: 0 } });
+  // History remains past the read ahead on open, for the virtualized paging edge.
   // Real layout and pointer coordinates cannot be established by a DOM emulator.
   test("interface zoom keeps timeline paging and sidebar resizing usable", async ({
     page,
@@ -433,6 +433,7 @@ test.describe("scaled history", () => {
         deferred.clear();
       };
     });
+    let pageRows = [];
     try {
       await wheelToScaledHistoryTop(
         page,
@@ -440,6 +441,7 @@ test.describe("scaled history", () => {
         messages.map(({ id }) => id),
       );
       await expect.poll(() => app.pending.length).toBe(1);
+      pageRows = app.pending[0].events;
       const loading = history.getByRole("button", {
         name: "Loading older…",
         exact: true,
@@ -457,12 +459,24 @@ test.describe("scaled history", () => {
       await readDeadlines.evaluate((resume) => resume());
       await readDeadlines.dispose();
     }
+    // The page's newest row lands just above the reader.
+    const newest = pageRows.reduce((a, b) =>
+      b.created_at > a.created_at ? b : a,
+    );
     await expect(
-      history.getByRole("button", { name: "Loading older…", exact: true }),
-    ).toHaveCount(0);
-    await expect(
-      history.locator(`[data-message-id="${messages[0].id}"]`),
+      history.locator(`[data-message-id="${newest.id}"]`),
     ).toBeVisible();
+    // A reader at the top reads on to the channel start.
+    const loading = history.getByRole("button", {
+      name: "Loading older…",
+      exact: true,
+    });
+    for (let read = 0; read < 5 && (await loading.count()); read++) {
+      await expect.poll(() => app.pending.length).toBe(1);
+      app.pending.shift().release();
+      await settle(page);
+    }
+    await expect(loading).toHaveCount(0);
   });
 });
 

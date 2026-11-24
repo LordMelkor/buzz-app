@@ -122,10 +122,15 @@ export type HostProcessOptions = Readonly<{
   /** Set by agent protection: the agent a protected engine is launched for.
    * Native checks that the agent's saved protection names this plugin. */
   protectedAgent?: Readonly<{ pubkey: string; relay: string }>;
-  /** Secrets native code holds, set in its environment after `env`; one that
-   * is not saved is left unset. Each is only for the processes it belongs
-   * to: `anthropic-api-key` (`ANTHROPIC_API_KEY`) for Buzz's Claude. */
-  secrets?: readonly "anthropic-api-key"[];
+  /** Secrets native code holds; one that is not saved is left unset. Each is
+   * only for the processes it belongs to: `anthropic-api-key`
+   * (`ANTHROPIC_API_KEY`) for Buzz's Claude, set after `env`, and `agent-env`,
+   * the environment variables saved for the local agent `envAgent`, set
+   * before `env` so the harness's own variables win. */
+  secrets?: readonly ("anthropic-api-key" | "agent-env")[];
+  /** The local agent (pubkey) whose own environment variables `agent-env`
+   * adds. Native checks it is a local, unprotected agent here. */
+  envAgent?: string;
   onStdout?(data: string): void;
   onStderr?(data: string): void;
 }>;
@@ -436,6 +441,7 @@ export class HostService extends Service implements Host {
       agentCredential: options.agentCredential ?? false,
       protectedAgent: options.protectedAgent ?? null,
       ...(options.secrets?.length && { secrets: options.secrets }),
+      ...(options.envAgent && { envAgent: options.envAgent }),
       onEvent,
     });
     // The host takes at most 1 MiB a write, so a longer one goes in pieces,

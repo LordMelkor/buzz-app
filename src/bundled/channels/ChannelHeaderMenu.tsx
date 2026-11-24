@@ -34,6 +34,7 @@ export function ChannelHeaderMenu({
   finishConversion,
   leadingAction,
   startChat,
+  afterDetails,
   size = "toolbar",
   label = "Channel actions",
 }: {
@@ -44,6 +45,7 @@ export function ChannelHeaderMenu({
   openDetails(): void;
   leadingAction?: ReactNode;
   startChat?: ReactNode;
+  afterDetails?: (close: () => void) => ReactNode;
   size?: "toolbar" | "compact";
   label?: string;
   finishConversion?: (() => void) | undefined;
@@ -106,6 +108,7 @@ export function ChannelHeaderMenu({
         </MenuIcon>
         View channel details
       </MenuItem>
+      {afterDetails?.(surface.close)}
       {menuPanels?.map((panel) => (
         <MenuItem key={panel.key} onClick={() => openMenuPanel?.(panel)}>
           <MenuIcon>

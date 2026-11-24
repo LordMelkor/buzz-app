@@ -103,6 +103,36 @@ it("provides ui.Tabs only while a plugin supplies the tab workspace", async () =
   h.runtime.reconcile([]);
   await vi.waitFor(() => expect(h.service.ui.Tabs).toBeUndefined());
 });
+it("reports the slots the active ui.Workspace provider declares", async () => {
+  const Workspace = () => null;
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      ctx.conversation.registerWorkspace(Workspace, {
+        slots: { headerActions: true },
+      });
+    },
+  });
+  expect(h.service.workspaceSlots).toBeUndefined();
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() =>
+    expect(h.service.workspaceSlots).toEqual({ headerActions: true }),
+  );
+  h.runtime.reconcile([]);
+  await vi.waitFor(() => expect(h.service.workspaceSlots).toBeUndefined());
+});
+it("reports no slots for a ui.Workspace provider that declares none", async () => {
+  const Workspace = () => null;
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      ctx.conversation.registerWorkspace(Workspace);
+    },
+  });
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() => expect(h.service.ui.Workspace).toBeDefined());
+  expect(h.service.workspaceSlots).toBeUndefined();
+});
 it("bundled Emoji really registers a picker and a renderer, including reaction metadata", async () => {
   const h = harness(emoji);
   h.runtime.reconcile([h.plugin]);

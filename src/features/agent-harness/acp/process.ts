@@ -5,7 +5,11 @@ import { writeJSON } from "../../agent-protection/json-stream";
 // answers: the harness is given its address and token in `session/new`, never
 // a Buzz key. What a harness adds to plain ACP comes from its `AcpHooks`.
 import { isFinalMessage, MESSAGE_TOOLS } from "../../../buzz-mcp/session-tools";
-import type { HostMcpServer, HostProcess } from "../../host/service";
+import type {
+  HostMcpServer,
+  HostProcess,
+  HostProcessOptions,
+} from "../../host/service";
 import { AcpSession, type ConfigOptions } from "./session";
 import { allow, errorMessage } from "./steps";
 import type {
@@ -148,6 +152,7 @@ export class AcpProcess {
       /** Given the harness as soon as it has started, before `initialize`, so
        * a caller can keep one whose start fails until it has exited. */
       onProcess?: (acp: AcpProcess) => void;
+      secrets?: HostProcessOptions["secrets"];
     }>,
   ) {
     const { signal } = launch;
@@ -160,6 +165,9 @@ export class AcpProcess {
       ...(launch.args ? { args: launch.args } : {}),
       env: { ...hooks.env, ...launch.env, ...PROTECTED_ENV },
       agentCredential: !!launch.agent,
+      ...(launch.secrets && { secrets: launch.secrets }),
+      ...(launch.secrets?.includes("agent-env") &&
+        launch.agent && { envAgent: launch.agent.pubkey }),
       onStdout: (data) => (acp ? acp.read(data) : early.push(data)),
       onStderr: (data) => {
         if (acp) acp.readError(data);

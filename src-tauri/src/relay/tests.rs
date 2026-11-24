@@ -5167,3 +5167,50 @@ fn huddle_end_requires_one_parent_and_a_distinct_room() {
         assert!(validate_event("https://relay.test", &event).is_err());
     }
 }
+
+#[test]
+fn pin_commands_name_one_channel_and_one_message() {
+    let pin = |tags: Vec<Vec<&str>>| EventTemplate {
+        kind: 40010,
+        created_at: 1,
+        content: "".into(),
+        tags: tags
+            .into_iter()
+            .map(|tag| tag.into_iter().map(str::to_owned).collect())
+            .collect(),
+    };
+    let target = "a".repeat(64);
+    let valid = vec![
+        vec!["h", "channel"],
+        vec!["e", &target],
+        vec!["client-id", "x"],
+    ];
+    assert!(validate_event("https://relay.test", &pin(valid.clone())).is_ok());
+    let mut unpin = pin(valid.clone());
+    unpin.kind = 40011;
+    assert!(validate_event("https://relay.test", &unpin).is_ok());
+    let mut content = pin(valid.clone());
+    content.content = "x".into();
+    assert!(validate_event("https://relay.test", &content).is_err());
+    let upper = "A".repeat(64);
+    let long = "x".repeat(257);
+    for tags in [
+        vec![vec!["e", &target]],
+        vec![vec!["h", "channel"]],
+        vec![vec!["h", "channel"], vec!["h", "other"], vec!["e", &target]],
+        vec![vec!["h", "channel"], vec!["e", &target], vec!["e", &target]],
+        vec![vec!["h", "channel"], vec!["e", &upper]],
+        vec![vec!["h", ""], vec!["e", &target]],
+        vec![vec!["h", &long], vec!["e", &target]],
+        vec![vec!["h", "channel"], vec!["e", &target, "relay"]],
+        vec![vec!["h", "channel"], vec!["e", &target], vec!["p", &target]],
+        vec![
+            vec!["h", "channel"],
+            vec!["e", &target],
+            vec!["client-id", "x"],
+            vec!["client-id", "y"],
+        ],
+    ] {
+        assert!(validate_event("https://relay.test", &pin(tags)).is_err());
+    }
+}

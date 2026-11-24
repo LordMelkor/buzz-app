@@ -89,6 +89,18 @@ export const soloRegionFixture: BundledPlugin = {
       const leadingHeader = new URL(location.href).searchParams.has(
         "leading-header",
       );
+      const wrapActions = new URL(location.href).searchParams.has(
+        "wrap-conversation-actions",
+      );
+      const channelHeaderAccessory = new URL(location.href).searchParams.has(
+        "channel-header-accessory",
+      );
+      const teamRowChannelGroup = new URL(location.href).searchParams.has(
+        "team-row-channel-group",
+      );
+      const channelMenuAction = new URL(location.href).searchParams.has(
+        "channel-menu-action",
+      );
       function Workspaces({
         ui,
         binding,
@@ -137,24 +149,50 @@ export const soloRegionFixture: BundledPlugin = {
       }: Pick<SoloRegionProps, "ui"> & { id: string }) {
         const [expanded, setExpanded] = useState(false);
         const [selected, select] = useState(false);
+        const [creatingTask, setCreatingTask] = useState(false);
         const summary = useHeaderSummary("Alpha");
         if (!ui.ChannelGroup) return null;
         return (
           <ui.ChannelGroup
             channelId={id}
+            {...(teamRowChannelGroup ? { placement: "team-row" as const } : {})}
             selected={selected}
             onSelect={() => select(true)}
             expanded={expanded}
             controls={`fixture-group-${id}`}
             disclosureLabel={`Toggle ${id} tasks`}
             onToggle={() => setExpanded(!expanded)}
-            onNewTask={() => select(false)}
+            onNewTask={() => {
+              select(false);
+              if (teamRowChannelGroup) {
+                setExpanded(true);
+                setCreatingTask(true);
+              }
+            }}
             headerLeading={
               leadingHeader && id === "alpha" ? summary : undefined
             }
+            headerMenuActions={
+              channelMenuAction && id === "alpha"
+                ? [
+                    {
+                      id: "inspect-catalog",
+                      label: "Inspect catalog",
+                      icon: <span>★</span>,
+                      hint: "Inspect the catalog for this channel",
+                      onSelect: () => select(true),
+                    },
+                  ]
+                : undefined
+            }
             headerAccessory={
-              !leadingHeader && id === "alpha" ? (
-                <HeaderAccessory label="Mark Alpha channel" />
+              (!leadingHeader && id === "alpha") ||
+              (channelHeaderAccessory && id === "gamma") ? (
+                <HeaderAccessory
+                  label={
+                    id === "alpha" ? "Mark Alpha channel" : "Mark long channel"
+                  }
+                />
               ) : undefined
             }
             headerMetadata={
@@ -165,6 +203,7 @@ export const soloRegionFixture: BundledPlugin = {
             }
           >
             <button type="button">Channel task</button>
+            {creatingTask && <input aria-label="New task title" />}
           </ui.ChannelGroup>
         );
       }
@@ -205,12 +244,10 @@ export const soloRegionFixture: BundledPlugin = {
           <>
             {stateFixture && <SavedState state={state} />}
             {hitTargets && <Workspaces ui={ui} binding={binding} />}
-            {headerAccessories && (
-              <>
-                <ChannelGroup ui={ui} id="alpha" />
-                <ChannelGroup ui={ui} id="gamma" />
-              </>
-            )}
+            {(headerAccessories ||
+              teamRowChannelGroup ||
+              channelMenuAction) && <ChannelGroup ui={ui} id="alpha" />}
+            {headerAccessories && <ChannelGroup ui={ui} id="gamma" />}
             {/* A source can retain a keyed conversation across roster changes. */}
             {(first
               ? [first, ...[...live].filter((id) => id !== first)]
@@ -227,7 +264,13 @@ export const soloRegionFixture: BundledPlugin = {
                       <ui.Card>
                         <c.Menu>
                           <c.Link label={c.name} />
-                          <c.Actions />
+                          {wrapActions ? (
+                            <span className="pointer-events-none absolute end-0 top-0">
+                              <c.Actions />
+                            </span>
+                          ) : (
+                            <c.Actions />
+                          )}
                         </c.Menu>
                       </ui.Card>
                     )}

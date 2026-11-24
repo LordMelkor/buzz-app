@@ -22,6 +22,7 @@ import { fakeSpawn } from "./goose-testing";
 import { type Config, DEFAULT_CONFIG, type GooseRuntime } from "./runtime";
 import { GooseSetup } from "./setup";
 import { createTabs } from "./tabs";
+import { LIVE_READ_MS } from "../../features/agents/TranscriptPanel";
 import { GooseHistory } from "./transcript";
 import { localSessions } from "./sessions";
 import {
@@ -986,6 +987,8 @@ function activity(
     channelLabel: (_: string, id: string) =>
       world.names?.[id] ? { name: world.names[id], kind: "stream" } : undefined,
     notices: () => new Map(),
+    readableRows: (_: string, rows: readonly unknown[]) => rows,
+    readableTurns: (_: string, __: unknown, turns: readonly unknown[]) => turns,
     prompts: () => ({
       shown: (turns: unknown) => turns,
       sessions: () =>
@@ -1045,8 +1048,51 @@ it("lists the agent's saved conversations and reads one's transcript by id, with
   expect(
     await screen.findByText("Hi from goose", { selector: "summary span" }),
   ).toBeInTheDocument();
-  expect(screen.getAllByText(/@Gander what's up\?/).length).toBeGreaterThan(0);
+  await user.click(screen.getByText("Request", { selector: "summary span" }));
+  expect(
+    await screen.findByText(/@Gander what's up\?/, { selector: "p" }),
+  ).toBeVisible();
   expect(listings(fake)).toEqual([]);
+});
+
+it("shows the window notice when a live session grows from 50 to 51 turns", async () => {
+  const prompt = (n: number) => ({
+    role: "user",
+    created: n,
+    content: [{ type: "text", text: `Request ${n}` }],
+  });
+  const conversation = Array.from({ length: 50 }, (_, i) => prompt(i + 1));
+  const fake = fakeSpawn({
+    history: [
+      {
+        sessionId: "s1",
+        title: "Session",
+        cwd: "/w",
+        updatedAt: "",
+        conversation,
+      },
+    ],
+  });
+  const key = `chan/${ROOT}`;
+  const notice = "Showing the latest 50 turns.";
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    activity(fake, {
+      saved: [{ key, at: 1, sessions: ["s1"] }],
+      live: [{ key, at: 1, busy: true, sessionId: "s1" }],
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^View transcript/ }));
+    });
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+    expect(screen.queryByText(notice)).toBeNull();
+    conversation.push(prompt(51));
+    await act(async () => vi.advanceTimersByTimeAsync(LIVE_READ_MS));
+    expect(screen.getByText(notice)).toBeVisible();
+    expect(screen.getAllByRole("article")).toHaveLength(50);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("finds a conversation with no saved session by its goose tags", async () => {
@@ -1154,6 +1200,49 @@ it("lists conversations by channel name, with running and standalone sessions, o
     await screen.findByText("Hi from timer", { selector: "summary span" }),
   ).toBeInTheDocument();
   expect(listings(fake)).toEqual([]);
+});
+
+it("filters a conversation that lost its place by each turn's own source", async () => {
+  const fake = gooseHistory(["s1"]);
+  const readableTurns = vi.fn(() => []);
+  activity(fake, {
+    saved: [{ key: "lost", at: 1, sessions: ["s1"] }],
+    runtime: {
+      readableTurns,
+      source: () => ({ channelId: "" }),
+    } as unknown as Partial<GooseRuntime>,
+  });
+  const [view] = await screen.findAllByRole("button", {
+    name: /View transcript/,
+  });
+  if (!view) throw new Error("no row");
+  await userEvent.setup().click(view);
+  await waitFor(() =>
+    expect(readableTurns).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ channelId: "", community: true }),
+      expect.anything(),
+    ),
+  );
+});
+
+it("shows a standalone watch or timer run's transcript, which is the owner's own", async () => {
+  const fake = gooseHistory(["timer"]);
+  const readableTurns = vi.fn(() => []);
+  activity(fake, {
+    saved: [],
+    ids: [{ id: "timer", at: 1, title: "Gander · timer/t" }],
+    runtime: { readableTurns } as unknown as Partial<GooseRuntime>,
+  });
+  await userEvent
+    .setup()
+    .click(
+      await screen.findByRole("button", { name: "View transcript: timer/t" }),
+    );
+  expect(
+    await screen.findByText("Hi from timer", { selector: "summary span" }),
+  ).toBeInTheDocument();
+  expect(readableTurns).not.toHaveBeenCalled();
 });
 
 it("lists a conversation with more than ten sessions once", () => {

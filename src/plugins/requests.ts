@@ -281,7 +281,10 @@ export function createPluginRequests({
     );
     if (!candidate)
       throw new Error(`${where} has no ${id} at ${recorded.path}`);
-    if (samePluginRelease(candidate, plugin))
+    if (
+      reference === recorded.reference &&
+      samePluginRelease(candidate, plugin)
+    )
       throw new Error(`${id} is already at ${where}'s version`);
     return {
       pluginId: id,

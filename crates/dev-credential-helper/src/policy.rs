@@ -4,7 +4,7 @@
 /// Bumped when the request format or the set of served items changes.
 /// `just desktop me` installs one helper per protocol, so checkouts on
 /// different protocols each keep a helper that understands them.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// Largest value read or written, in either direction.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -131,6 +131,8 @@ pub fn allowed(operation: Operation, service: &str, account: &str) -> bool {
             account == "typesafe"
         }
         "xyz.block.buzz.desktop.claude-api-key.debug" => account == "anthropic",
+        // Each local agent's own environment variables, by its pubkey.
+        "xyz.block.buzz.desktop.agent-env.agent.debug" => hex64(account),
         "xyz.block.buzz.desktop.external-app-pairing.v1" => hex64(account),
         _ => false,
     }
@@ -224,6 +226,21 @@ mod tests {
             ),
             (
                 Replace,
+                "xyz.block.buzz.desktop.agent-env.agent.debug",
+                hex.as_str(),
+            ),
+            (
+                Read,
+                "xyz.block.buzz.desktop.agent-env.agent.debug",
+                hex.as_str(),
+            ),
+            (
+                Delete,
+                "xyz.block.buzz.desktop.agent-env.agent.debug",
+                hex.as_str(),
+            ),
+            (
+                Replace,
                 "xyz.block.buzz.desktop.external-app-pairing.v1",
                 hex.as_str(),
             ),
@@ -278,6 +295,12 @@ mod tests {
             ),
             (Read, "xyz.block.buzz.desktop.jev-key", "typesafe"),
             (Read, "xyz.block.buzz.desktop.claude-api-key", "anthropic"),
+            (Read, "xyz.block.buzz.desktop.agent-env.agent", hex.as_str()),
+            (
+                Read,
+                "xyz.block.buzz.desktop.agent-env.agent.debug",
+                upper.as_str(),
+            ),
             (
                 Read,
                 "xyz.block.buzz.desktop.claude-api-key.debug",

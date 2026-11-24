@@ -703,6 +703,15 @@
 .buzz-toast-viewport [data-sonner-toast][data-removed="true"] {
   pointer-events: none;
 }
+/* Pressing inside a notice, for example on an action's label, starts a Sonner
+   swipe whose ::before hit area is three notices wide. It overflows the
+   expanded, scrolling stack and shows a horizontal scrollbar while held.
+   Pointer capture already keeps a swipe on its notice. data-y-position
+   outranks every Sonner ::before rule. */
+.buzz-toast-viewport[data-sonner-toaster]
+[data-sonner-toast][data-y-position]::before {
+  content: none;
+}
 .buzz-toast-viewport [data-sonner-toast]:focus-visible {
   box-shadow: none;
 }

@@ -186,7 +186,7 @@ it("keeps exactly one typed colon when the conversion exceeds the limit", () => 
   act(() =>
     expect(
       h.input.insertText("too long", undefined, { start: 0, end: 2 }, ":"),
-    ).toBe(true),
+    ).toBe("typed"),
   );
   expect(h.input).toHaveValue(":x:");
   expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([3, 3]);

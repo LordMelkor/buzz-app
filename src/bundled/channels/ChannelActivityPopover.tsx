@@ -37,14 +37,8 @@ import { AgentActivityRow } from "../../features/agents/AgentActivityRow";
 import { workingAgentDetails } from "./working-agents";
 import { avatarMedia } from "../../shared/avatar-source";
 import { incompletePreview } from "../inbox/InboxRow";
+import { shortRelativeTimestamp } from "../../shared/relative-timestamp";
 
-const elapsed = (createdAt: number, now = Date.now()) => {
-  const seconds = Math.max(0, Math.floor(now / 1000) - createdAt);
-  if (seconds < 60) return "now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-};
 const workingDuration = (startedAt: number, now: number) => {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   if (seconds < 60) return `${seconds}s`;
@@ -149,7 +143,7 @@ function ActivityRow({
               <span className={activityStyles.activityItemHeading}>
                 <strong>{name}</strong>
                 <span className={activityStyles.activityTimestamp}>
-                  {elapsed(item.createdAt)}
+                  {shortRelativeTimestamp(item.createdAt)}
                 </span>
               </span>
               <span className={styles.activityItemPreview}>{preview}</span>

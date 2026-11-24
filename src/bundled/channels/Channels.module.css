@@ -435,9 +435,14 @@ details:not([open]) > summary .sectionChevron {
   flex-direction: column;
 }
 .panelStack {
+  /* A saved width is in pixels; the conversation's minimum follows the interface size. */
   width: max(
     var(--split-floor, 19.75rem),
-    var(--secondary-panel-width, var(--split-default, calc(100cqw / 2.1)))
+    min(
+      var(--secondary-panel-width, var(--split-default, calc(100cqw / 2.1))),
+      100cqw -
+      20rem
+    )
   );
   position: relative;
   border-inline-start: 1px solid var(--border-standard);

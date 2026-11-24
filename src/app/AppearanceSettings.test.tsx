@@ -333,10 +333,13 @@ it("saves new-thread placement, restores it, and follows another window", async 
     screen.getByRole("combobox", { name: "Open threads in" });
   expect(
     screen.getByText(
-      "New threads open here. Already-open threads stay where you placed them.",
+      "New threads open here. Inline opens threads, profiles and links over the conversation instead of in tabs; calls, canvases and apps still open as tabs. Already-open threads stay where you placed them.",
     ),
   ).toBeVisible();
-  expect(choice()).toHaveTextContent("Side pane");
+  expect(choice()).toHaveTextContent("Inline");
+  await user.click(choice());
+  await user.click(await screen.findByRole("option", { name: "Side pane" }));
+  expect(threadPlacementPreference()).toBe("side");
   await user.click(choice());
   await user.click(await screen.findByRole("option", { name: "Main pane" }));
   expect(threadPlacementPreference()).toBe("main");

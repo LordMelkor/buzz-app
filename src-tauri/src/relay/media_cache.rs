@@ -240,8 +240,8 @@ impl MediaCache {
         state.evicting = false;
     }
 
-    /// Bytes saved for one community, bytes saved in all, and the budget.
-    pub(crate) fn usage(&self, origin: &Url) -> (u64, u64, u64) {
+    /// Bytes saved for one community.
+    pub(crate) fn usage(&self, origin: &Url) -> u64 {
         let files = |dir: &Path| -> u64 {
             fs::read_dir(dir)
                 .into_iter()
@@ -263,17 +263,7 @@ impl MediaCache {
                 .sum();
             files(dir) + channels
         };
-        let (Some(root), Some(own)) = (self.0.root.as_ref(), self.partition(origin)) else {
-            return (0, 0, self.0.budget);
-        };
-        let total = fs::read_dir(root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|dir| !dir.file_name().to_string_lossy().starts_with(CLEARED))
-            .map(|dir| size(&dir.path()))
-            .sum();
-        (size(&own), total, self.0.budget)
+        self.partition(origin).map_or(0, |own| size(&own))
     }
 
     /// Forgets one community's media. Fetches already in flight are not stored.
@@ -496,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_one_community_and_all_against_the_budget() {
+    fn reports_one_communitys_saved_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let cache = MediaCache::with_budget(Some(dir.path().into()), 1000);
         let relay = Url::parse("https://relay.example.org").unwrap();
@@ -505,7 +495,7 @@ mod tests {
             "b".repeat(64)
         ))
         .unwrap();
-        assert_eq!(cache.usage(&relay), (0, 0, 1000));
+        assert_eq!(cache.usage(&relay), 0);
         cache
             .put(
                 &url("a"),
@@ -518,9 +508,9 @@ mod tests {
         cache
             .put(&other, None, cache.ticket(), "image/png", &[0; 9])
             .unwrap();
-        assert_eq!(cache.usage(&relay), (41, 60, 1000));
+        assert_eq!(cache.usage(&relay), 41);
         cache.clear(&relay).unwrap();
-        assert_eq!(cache.usage(&relay), (0, 19, 1000));
+        assert_eq!(cache.usage(&relay), 0);
     }
 
     #[test]

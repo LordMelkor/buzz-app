@@ -6,7 +6,7 @@ All example plugins live here with `manifest.json` and prebuilt `plugin.js` file
 - `shortcut-counter`: offline keyboard-shortcut consumer; Command+Shift+G /
   Control+Shift+G increments through the injected host service. Requires `shortcuts`.
 - `broken-page`: intentionally fails when its page renders to exercise error handling.
-- `host-controls`: offline switch and name dialog built from the host's `ui` controls, with a
+- `host-controls`: offline switch, name dialog and actions menu built from the host's `ui` controls, with a
   notice on hosts without them.
 
 ## Try the offline playgrounds

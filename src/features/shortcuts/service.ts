@@ -104,11 +104,16 @@ export class ShortcutsService extends Service implements Shortcuts {
       const eligible = (shortcut: Shortcut) =>
         eligibleIn(shortcut, editable, modal);
       // Host chords are reserved even while unavailable (e.g. Settings behind a modal).
-      const reserved = [...this.hostBindings.values()].find(
+      // A chord the user assigned outranks a default that later claims it.
+      const hostMatches = [...this.hostBindings.values()].filter(
         (shortcut) =>
           !shortcut.local &&
           matches(bindingsFor(shortcut, shortcut.id), event, apple),
       );
+      const reserved =
+        hostMatches.find((shortcut) =>
+          isBindingList(overrides?.resolve(shortcut.id)),
+        ) ?? hostMatches[0];
       const shortcut = reserved
         ? eligible(reserved)
           ? reserved

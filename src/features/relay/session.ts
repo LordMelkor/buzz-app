@@ -87,7 +87,7 @@ import type {
   LiveListener,
 } from "./incoming";
 import { objectBody } from "./body";
-import { agentAudience } from "./audience";
+import { agentAudience, detailsBrief, messageAudience } from "./audience";
 import type {
   ChannelList,
   ChannelReadOptions,
@@ -2422,7 +2422,11 @@ export function createRelaySession(
               input.description,
               input.ttlSeconds,
               active,
-              { labels: input.labels, system: input.system },
+              {
+                labels: input.labels,
+                system: input.system,
+                migration: input.migration,
+              },
             ),
           delivered: (id, active) =>
             channelWrites.delivered(
@@ -2632,6 +2636,7 @@ export function createRelaySession(
           ? { labels: Object.freeze([...new Set(input.labels)]) }
           : {}),
         ...(input.system ? { system: true as const } : {}),
+        migration: input.migration,
       };
       const signature = JSON.stringify(normalized);
       if (unconfirmed?.signature !== signature) {
@@ -2649,7 +2654,11 @@ export function createRelaySession(
             normalized.description,
             normalized.ttlSeconds,
             undefined,
-            { labels: normalized.labels, system: normalized.system },
+            {
+              labels: normalized.labels,
+              system: normalized.system,
+              migration: normalized.migration,
+            },
           ),
         };
       }
@@ -2787,7 +2796,9 @@ export function createRelaySession(
     return messages === session.messages;
   }
   const session = Object.freeze({
+    lifetimeSignal: lifetime.signal,
     artifactIncremental: transport?.artifactIncremental,
+    supportsMigrationWrites: true as const,
     memberAdditions,
     presence,
     viewer: transport?.viewer,
@@ -2796,11 +2807,12 @@ export function createRelaySession(
      * with live or local outgoing events or fed to any projection, and a
      * kind-45010 writer when the host has one. Each read starts fresh. */
     snapshotRead: transport
-      ? (((filters, { signal }) =>
-          relayRead(
-            filters,
-            signal ? { signal, fresh: true } : { fresh: true },
-          )) satisfies SnapshotRead)
+      ? (((filters, { signal, priority }) =>
+          relayRead(filters, {
+            ...(signal ? { signal } : {}),
+            ...(priority ? { priority } : {}),
+            fresh: true,
+          })) satisfies SnapshotRead)
       : undefined,
     configArtifactWriter: transport?.configArtifacts,
     workflowAuthority: transport?.archiveAuthority,
@@ -2993,6 +3005,7 @@ export function createRelaySession(
       searchProfiles,
       () => profiles.queries.verifiedAuthority?.(),
       profiles.queries,
+      identityNames,
     ),
     unread: unread.capability,
     sidebarPreferences: sidebarPreferences.queries,
@@ -4195,7 +4208,11 @@ export function createRelaySession(
               createdAt: event.created_at,
               authorId: event.pubkey,
               workflowOwnerId: workflowOwner(event, transport.archiveAuthority),
-              previewContent: content.slice(0, 4096),
+              // A notification shows no more of details than the chat does.
+              previewContent: (messageAudience(event) === "details"
+                ? detailsBrief(content)
+                : content
+              ).slice(0, 4096),
               ...(agentAudience(event) ? { audience: "agents" as const } : {}),
             }),
           ];

@@ -1,4 +1,5 @@
 import type { GifRequests } from "../relay/gifs";
+import { UPLOAD_FAILURES, UploadError } from "../relay/attachments";
 import { viewRevision } from "../../shared/view-state";
 import type { ComposerSession } from "../messages/composer-session";
 import { createNameProvider } from "../identity-names/directory";
@@ -296,7 +297,12 @@ export function createHuddleComposerClient(token: string) {
       if (!pending) return;
       waiting.delete(response.id);
       pending.cleanup();
-      if (response.error) pending.reject(new Error(response.error));
+      if (response.error)
+        pending.reject(
+          response.code && Object.hasOwn(UPLOAD_FAILURES, response.code)
+            ? new UploadError(response.code)
+            : new Error(response.error),
+        );
       else pending.resolve(response.value);
     }
   };

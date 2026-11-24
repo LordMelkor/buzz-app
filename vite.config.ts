@@ -233,6 +233,8 @@ export default defineConfig(async ({ command, mode }) => {
       "import.meta.env.VITE_BUZZ_AGENT_GATEWAY": JSON.stringify(
         gateway ? JSON.stringify(gateway) : "",
       ),
+      // Only the browser test build opts in to Diagnostics.
+      "import.meta.env.VITE_BUZZ_TEST_DIAGNOSTICS": '"0"',
       "import.meta.env.VITE_BUZZ_NOTIFICATIONS_PAUSED": JSON.stringify(
         command === "serve" && env.BUZZ_DEV_NOTIFICATIONS === "0" ? "1" : "0",
       ),

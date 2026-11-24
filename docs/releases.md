@@ -173,11 +173,9 @@ A repository admin does these before the first release:
 **buzz CLI.** Every package ships `buzz` at
 `Buzz.app/Contents/Resources/bin/buzz` (`bin\buzz.exe` on Windows). It's built
 from the `buzz-audio-client` revision in `src-tauri/Cargo.toml`, so bumping that
-pin updates both. It isn't on `PATH`; link it yourself:
-
-```sh
-ln -sf /Applications/Buzz.app/Contents/Resources/bin/buzz ~/.local/bin/buzz
-```
+pin updates both. On macOS and Linux (except the AppImage), the app links it to
+`~/.local/bin/buzz` each time it starts; the Windows installer adds it to
+`PATH`.
 
 It updates only with the app, so a newer relay can accept protocol changes the
 bundled CLI doesn't know.

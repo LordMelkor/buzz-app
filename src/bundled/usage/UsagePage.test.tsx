@@ -107,6 +107,7 @@ function host(
     snapshot: () => snapshot,
     types: () => types,
     subscribe: () => () => {},
+    conversationReads: () => ({ ownerReadable: () => true }),
   } as unknown as Agents;
 }
 

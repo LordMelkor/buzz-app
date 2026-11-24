@@ -91,15 +91,13 @@
 :where(html[data-message-density="compact"]) .timelineEnd {
   height: calc(var(--space-6) + var(--channel-preview-inset, 0px));
 }
-.feed ol {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-/* Center the list itself so coordination and membership rows share the measure. */
+/* Center the list itself so coordination and membership rows share the measure.
+   The reset stays on this list alone so numbered lists in messages keep numbers. */
 .feed > ol {
+  list-style: none;
   width: min(100%, var(--timeline-measure));
-  margin-inline: auto;
+  margin: 0 auto;
+  padding: 0;
 }
 .edge {
   width: min(100%, var(--timeline-measure));
@@ -730,7 +728,9 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   min-width: 0;
 }
 /* Soften the scroll edge without reserving a blank strip above the composer. */
-:is(.feed, .threadHistory)[data-jump-visible] + .composerContext::before {
+/* Attributes, not :has(): a :has() here restyles the whole conversation, under
+   its size container, whenever scrolling changes what it might match. */
+:is(.feed, .threadHistoryFrame)[data-jump-visible] + .composerContext::before {
   content: "";
   position: absolute;
   inset-inline: 0;
@@ -738,6 +738,13 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   height: var(--space-3);
   background: linear-gradient(to bottom, transparent, var(--surface-panel));
   pointer-events: none;
+}
+/* A thread sheet already fades into its raised surface with DialogBarMaterial.
+   The panel-colored composer fade would paint a second, darker strip over it. */
+[data-details-sheet-surface][data-height="content"]
+  .threadHistoryFrame
+  + .composerContext::before {
+  content: none;
 }
 /* The existing editor owns text; this surface owns only composer layout. */
 .composer {
@@ -800,6 +807,38 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
     );
     margin: 0 auto var(--space-3);
   }
+}
+/* In a view the composer sits in a dock, which takes its place in the layout
+   and holds the sheets opened from the view's rows, drawn around it. */
+.composerDock {
+  --composer-radius: calc(var(--radius-icon-button) + var(--space-1h) + 1px);
+  position: relative;
+  z-index: 2;
+  box-sizing: border-box;
+  min-width: 0;
+  align-self: stretch;
+  flex-shrink: 0;
+  width: min(calc(100% - 2 * var(--space-4)), var(--buzz-message-width, 52rem));
+  margin: 0 auto var(--space-4);
+}
+:where(html[data-message-density="compact"]) .composerDock {
+  width: calc(100% - 2 * var(--space-4));
+}
+@media (max-width: 40.625rem) {
+  .composerDock {
+    width: min(
+      calc(100% - 2 * var(--space-3)),
+      var(--buzz-message-width, 52rem)
+    );
+    margin: 0 auto var(--space-3);
+  }
+}
+/* Above a details sheet in its dock, so a reply can be written while
+   reading. */
+.composerDock > .composer {
+  z-index: 2;
+  width: auto;
+  margin: 0;
 }
 .composer[data-editing] {
   overflow: hidden;
@@ -1029,6 +1068,24 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   pointer-events: none;
 }
 
+.threadHistoryFrame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+/* Shown only in a thread sheet, where the reader fades into its raised surface
+   above the reply box. */
+.threadEdgeBottom {
+  position: absolute;
+  z-index: 1;
+  bottom: 0;
+  inset-inline: 0;
+  height: var(--space-6);
+  transform: scaleY(-1);
+  pointer-events: none;
+}
 .threadHistory {
   --message-hover-inset: var(--space-4);
   --timeline-measure: var(--buzz-message-width, 52rem);
@@ -1071,14 +1128,17 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
 .threadHistory[data-positioning] > [data-thread-rows] {
   opacity: 0;
 }
-/* Fills whichever thread area is waiting. The mark waits one state change
-   before appearing, so a thread that loads at once never flashes it. */
+/* Fills whichever message area is waiting. A thread draws nothing in it; a
+   timeline's placeholders wait one state change before appearing, so a read
+   that lands at once never flashes them. */
 .threadLoading {
-  container-type: size;
   flex: 1;
-  display: grid;
-  place-items: center;
-  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: var(--space-8);
+  padding: var(--space-4);
+  color: var(--text-subtle);
   animation: thread-loading-in var(--duration-state) var(--easing-enter)
     var(--duration-state) both;
 }
@@ -1086,20 +1146,21 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   position: absolute;
   inset: 0;
 }
-/* The mark scales with the waiting area: a side pane and a full main pane
-   both read it as the thread's placeholder, not a stray icon. */
-.threadLoading picture {
-  display: block;
-  width: clamp(3.35rem, 16cqmin, 6.7rem);
-  line-height: 0;
+/* A thread sheet sizes to its content, so its waiting area keeps a height of
+   its own under its header rather than filling (and collapsing with) the
+   sheet. */
+[data-details-sheet-surface][data-height="content"] .threadLoading {
+  flex: none;
+  min-height: calc(var(--sheet-header-height) + 4 * var(--space-16));
 }
-.threadLoading img {
-  display: block;
-  width: 100%;
-  height: auto;
+[data-details-sheet-surface][data-height="content"]
+  .threadHistory:has(> .threadLoading) {
+  min-height: calc(var(--sheet-header-height) + 4 * var(--space-16));
 }
-:root[data-color-mode="dark"] .threadLoading picture {
-  filter: invert(1);
+/* A thread sheet's reader runs under its header; so do its placeholders. */
+[data-details-sheet-surface][data-height="content"][data-contained-composer]
+.threadLoading {
+  padding-top: calc(var(--sheet-header-height) + var(--space-3));
 }
 @keyframes thread-loading-in {
   from {
@@ -1114,7 +1175,8 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
 .threadHistoryPageStatus p {
   margin: 0;
 }
-.threadHistory ol {
+/* Reset only the thread's own reply lists, never lists inside message text. */
+.threadList {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1628,6 +1690,46 @@ button.mediaPreview {
   font-weight: var(--text-label--font-weight);
   font-variant-numeric: tabular-nums;
 }
+/* A media sheet keeps playback beside its comments and comment box. */
+.sheetReview {
+  /* Its letterbox follows the sheet's theme; the stage itself is dark for its
+     controls, so resolve the fill here. */
+  --sheet-media-fill: var(--surface-inset);
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 25rem;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.sheetReview > .mediaReviewStage {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--sheet-media-fill);
+}
+.sheetReview > .mediaReviewConversation {
+  max-height: none;
+  background: transparent;
+}
+.sheetReview .mediaReviewThread {
+  max-height: none;
+}
+.sheetReview .mediaReviewThreadHeading {
+  display: none;
+}
+@media (max-width: 50rem) {
+  .sheetReview {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(8rem, 1fr) min(
+        50%,
+        calc(var(--composer-height) + var(--space-16) + var(--space-8))
+      );
+  }
+}
+
 @media (max-width: 50rem) {
   .mediaReviewBackdrop {
     padding: 0;
@@ -2607,6 +2709,26 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   padding-block: var(--space-2);
   margin-bottom: var(--space-2);
 }
+/* A working step stacked under its agent's comment reads as one group: the
+   row spacing between them gives way to the thread's stacked-row gap. The
+   viewer marks the pair; rows drawn inside a comment never change it. */
+.mediaReviewViewer .mediaReviewComment[data-stack-next] {
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.mediaReviewViewer .mediaReviewComment[data-stack-previous] {
+  padding-top: var(--space-half);
+}
+:where(html[data-message-density="compact"])
+  .mediaReviewViewer
+  .mediaReviewComment[data-stack-next] {
+  padding-bottom: var(--space-1);
+}
+:where(html[data-message-density="compact"])
+  .mediaReviewViewer
+  .mediaReviewComment[data-stack-previous] {
+  padding-top: var(--space-1);
+}
 .mediaReviewComment[data-selected] {
   outline: 1px solid var(--border-prominent);
   outline-offset: -1px;
@@ -2636,8 +2758,9 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   border-radius: inherit;
   clip-path: var(--media-corner-clip, none);
 }
+/* Only the gutter avatar: an avatar inside a comment keeps its own size. */
 .mediaReviewViewer .mediaReviewComment .message > :first-child,
-.mediaReviewViewer .mediaReviewComment [data-avatar-shape] {
+.mediaReviewViewer .mediaReviewComment .messageAvatar [data-avatar-shape] {
   width: 1.5rem;
   height: 1.5rem;
   min-width: 1.5rem;
@@ -2800,6 +2923,9 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
 .mediaViewerImage,
 .mediaViewerVideo {
   background: var(--bg-media-canvas);
+}
+.sheetReview :is(.mediaViewerImage, .mediaViewerVideo) {
+  background: var(--sheet-media-fill);
 }
 
 .imageReviewStage > img[data-gallery-departing] {
@@ -3174,10 +3300,6 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   --message-metadata: initial;
 }
 
-.messageBubble[data-own] .text blockquote {
-  color: inherit;
-  border-color: currentColor;
-}
 .messageBubble[data-own] .text :is(code, pre, .codeBlock) {
   color: var(--text-standard);
 }
@@ -3958,6 +4080,17 @@ html[data-keyboard-navigation] .activityExpansion {
   width: var(--size-control-sm);
   height: var(--size-control-sm);
 }
+/* Media comments use 24px avatars. Size the slot, not only the image, so
+   comment and working-agent avatars share one column in every engine.
+   `.messageAvatar` keeps this above the slot sizes set by layout and density. */
+.mediaReviewViewer
+  .mediaReviewThread
+  .messageAvatar
+  :is(.nestedAvatar, .agentAvatarGroup) {
+  flex-basis: 1.5rem;
+  width: 1.5rem;
+  height: 1.5rem;
+}
 .agentAvatarGroupItem {
   position: absolute;
   inset: 0;
@@ -4371,4 +4504,106 @@ html[data-keyboard-navigation]
   font-size: var(--text-caption);
   line-height: var(--text-caption--line-height);
   letter-spacing: var(--text-caption--letter-spacing);
+}
+
+.pinnedMarker {
+  composes: sentFromThread;
+}
+.pinnedMarker > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* A media sheet is drawn over the window, above the side panes' overlays. */
+.detailsSheetLayer[data-workspace-overlay] {
+  position: relative;
+  z-index: var(--layer-dialog);
+}
+/* A thread sheet's own reply box has taken the composer's place. */
+.composer[data-composer-covered] {
+  visibility: hidden;
+}
+/* Only the reader under a sheet hides its jump control, not the sheet's own.
+   ComposerSheet marks the pane that holds the sheet's dock. */
+[data-holds-sheet] > :not(.composerDock) .jumpToLatest {
+  display: none;
+}
+
+/* The details reader's sections sit below its dialog title in hierarchy. */
+.detailsReader .text :is(h1, h2) {
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  letter-spacing: var(--text-label--letter-spacing);
+}
+.detailsReader .text :is(h3, h4, h5, h6) {
+  font-size: var(--text-label-sm);
+  line-height: var(--text-label-sm--line-height);
+  letter-spacing: var(--text-label-sm--letter-spacing);
+}
+
+/* A details message reads in the chat as its opening brief, at full contrast,
+   then the first line of what follows fading out. The rest waits for the
+   reader; a long brief ends in an ellipsis. */
+.detailsPreview {
+  --details-lines: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+.detailsClip {
+  align-self: stretch;
+  min-width: 0;
+}
+.detailsPreview[data-clipped] .detailsClip {
+  cursor: pointer;
+}
+.detailsClip .text > * {
+  margin-bottom: 0;
+  max-height: calc(
+    var(--details-lines) *
+    var(--text-message) *
+    var(--text-message--line-height)
+  );
+  overflow: hidden;
+}
+.detailsClip .text > p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--details-lines);
+}
+.detailsPreview .detailsClip .text > :is(h1, h2, h3, h4, h5, h6) {
+  margin-bottom: 0;
+  font-size: var(--text-message);
+  line-height: var(--text-message--line-height);
+  letter-spacing: var(--text-message--letter-spacing);
+}
+.detailsPreview
+  .detailsClip
+  .text
+  > :is(h1, h2, h3, h4, h5, h6):first-child
+  + * {
+  margin-top: 0;
+}
+.detailsClip
+  .text
+  > :is(
+    :first-child:not(:is(h1, h2, h3, h4, h5, h6)) + *,
+    :is(h1, h2, h3, h4, h5, h6):first-child + * + *
+  ) {
+  max-height: calc(var(--text-message) * var(--text-message--line-height));
+  margin-block: var(--space-2) 0;
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.detailsClip
+  .text
+  > :not(:first-child):not(:first-child + *):not(
+    :is(h1, h2, h3, h4, h5, h6):first-child + * + *
+  ) {
+  display: none;
+}
+.detailsMore {
+  display: flex;
+  margin-top: var(--space-1);
 }

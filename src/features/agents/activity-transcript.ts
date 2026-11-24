@@ -264,6 +264,20 @@ function promptThread(sections: PromptSection[]) {
   return /^Scope: (?:channel|dm)$/m.test(context) ? null : undefined;
 }
 
+/** The channel a prompt's `<context>` names: a `Channel: name (#id)` line, or
+ * the `channel_id` of Codex's JSON record. */
+export function promptChannel(sections: readonly PromptSection[]) {
+  const context = sections.find((section) => section.tag === "context")?.body;
+  if (!context) return undefined;
+  const line = /^Channel: (?:.* \(#([^)\s]+)\)|(\S+))$/m.exec(context);
+  if (line) return line[1] ?? line[2];
+  try {
+    return str(object(JSON.parse(context))?.channel_id) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Older harnesses supplied thread scope only in the captured ACP prompt. */
 export function activityPromptThread(payload: unknown) {
   const request = object(payload);

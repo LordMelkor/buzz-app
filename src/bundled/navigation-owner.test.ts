@@ -23,6 +23,7 @@ async function bundledPages() {
           pluginId: manifest.id,
           revision: "bundled",
         }),
+      registerOverlay: () => {},
     };
     const ctx = new Proxy(
       {},

@@ -367,6 +367,15 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
     () => setLaunchReady(launchReady, terminal),
     [launchReady, terminal],
   );
+  // In the app with a community, the launch screen gone: the one moment the
+  // notifications service may send its automatic permission request.
+  const entered =
+    !launching && !!client.viewer && client.memberships.length > 0;
+  useEffect(() => {
+    if (!entered) return;
+    services.notifications.setEntered(true);
+    return () => services.notifications.setEntered(false);
+  }, [entered, services]);
   const select = route.select;
   useEffect(
     () =>
@@ -378,6 +387,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
         },
         true,
         () => services.communities.reload(),
+        services.shortcutBindings,
       ),
     [services],
   );

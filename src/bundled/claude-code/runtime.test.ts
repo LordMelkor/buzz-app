@@ -90,11 +90,24 @@ vi.mock("./transcript", async (actual) => {
       real.readLatestTurns(...args)) as typeof real.readLatestTurns,
   };
 });
+const env = vi.hoisted(() => ({
+  own: new Map<string, boolean | undefined>(),
+  gate: undefined as Promise<void> | undefined,
+  asked: 0,
+}));
+vi.mock("../agents/agent-env", () => ({
+  hasOwnEnv: async (agent: string) => {
+    env.asked++;
+    await env.gate;
+    return env.own.has(agent) ? env.own.get(agent) : false;
+  },
+}));
 
 afterEach(() => {
   vi.restoreAllMocks();
   transcriptReads.full = undefined;
   transcriptReads.latest = undefined;
+  env.own.clear();
 });
 
 const self = "c".repeat(64);
@@ -154,7 +167,10 @@ function setup(
   const fake = fakeSpawn(options.known, options.env);
   const running = new Set<FakeClaude>();
   const transcriptReaders: { options: unknown }[] = [];
+  /** Every start asked for, in order. */
+  const spawns: [string, Parameters<typeof fake.spawn>[1]][] = [];
   const spawn: typeof fake.spawn = async (id, spawnOptions) => {
+    spawns.push([id, spawnOptions]);
     await options.starting;
     if (options.nativeHistory && id === "transcript-protected") {
       transcriptReaders.push({ options: spawnOptions });
@@ -421,6 +437,7 @@ function setup(
   return {
     runtime,
     transcriptReaders,
+    spawns,
     added,
     deliver,
     published,
@@ -441,7 +458,7 @@ function setup(
   };
 }
 
-it("names each saved session's channel as the community lists it", () => {
+it("names each saved session's channel as the community lists it, and omits one it does not", () => {
   const { runtime, data } = setup();
   const saved = localSessions(
     localStore({
@@ -453,7 +470,11 @@ it("names each saved session's channel as the community lists it", () => {
   );
   saved.set(channel, { id: "s1", seen: 100, at: 5 });
   saved.set("chan-gone/root-1", { id: "s2", seen: 100, at: 3 });
-  expect(runtime.conversations(self)).toEqual([
+  // Internal consumers keep every saved session; the owner sees only theirs.
+  expect(runtime.conversations(self).map(({ sessionId }) => sessionId)).toEqual(
+    ["s1", "s2"],
+  );
+  expect(runtime.ownerConversations(self)).toEqual([
     {
       key: channel,
       agent: self,
@@ -462,14 +483,6 @@ it("names each saved session's channel as the community lists it", () => {
       name: "general",
       channelType: "stream",
       at: 5,
-    },
-    {
-      key: "chan-gone/root-1",
-      agent: self,
-      sessionId: "s2",
-      channelId: "chan-gone",
-      root: "root-1",
-      at: 3,
     },
   ]);
 });
@@ -506,6 +519,8 @@ it("hands a mention to its thread's session", async () => {
   expect(claude?.options).not.toHaveProperty("agent");
   expect(claude?.options.args).toContain("--mcp-config");
   expect(claude?.options.cwd).toBe("~/.buzz");
+  // It runs the agent, so it asks for the agent environment variables.
+  expect(claude?.options.secrets).toEqual(["agent-env"]);
   expect(published).toEqual([]);
 });
 
@@ -4679,6 +4694,18 @@ it("resumes a stopped session on its Buzz session, and New session starts anothe
   f.runtime.dispose();
 });
 
+it("checks for custom headers in the environment the agent's claude starts with", async () => {
+  const f = setup([], { env: onGateway });
+  const { root } = threadPair();
+  await f.deliver({ type: "mention", event: root }, dispatched(root.id));
+  await settled(f);
+  const check = f.spawns.find(([id]) => id === "inherited-headers")?.[1];
+  // The agent's own list can set `ANTHROPIC_CUSTOM_HEADERS`.
+  expect(check?.secrets).toEqual(["agent-env"]);
+  expect(check?.envAgent).toBe(self);
+  f.runtime.dispose();
+});
+
 it("restores the person's own headers for a turn the gateway doesn't attribute", async () => {
   const f = setup([], { env: onGateway });
   const { root, reply } = threadPair();
@@ -6929,3 +6956,61 @@ it.each(["thread", "channel"] as const)(
     }
   },
 );
+
+it.each([
+  ["has its own list", true],
+  ["can't say whether it has one", undefined],
+])("leaves the spare to other agents when an agent %s", async (_, own) => {
+  const mention = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { runtime, deliver, claudes } = setup();
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  await flush(10);
+  const [spare] = claudes();
+  if (!spare) throw new Error("no spare");
+  // A list saved while the spare runs: the spare started without it.
+  env.own.set(self, own);
+  await deliver({ type: "mention", event: mention });
+  await flush(10);
+  expect(spare.prompts).toHaveLength(0);
+  const started = claudes().find(
+    (process) => process !== spare && process.prompts.length,
+  );
+  expect(started?.options.envAgent).toBe(self);
+});
+
+it("starts no process for a presence answer that comes after the agent stops", async () => {
+  const mention = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { runtime, deliver, claudes } = setup();
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  await flush(10);
+  let answer = () => {};
+  env.gate = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  env.own.set(self, true);
+  try {
+    const asked = env.asked;
+    void deliver({ type: "mention", event: mention });
+    await flush(10);
+    expect(env.asked).toBe(asked + 1);
+    const started = claudes().length;
+    runtime.sync([]);
+    await flush(10);
+    answer();
+    await flush(10);
+    expect(claudes()).toHaveLength(started);
+  } finally {
+    env.gate = undefined;
+    answer();
+  }
+});

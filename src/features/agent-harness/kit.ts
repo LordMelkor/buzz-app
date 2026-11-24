@@ -22,7 +22,7 @@ import {
 import type { McpHandler } from "../host/service";
 import type { AgentKey } from "../agents/membership";
 import { fromOwner } from "../agents/owner-attestation";
-import { ownerReads } from "../agents/reads";
+import { ownerReads, type AgentReads } from "../agents/reads";
 import type {
   AgentHandle,
   ConversationWake,
@@ -35,7 +35,7 @@ import { threadReference } from "../relay/thread-reference";
 import { MemoryReads, READ_TIMEOUT_MS } from "./core-memory";
 import { wakeAnchor, wakeLands } from "./plugin-wake";
 import { readAuthorNames } from "./author-names";
-import { ownerCanvas, readProject, worksElsewhere } from "./project";
+import { readProject, worksElsewhere } from "./project";
 import { placeOf } from "./sections/compose";
 
 /** Whether each thread is its own conversation, or the whole channel is one. */
@@ -125,6 +125,7 @@ export type HarnessKit = Readonly<{
 
 type Sources = Readonly<{
   relay(key: AgentKey): RelayData | undefined;
+  reads?(key: AgentKey): AgentReads | undefined;
   core(key: AgentKey): Promise<string | null | undefined>;
   /** The tools plugins add to every session now. */
   added(): readonly AddedTool[];
@@ -201,13 +202,8 @@ export function harnessKit(sources: Sources): HarnessKit {
     const snapshot = sources.relay(key)?.snapshot();
     return snapshot?.status === "ready" ? snapshot.session : undefined;
   };
-  const summary = (key: AgentKey, channelId: string) => {
-    const found = session(key);
-    return (
-      found?.channels.list().channels.find((item) => item.id === channelId) ??
-      found?.channels.get?.(channelId)
-    );
-  };
+  const reader = (key: AgentKey) =>
+    sources.reads?.(key) ?? ownerReads(sources.relay(key), key.slice(0, 64));
   const known = (conversation: HarnessConversation) => {
     const found = admitted.get(conversation);
     if (!found)
@@ -249,8 +245,8 @@ export function harnessKit(sources: Sources): HarnessKit {
       );
       const topLevel = solo || wake?.topLevel === true;
       if (wake && !wakeLands(wake, topLevel)) return undefined;
-      const found = summary(agent.key, channel);
-      const dm = found?.channelType === "dm";
+      const found = await reader(agent.key)?.channel(channel);
+      const dm = found?.dm === true;
       const nativeRoot = threadReference(event)?.rootId ?? event.id;
       const route =
         !topLevel && !dm
@@ -324,7 +320,7 @@ export function harnessKit(sources: Sources): HarnessKit {
       const { event, solo, dm, name, wake, resumed, invocationContext } =
         known(conversation);
       const { key, channel: channelId, topLevel } = conversation;
-      const ready = session(agent.key);
+      const ready = reader(agent.key);
       const thread = threadReference(event);
       const rootId = conversation.sourceRoot ?? thread?.rootId ?? event.id;
       const shown = parseCursor(options.cursor);
@@ -341,17 +337,10 @@ export function harnessKit(sources: Sources): HarnessKit {
           : shown.seen;
       const owner = agent.owner;
       // Only a Solo chat's Canvas is handed over.
+      const canvas = ready?.canvas;
       const reading = solo
         ? readProject(
-            ready
-              ? () =>
-                  ownerCanvas(
-                    ready.canvas,
-                    owner,
-                    channelId,
-                    ready.channelWrites.startingCanvas(channelId),
-                  )
-              : undefined,
+            canvas ? () => canvas(channelId, owner) : undefined,
             // The plugin that manages the chat may say where its work happens.
             worksElsewhere(undefined, agent.promptSections?.(channelId)),
           )
@@ -384,7 +373,7 @@ export function harnessKit(sources: Sources): HarnessKit {
                   },
                 ]
               : [{ kinds: CHAT, "#h": [channelId], limit: CONTEXT_LIMIT + 1 }],
-            { signal },
+            signal,
           );
           earlier = events
             .filter(
@@ -404,7 +393,7 @@ export function harnessKit(sources: Sources): HarnessKit {
                 earlier,
                 { channel: channelId, root: sourceRoot, anchor: root },
                 CHAT,
-                (filters) => ready.read(filters, { signal }),
+                (filters) => ready.read(filters, signal),
               )
             ).events;
           }
@@ -416,7 +405,7 @@ export function harnessKit(sources: Sources): HarnessKit {
         (item) =>
           item.created_at > since && (!since || item.pubkey !== agent.pubkey),
       );
-      const reads = ownerReads(sources.relay(agent.key), agent.pubkey);
+      const reads = reader(agent.key);
       const signingAuthority = reads?.workflowAuthority();
       const [names, project] = await Promise.all([
         readAuthorNames(
@@ -495,7 +484,7 @@ export function harnessKit(sources: Sources): HarnessKit {
               }
             : { channel: conversation.channel };
       const pubkey = agent.pubkey;
-      const reads = () => ownerReads(sources.relay(agent.key), pubkey);
+      const reads = () => reader(agent.key);
       return async (message) => {
         // Built when the call runs, and again after a reload it waits out.
         const client = () => {

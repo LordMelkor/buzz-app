@@ -19,7 +19,9 @@ export function continuesMessageGroup(
     !current.relayedFrom?.verified &&
     previous.channelId === current.channelId &&
     previous.authorId === current.authorId &&
-    (previous.audience === current.audience || current.audience === "agents") &&
+    // Agent activity stacks under anything; details are for people too, so
+    // they stack with the author's messages.
+    (current.audience === "agents" || previous.audience !== "agents") &&
     current.createdAt >= previous.createdAt &&
     current.createdAt - previous.createdAt <= 5 * 60 &&
     calendarDay(previous.createdAt) === calendarDay(current.createdAt)

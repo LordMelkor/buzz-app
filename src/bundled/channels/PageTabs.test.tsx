@@ -10,9 +10,11 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { use } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import type { ConversationExtensions } from "../../features/conversation/contracts";
+import { LinkThreadTabContext } from "../../features/conversation/LinkLabelContext";
 import { setThreadPlacementPreference } from "../../features/messages/thread-preferences";
 import type { RelaySession } from "../../features/relay/session";
 import type { ConversationTab as Tab } from "./useChannelTabState";
@@ -85,6 +87,9 @@ function fixture(visits?: boolean) {
     { id: "alpha", name: "alpha" },
     { id: "beta", name: "beta" },
     { id: "pending", name: "pending", cached: true },
+    // Joined, but not shown in a channel list.
+    { id: "archive", name: "archive", archived: true },
+    { id: "guest", name: "guest", readOnly: true, viewerRole: "guest" },
     { id: "dm", name: "Alice", channelType: "dm" },
     {
       id: "group",
@@ -131,6 +136,13 @@ function fixture(visits?: boolean) {
   let close: (target: PageTabTarget) => boolean = () => false;
   let isOpen: (target: PageTabTarget) => boolean = () => false;
   const openers = new Set<typeof open>();
+  // What a message link's Open link calls for a thread in another channel.
+  let link: (channelId: string, rootId: string) => boolean = () => false;
+  function Links() {
+    const linked = use(LinkThreadTabContext);
+    link = (channelId, rootId) => !!linked?.(channelId, rootId, rootId);
+    return null;
+  }
   render(
     <PageTabs
       id="switchboard"
@@ -146,7 +158,12 @@ function fixture(visits?: boolean) {
         close = closer;
         isOpen = opened;
         openers.add(next);
-        return <p>Chat list</p>;
+        return (
+          <>
+            <p>Chat list</p>
+            <Links />
+          </>
+        );
       }}
     </PageTabs>,
   );
@@ -163,6 +180,13 @@ function fixture(visits?: boolean) {
       return opened;
     },
     isOpen: (target: PageTabTarget) => isOpen(target),
+    link(channelId: string, rootId: string) {
+      let opened = false;
+      act(() => {
+        opened = link(channelId, rootId);
+      });
+      return opened;
+    },
     close(target: PageTabTarget) {
       let closed = false;
       act(() => {
@@ -215,6 +239,22 @@ it("replaces the last opened tab unless asked to keep it", () => {
   // Pages can depend on one opener across the renders its tabs cause.
   expect(page.openers.size).toBe(1);
 });
+
+// A thread tab reads its channel; only a conversation tab, which mounts a
+// composer, needs one the viewer can post in. Neither kind of channel is in
+// the page's own rows: the sidebar leaves an archived channel out.
+it.each(["archive", "guest"])(
+  "opens a thread of the %s channel from a row and from a link, but not its conversation",
+  (channelId) => {
+    const page = fixture();
+    expect(page.open({ channelId })).toBe(false);
+    expect(page.open({ channelId, threadId: "root" })).toBe(true);
+    expect(screen.getByText(`thread in ${channelId}`)).toBeVisible();
+    expect(page.close({ channelId, threadId: "root" })).toBe(true);
+    expect(page.link(channelId, "root")).toBe(true);
+    expect(screen.getByText(`thread in ${channelId}`)).toBeVisible();
+  },
+);
 
 it("gives each conversation tab its sidebar icon", () => {
   const page = fixture();
@@ -451,6 +491,37 @@ it("a workspace owns its main reader, intro, menu, and no initial detail", async
   );
   expect(source).toHaveBeenCalledOnce();
 });
+
+it.each([false, true])(
+  "a workspace shows its header actions before the actions menu (menu=%s)",
+  (menu) => {
+    const f = fixture();
+    cleanup();
+    render(
+      <ConversationWorkspace
+        id="task"
+        session={f.session}
+        scope="origin:viewer"
+        target={{ channelId: "alpha" }}
+        label="Task"
+        host={f.host}
+        headerActions={<button type="button">Dashboard</button>}
+        {...(menu && { actions: [{ label: "Archive", run() {} }] })}
+      />,
+    );
+    const header = screen.getByRole("banner");
+    expect(
+      within(header)
+        .getAllByRole("button")
+        .map(
+          (button) => button.getAttribute("aria-label") ?? button.textContent,
+        )
+        .filter(
+          (name) => name === "Dashboard" || name === "Conversation actions",
+        ),
+    ).toEqual(menu ? ["Dashboard", "Conversation actions"] : ["Dashboard"]);
+  },
+);
 
 it.each([false, true])(
   "a workspace requests composer focus unless another editor owns it (editing=%s)",

@@ -1188,6 +1188,33 @@ it("a fill whose last page lands in the tick the stream drops reports the window
   }
 });
 
+it("a stream drop that cancels an older page's aux read reads it again after the catch-up", async () => {
+  const h = reconnectHarness();
+  try {
+    const seen = message(h.alice, "c", "seen", 10),
+      old = message(h.alice, "c", "old", 5);
+    await h.reconnect(seen);
+    h.read().respond(h.page("head", [seen], seen));
+    await flush();
+    h.owner.session.channels.loadOlder("c");
+    h.read().respond(h.page(h.cursor(seen), [old], null));
+    await flush();
+    const aux = h.read();
+    expect(aux.filters[0]).toMatchObject({ until: 10, include_aux: true });
+    // The history has no older page left to read it with.
+    await h.dropAndReplay([]);
+    expect(aux.signal?.aborted).toBe(true);
+    h.read().respond(h.page("head", [seen], seen));
+    await flush();
+    expect(h.read().filters[0]).toMatchObject({
+      until: 10,
+      include_aux: true,
+    });
+  } finally {
+    h.owner.dispose();
+  }
+});
+
 it("an older page read while the stream is down waits below a settled fill until paging reaches it", async () => {
   // Those rows are not in the drop-time snapshot, so a fill that gives up on
   // the snapshot does not drop them; the settle's cursor hides them below the
@@ -1212,6 +1239,14 @@ it("an older page read while the stream is down waits below a settled fill until
     older.respond(h.page(h.cursor(seen), [old], old));
     await flush();
     expect(h.rows()).toEqual([old.id, seen.id]);
+    // The page's aux closure follows its rows.
+    const aux = h.read();
+    expect(aux.filters[0]).toMatchObject({
+      until: seen.created_at,
+      include_aux: true,
+    });
+    aux.respond(h.page(h.cursor(seen), [old], old));
+    await flush();
     await h.dropAndReplay([]);
     let previous: (typeof missed)[number] | undefined;
     for (const row of missed) {

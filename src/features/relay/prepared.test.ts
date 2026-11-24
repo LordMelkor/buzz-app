@@ -234,7 +234,7 @@ describe("prepared channel working sets", () => {
     expect(store.diagnostics().heads.entries).toBe(0);
     store.dispose();
   });
-  it("enforces a history budget without pretending it reached EOF or evicting the reading rows", async () => {
+  it("an older page past the history budget slides the window down, detached from the newer rows", async () => {
     const { queries, next, store } = setup({
       prepared: false,
       maxHistoryRows: 1,
@@ -261,10 +261,11 @@ describe("prepared channel working sets", () => {
     ]);
     await flush();
     expect(queries.window("a")).toMatchObject({
-      historyLimited: true,
-      hasMore: true,
-      rows: [{ content: "new" }],
+      hasMore: false,
+      hasNewer: true,
+      rows: [{ content: "old" }],
     });
+    expect(queries.window("a").historyLimited).toBeFalsy();
     store.dispose();
   });
   it("clear rejects in-flight results and clears the persistent identity partition", async () => {

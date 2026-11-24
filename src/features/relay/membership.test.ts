@@ -34,6 +34,15 @@ const addition = (target = pinky.pubkey, time = 20) =>
 const end = () =>
   bounds(relay, "a", "head", { has_more: false, next_cursor: null });
 
+it("shows no row for a relay-signed pin notice", () => {
+  const pin = activity({
+    type: "message_pinned",
+    actor: viewer.pubkey,
+    target_event_id: "d".repeat(64),
+  });
+  expect(foldMessages("a", relay.pubkey, [pin])).toEqual([]);
+});
+
 it("admits only recognized, channel-scoped relay-authored membership payloads", () => {
   const joined = addition();
   const left = activity({ type: "member_left", actor: pinky.pubkey });
@@ -355,8 +364,10 @@ it("live activity obeys the same retained row budget as messages", async () => {
       addition(pinky.pubkey, 2),
       addition(brain.pubkey, 3),
     ]);
+    // The oldest goes, and an older page can read it again.
     expect(owner.session.channels.window("a")).toMatchObject({
-      historyLimited: true,
+      historyLimited: false,
+      hasMore: true,
     });
     expect(
       owner.session.channels.window("a").rows.map((r) => r.createdAt),

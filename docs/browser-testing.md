@@ -43,6 +43,10 @@ out. CI keeps the filmstrip.
   `source-fixture.mjs` instead. For a server with its own middleware, use
   `vite-server.mjs`.
 - Unexpected network requests, console errors and page errors fail the test.
+- Fixture builds enable Channel Settings → Diagnostics by default. Set
+  `diagnostics: false` to exercise release behavior. Except with `developmentReact`,
+  builds check that Diagnostics-only text is present when enabled and absent
+  when disabled; keep `DIAGNOSTICS_LABELS` in `tests/browser/build.mjs` current.
 
 **Vite gotchas:**
 - Import `build` and `preview` from `vite-server.mjs`, not from `vite`. Vite
@@ -80,6 +84,10 @@ plain `--repeat-each` doesn't repeat them.
 
 CI runs one serial measurement job, the functional journeys sharded across
 Linux runners per engine, and the `@media-recorder` WebKit cases on macOS.
+Functional journeys use three workers on eight-core PR runners and two on
+standard runners. Measurements remain serial. To reproduce a denser functional
+run locally, use `BUZZ_BROWSER_WORKERS=3 bin/pnpm test:browser:ci --project chromium --no-deps`
+(or `--project webkit`).
 `CI required` fails if any of them fails, is skipped or is cancelled. An
 integration test checks that the shards cover every functional test exactly
 once, so update it with the matrix. For slow-test runs, see

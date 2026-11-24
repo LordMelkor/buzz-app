@@ -18,6 +18,7 @@ import { useChannelList, useRelayConnection } from "../../features/relay/react";
 import { messageAuthor } from "../../features/relay/fold";
 import type { Navigation } from "../../features/navigation/controller";
 import { useIdentityNames } from "../../features/identity-names/react";
+import { dmNamedParticipants } from "../../features/identity-names/participant-order";
 import { channelIcon } from "../channels/channel-icon";
 import { avatarMedia } from "../../shared/avatar-source";
 import { relativeTimestamp } from "../../shared/relative-timestamp";
@@ -279,7 +280,9 @@ function ScopedPage({
           members,
           available,
         };
-      const names = members.map((key) => nameOf(key, members));
+      const names = dmNamedParticipants(members, profiles).map((key) =>
+        nameOf(key, members),
+      );
       return {
         title:
           names.slice(0, 3).join(", ") +

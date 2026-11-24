@@ -20,6 +20,7 @@ import { policyRelay } from "./policy-relay.mjs";
 import { buildApp } from "./build.mjs";
 import { fixtureBody } from "./fixture-body.mjs";
 import { watchPageErrors } from "./page-errors.mjs";
+import { seedThreadPlacement } from "./thread-placement.mjs";
 import { validTypingTemplate } from "../../src/features/relay/typing-protocol.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -46,6 +47,11 @@ export const test = base.extend({
   liveDraw: [0, { option: true }],
   actionProfile: [false, { option: true }],
   agentMessageDeletion: [false, { option: true }],
+  // Open threads in: "side", "main" or "inline" (the app default). Journeys
+  // open tabs unless they opt into inline.
+  threadPlacement: ["side", { option: true }],
+  // Whether the first inline thread introduces itself; journeys skip it.
+  threadIntro: [false, { option: true }],
   profilePicture: ["", { option: true }],
   // The viewer profile's `tz`. The empty opt-out keeps launch from sharing the
   // browser's zone into it; null leaves the key out so launch shares one.
@@ -62,6 +68,8 @@ export const test = base.extend({
   openSearch: [false, { option: true }],
   searchAuthor: [false, { option: true }],
   soloChannels: [[], { option: true }],
+  // Ordinary channels whose composer sends, as Solo chats' do.
+  sendChannels: [[], { option: true }],
   sessionMembers: [{}, { option: true }],
   channelWriteKinds: [null, { option: true }],
   sidebarUnread: [false, { option: true }],
@@ -107,6 +115,8 @@ export const test = base.extend({
   // Opt-in perf workload: chat-like Markdown (code, links, lists, mentions)
   // in most corpus rows instead of inert prose.
   markdownMessages: [false, { option: true }],
+  // Opt-in perf workload: chat-like one-line rows, every fifth one two lines.
+  shortMessages: [false, { option: true }],
   // Opt-in perf workload: newer activity in another joined channel fills the
   // startup unread read, so corpus history reaches the app first-seen.
   firstSeenHistory: [false, { option: true }],
@@ -134,6 +144,8 @@ export const test = base.extend({
   // the app's content the next time it renders.
   startupFailureFixture: [false, { option: true, scope: "worker" }],
   companionFixture: [false, { option: true, scope: "worker" }],
+  // Off builds the production channel settings, without Diagnostics.
+  diagnostics: [true, { option: true, scope: "worker" }],
   compiledApp: [buildApp, { scope: "worker" }],
   app: async (
     {
@@ -149,6 +161,8 @@ export const test = base.extend({
       liveDraw,
       actionProfile,
       agentMessageDeletion,
+      threadPlacement,
+      threadIntro,
       profilePicture,
       profileTimeZone,
       readState,
@@ -162,6 +176,7 @@ export const test = base.extend({
       openSearch,
       searchAuthor,
       soloChannels,
+      sendChannels,
       sessionMembers,
       channelWriteKinds,
       sidebarUnread,
@@ -197,6 +212,7 @@ export const test = base.extend({
       inboxSoloAgent,
       tallMessages,
       markdownMessages,
+      shortMessages,
       firstSeenHistory,
       olderPageDelayMs,
       membershipActivity,
@@ -559,7 +575,7 @@ export const test = base.extend({
                     ]
                   : []),
               ],
-              `${community} ${channel} message ${i}\n${"Mixed height message content. ".repeat((1 + (i % 7) * 3) * (tallMessages ? 5 : 1))}${syntax ? `\n${syntax}` : ""}`,
+              `${community} ${channel} message ${i}\n${"Mixed height message content. ".repeat(shortMessages ? Number(i % 5 === 0) : (1 + (i % 7) * 3) * (tallMessages ? 5 : 1))}${syntax ? `\n${syntax}` : ""}`,
               readState ? peerKey : userKey,
               1700000100 + Math.floor(i / historyRowsPerSecond),
             );
@@ -1014,6 +1030,7 @@ export const test = base.extend({
         agentPeers,
         tallMessages,
         markdownMessages,
+        shortMessages,
         firstSeenHistory,
         olderPageDelayMs,
         browserVersion: browser.version(),
@@ -1956,10 +1973,12 @@ export const test = base.extend({
         filter.until === undefined
           ? "head"
           : `${filter.until}:${filter.before_id}`;
-      return filter.include_aux
+      // As the relay: a window read is always bounded; aux and summaries
+      // come only when asked for.
+      return filter.top_level
         ? [
             ...events,
-            ...(actionProfile
+            ...(actionProfile && filter.include_aux
               ? targetEvents.filter((aux) =>
                   aux.tags.some(
                     ([k, id]) =>
@@ -1967,13 +1986,15 @@ export const test = base.extend({
                   ),
                 )
               : []),
-            ...threadSummaries.filter((summary) =>
-              events.some((event) =>
-                summary.tags.some(
-                  ([key, value]) => key === "e" && value === event.id,
-                ),
-              ),
-            ),
+            ...(filter.include_summaries
+              ? threadSummaries.filter((summary) =>
+                  events.some((event) =>
+                    summary.tags.some(
+                      ([key, value]) => key === "e" && value === event.id,
+                    ),
+                  ),
+                )
+              : []),
             sign(
               39006,
               [
@@ -2431,16 +2452,17 @@ export const test = base.extend({
           acceptReadPublication(community, body);
           return send(response, { accepted: true, event_id: body.id });
         }
-        if (soloChannels.length && route === "sign") {
+        const sendable = [...soloChannels, ...sendChannels];
+        if (sendable.length && route === "sign") {
           expect(body.kind).toBe(9);
           return send(response, finalizeEvent(body, userKey));
         }
-        if (soloChannels.length && route === "publish") {
+        if (sendable.length && route === "publish") {
           expect(verifyEvent(body)).toBe(true);
           expect(body.pubkey).toBe(viewer);
           expect(body.kind).toBe(9);
           const channel = body.tags.find(([key]) => key === "h")?.[1];
-          expect(soloChannels).toContain(channel);
+          expect(sendable).toContain(channel);
           histories.get(`${community}/${channel}`).push(body);
           return send(response, { accepted: true, event_id: body.id });
         }
@@ -2562,10 +2584,12 @@ export const test = base.extend({
           ).values(),
         ];
         for (const { id } of result) served.add(id);
+        // An older page's aux closure, read apart from its rows, is not held.
         if (
           filter.search === undefined &&
           filter.until !== undefined &&
-          filter["#h"]?.length
+          filter["#h"]?.length &&
+          !(filter.include_aux && !filter.include_summaries)
         ) {
           const queuedAt = performance.now();
           const receipt = {
@@ -2580,6 +2604,12 @@ export const test = base.extend({
             },
           };
           pending.push(receipt);
+          // A read the app cancels is no longer pending.
+          response.on("close", () => {
+            if (response.writableEnded) return;
+            const index = pending.indexOf(receipt);
+            if (index >= 0) pending.splice(index, 1);
+          });
           if (olderPageDelayMs !== null) {
             const timer = setTimeout(() => {
               olderPageTimers.delete(timer);
@@ -2751,6 +2781,15 @@ export const test = base.extend({
           });
           observer.observe(document, { childList: true, subtree: true });
         });
+      if (threadPlacement !== "inline")
+        await seedThreadPlacement(page, threadPlacement);
+      if (!threadIntro)
+        await page.addInitScript((viewer) => {
+          localStorage.setItem(
+            `buzz.seen.v1:${viewer}:buzz.channels/inline-thread-intro`,
+            "1",
+          );
+        }, viewer);
       await page.addInitScript(
         ({
           viewer,

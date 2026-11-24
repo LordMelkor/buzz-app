@@ -556,6 +556,44 @@ it("disconnect during a coalesced cache clear does not reconnect", async () => {
   expect(data.snapshot().status).toBe("disconnected");
   expect(connections).toHaveLength(1);
 });
+it("clearing a live connection reads its open channel from the relay again", async () => {
+  const relay = keypair();
+  const { data, connections, source, restored } = setup({ relay });
+  const author = keypair();
+  await restored();
+  connections[0]?.resolve(source);
+  await vi.waitFor(() =>
+    expect(data.snapshot()).toMatchObject({ status: "ready" }),
+  );
+  expect(data.snapshot().cached).toBeUndefined();
+  expect(
+    data.snapshot().session.channels.window("alpha").rows[0]?.content,
+  ).toBe("Saved history");
+  vi.mocked(source.query).mockImplementation(async (filters) =>
+    filters.some((f) => f.kinds?.includes(39002))
+      ? [
+          roster(relay, "alpha", [source.viewer]),
+          metadata(relay, "alpha", "Alpha"),
+        ]
+      : filters.some((f) => f["#h"]?.includes("alpha"))
+        ? [
+            message(author, "alpha", "Relay reply", 30),
+            bounds(relay, "alpha", "head", {
+              has_more: false,
+              next_cursor: null,
+            }),
+          ]
+        : [],
+  );
+  await data.clearCache();
+  await vi.waitFor(() => expect(connections).toHaveLength(2));
+  connections.at(-1)?.resolve(source);
+  await vi.waitFor(() =>
+    expect(
+      data.snapshot().session.channels.window("alpha").rows[0]?.content,
+    ).toBe("Relay reply"),
+  );
+});
 it.each([
   ["at once", false],
   ["after its first attempt times out", true],

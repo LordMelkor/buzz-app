@@ -1203,3 +1203,25 @@ it("refuses a delivery when a copy too old for Buzz could not be updated", async
     "Claude 2.1.177 is older than Buzz needs (2.1.267)",
   );
 });
+
+it("asks for no agent environment variables to install, use or sign in", async () => {
+  const asked: string[] = [];
+  const watched =
+    (spawn: Spawn): Spawn =>
+    (id, options) => {
+      if (options?.secrets?.includes("agent-env")) asked.push(id);
+      return spawn(id, options);
+    };
+  const { spawn, request, state } = releases("2.1.300");
+  await new ClaudeSetup(watched(spawn), request).run("install");
+  expect(state.used).toEqual(["2.1.300"]);
+  const signIn = scripted({ "claude --version": { stdout: "2.1.280\n" } });
+  const login = watched(signIn.spawn);
+  await new ClaudeSetup(login, undefined, new InteractiveAuth(login)).run(
+    "sign-in",
+  );
+  expect(signIn.calls.map((call) => call.args.join(" "))).toContain(
+    "auth login",
+  );
+  expect(asked).toEqual([]);
+});

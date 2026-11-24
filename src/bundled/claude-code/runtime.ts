@@ -51,6 +51,11 @@ import {
   type TranscriptTurn,
 } from "../../features/agents/activity-transcript";
 import { type AgentReads, workflowMarked } from "../../features/agents/reads";
+import {
+  ownerLabel,
+  ownerRows,
+  ownerTurns,
+} from "../../features/agents/owner-view";
 import { localStore, type AgentStore } from "../../features/agents/store";
 import {
   agentFolders,
@@ -70,6 +75,7 @@ import type {
   TurnResult,
 } from "../../features/agents/service";
 import { pubkeyOf, type AgentKey } from "../../features/agents/membership";
+import { hasOwnEnv } from "../agents/agent-env";
 import type { Host } from "../../features/host/service";
 import type { EventData } from "../../features/relay/events";
 import type { ChannelLabel } from "../../features/channels/channel-icon";
@@ -133,7 +139,10 @@ import {
   readLatestTurns,
   readSessionTitle,
   readTranscript,
+  readTranscriptPreview,
   withNotices,
+  type ClaudeTranscript,
+  type WorkingPoll,
   type Conversation,
   type SessionsPlace,
 } from "./transcript";
@@ -196,6 +205,22 @@ export type SavedConversation = Conversation &
 /** A little over the host's grace (`STOP_GRACE`) before it kills a stopped
  * process. */
 const STOP_WAIT_MS = 5_000;
+/** An agent's own `claude`, and the check of which custom headers it starts
+ * with, ask for the environment variables saved for that agent; its pinned
+ * protected copy and other setup steps never do. A spare, started for no
+ * agent yet, asks with none named and gets none. */
+const agentEnv = (
+  id: string,
+  options: Parameters<Spawn>[1],
+  agent?: AgentKey,
+) =>
+  id === "claude" || id === "inherited-headers"
+    ? {
+        ...options,
+        secrets: [...(options?.secrets ?? []), "agent-env" as const],
+        ...(agent && { envAgent: pubkeyOf(agent) }),
+      }
+    : options;
 const CONVERSATION_READ_TIMEOUT_MS = 4_000;
 const CHAT = [9, 40002];
 
@@ -323,7 +348,7 @@ export class ClaudeRuntime {
   /** One process started ahead of need, for any agent's next new conversation. */
   private readonly spare = new Spare(
     // Started ahead of need, it never stops a conversation to make room.
-    (id, options) => this.spawn(id, options),
+    (id, options) => this.spawn(id, agentEnv(id, options)),
     (_conversation, message) =>
       respond(undefined, {}, message, this.added(), listing(this.added())),
     undefined,
@@ -794,7 +819,12 @@ export class ClaudeRuntime {
     }
     return view;
   }
-  /** The agent's saved sessions, most recently used first. */
+  /** The agent's saved sessions its owner may see, for display. */
+  ownerConversations(agent: AgentKey): SavedConversation[] {
+    return ownerRows(this.conversations(agent), this.reads(agent));
+  }
+  /** The agent's saved sessions, most recently used first, including those in
+   * channels only the agent can read; show them through `ownerConversations`. */
   conversations(agent: AgentKey): SavedConversation[] {
     const reads = this.reads(agent);
     const saved =
@@ -830,7 +860,7 @@ export class ClaudeRuntime {
         ...location,
         channelId,
         ...(root ? { root } : {}),
-        ...reads?.channelLabel(channelId),
+        ...ownerLabel(reads, channelId),
         at: saved.at,
       };
     });
@@ -841,6 +871,7 @@ export class ClaudeRuntime {
     workspace: string,
     working: boolean,
     signal: AbortSignal,
+    poll?: WorkingPoll,
   ) {
     if (await this.inspect?.(conversation.agent))
       // Where the gateway would attribute it, also say that it isn't.
@@ -849,26 +880,82 @@ export class ClaudeRuntime {
           ? `${REMOTE_TRANSCRIPTS}. They aren't attributed in the agent gateway yet.`
           : `${REMOTE_TRANSCRIPTS}.`,
       );
+    return this.readActivity(
+      readTranscript,
+      conversation,
+      workspace,
+      working,
+      signal,
+      undefined,
+      poll,
+    );
+  }
+
+  async transcriptPreview(
+    conversation: Conversation,
+    workspace: string,
+    working: boolean,
+    signal: AbortSignal,
+  ) {
+    const { agent, sessionId } = conversation;
+    const key = conversation.community
+      ? COMMUNITY_SESSION
+      : conversationKey(conversation.channelId, conversation.root);
+    const saved = () => this.savedSessions(agent).get(key)?.id;
+    if (
+      !sessionId ||
+      saved() !== sessionId ||
+      !this.host.spawn ||
+      this.target ||
+      this.bound(agent) ||
+      (await this.inspect?.(agent))
+    )
+      return undefined;
+    signal.throwIfAborted();
+    const preview: ClaudeTranscript | undefined = await this.readActivity(
+      readTranscriptPreview,
+      conversation,
+      workspace,
+      working,
+      signal,
+      key,
+    );
+    signal.throwIfAborted();
+    return saved() === sessionId && !this.bound(agent) ? preview : undefined;
+  }
+
+  private readActivity(
+    read: typeof readTranscript,
+    conversation: Conversation,
+    workspace: string,
+    working: boolean,
+    signal: AbortSignal,
+    key = conversation.community
+      ? COMMUNITY_SESSION
+      : conversationKey(conversation.channelId, conversation.root),
+    poll?: WorkingPoll,
+  ) {
     const prompts = this.prompts(conversation.agent);
-    return readTranscript(
+    return read(
       this.spawn,
-      this.place(
-        conversation.agent,
-        conversation.community
-          ? COMMUNITY_SESSION
-          : conversationKey(conversation.channelId, conversation.root),
-        workspace,
-      ),
+      this.place(conversation.agent, key, workspace),
       conversation,
       working,
       signal,
       (pubkey) => this.reads(conversation.agent)?.name(pubkey),
+      poll,
     ).then(
       (transcript) =>
         transcript && {
           ...transcript,
           turns: withNotices(
-            prompts.shown(transcript.turns),
+            prompts.shown(
+              ownerTurns(
+                transcript.turns,
+                this.reads(conversation.agent),
+                conversation,
+              ),
+            ),
             this.notices.get(conversation.agent) ?? new Map(),
           ),
         },
@@ -896,6 +983,7 @@ export class ClaudeRuntime {
     working: boolean,
     signal: AbortSignal,
     held: readonly TranscriptTurn[],
+    poll?: WorkingPoll,
   ) {
     if (await this.inspect?.(conversation.agent)) return undefined;
     const read = await readLatestTurns(
@@ -911,13 +999,19 @@ export class ClaudeRuntime {
       working,
       signal,
       (pubkey) => this.reads(conversation.agent)?.name(pubkey),
+      poll,
     );
     if (!read) return undefined;
+    const readable = ownerTurns(
+      read,
+      this.reads(conversation.agent),
+      conversation,
+    );
     // Turns older than all `held` keeps are left.
     const ids = new Set(held.map((turn) => turn.turnId));
-    const turns = read.slice(
+    const turns = readable.slice(
       Math.max(
-        read.findIndex((turn) => ids.has(turn.turnId)),
+        readable.findIndex((turn) => ids.has(turn.turnId)),
         0,
       ),
     );
@@ -988,7 +1082,7 @@ export class ClaudeRuntime {
   /** The community's current name and kind for a channel, if it lists it;
    * `useOpenedSession` gives them to a session `find` returned. */
   channelLabel(agent: AgentKey, channelId: string) {
-    return this.reads(agent)?.channelLabel(channelId);
+    return ownerLabel(this.reads(agent), channelId);
   }
   subscribe(listener: () => void) {
     this.listeners.add(listener);
@@ -2247,9 +2341,20 @@ export class ClaudeRuntime {
       };
     const saved = this.savedSessions(agent);
     entry.sessions = new AgentSessions({
-      spawn: (id, options) => this.spawn(id, options),
+      spawn: (id, options) => this.spawn(id, agentEnv(id, options, agent)),
       room: () => this.room(),
-      ...(!this.target ? { spare: this.spare } : {}),
+      // The spare has no agent's own variables: an agent with its own, or
+      // whose list can't be read, starts fresh. Checked at each handover.
+      ...(!this.target
+        ? {
+            spare: {
+              take: async (where: Parameters<Spare["take"]>[0]) =>
+                (await hasOwnEnv(agent)) === false
+                  ? this.spare.take(where)
+                  : undefined,
+            },
+          }
+        : {}),
       strictResume: !!this.target,
       store: {
         get: (key) => {

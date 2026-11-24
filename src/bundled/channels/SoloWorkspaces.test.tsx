@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { DndContext } from "@dnd-kit/core";
 import {
   act,
   cleanup,
@@ -35,6 +36,7 @@ import {
 } from "./SoloWorkspaces";
 import { createSoloRegionFixture } from "../../features/channel-navigation/solo-navigation-testing";
 import { readView } from "../../shared/view-state";
+import type { WorkspaceSidebarComposition } from "./sidebar-environment";
 
 const owners: ReturnType<typeof createRelaySession>[] = [];
 afterEach(() => {
@@ -132,9 +134,11 @@ function fixture(projectName = "Work") {
       { id: "other", title: "Existing chat" },
     ],
     compose?: ComposeWorkspaces,
+    workspaceComposition?: WorkspaceSidebarComposition,
   ) => (
     <SoloWorkspaces
       compose={compose}
+      workspaceComposition={workspaceComposition}
       onNew={onNew}
       session={
         {
@@ -582,6 +586,62 @@ it("shares a workspace frame while keeping selection, disclosure and chat creati
     expect(create[0]).toHaveAccessibleName("New chat in Chats");
     await user.click(screen.getByRole("button", { name: "New chat in Chats" }));
     expect(h.onNew).toHaveBeenCalledExactlyOnceWith(undefined);
+  } finally {
+    store.dispose();
+  }
+});
+
+it("uses task creation in a composed workspace within the unified sidebar", async () => {
+  const h = fixture();
+  const store = h.store();
+  const onTask = vi.fn();
+  await store.queries.ensure();
+  const user = userEvent.setup();
+  render(
+    <DndContext>
+      {h.view(
+        store.queries,
+        "workspace-composition",
+        undefined,
+        undefined,
+        (parts) => (
+          <WorkspaceCompositionContext value={parts}>
+            <RegionWorkspace id="work" onNewTask={onTask} />
+          </WorkspaceCompositionContext>
+        ),
+        {
+          sections: new Set(["group:work"]),
+          pendingChatClick: { current: undefined },
+          collapsed: [],
+          toggle: () => {},
+          registerFrame: () => () => {},
+          newAction: (_, name) => (
+            <>
+              <button type="button" aria-label={`New chat in ${name}`} />
+              <button type="button" aria-label={`New options in ${name}`} />
+            </>
+          ),
+        },
+      )}
+    </DndContext>,
+  );
+  try {
+    const create = await screen.findByRole("button", {
+      name: "New task in Work",
+    });
+    expect(
+      screen.queryByRole("button", { name: "New chat in Work" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "New options in Work" }),
+    ).toBeNull();
+    create.focus();
+    await user.keyboard("{Enter}");
+    expect(onTask).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Actions for Work" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "Workspace settings" }),
+    ).toBeEnabled();
   } finally {
     store.dispose();
   }

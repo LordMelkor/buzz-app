@@ -13,6 +13,7 @@ import type {
   ConfigOptions,
 } from "../../features/agent-harness/acp/session";
 import { errorMessage } from "../../features/agent-harness/acp/steps";
+import type { HostProcessOptions } from "../../features/host/service";
 import type {
   AcpHooks,
   ServeMcp,
@@ -103,7 +104,7 @@ export const GOOSE: AcpHooks = {
     // The session's whole tool set: goose's developer tools and the Buzz
     // tools, so extensions in the owner's goose config and plugins never load
     // into a Buzz agent. The pinned Goose persists this list, including the
-    // Buzz MCP token; aaif-goose/goose#12908 is not in v1.60.1. Keep the entry
+    // Buzz MCP token; aaif-goose/goose#12908 is not in v1.60.2. Keep the entry
     // until upstream supports client MCP servers alongside this allowlist.
     // The non-persistence acceptance test remains a known failure.
     // Mesh sessions pass a narrower `platform` set (see mesh-compute).
@@ -214,6 +215,9 @@ export const GooseProcess = {
       signal?: AbortSignal;
       onProcess?: (goose: AcpProcess) => void;
       agent?: Readonly<{ pubkey: string; relay: string }>;
+      /** Native-held secrets: only a local agent's own launch asks for
+       * `agent-env`. */
+      secrets?: HostProcessOptions["secrets"];
     }>,
   ) => {
     const goose = await AcpProcess.start(spawn, GOOSE, {

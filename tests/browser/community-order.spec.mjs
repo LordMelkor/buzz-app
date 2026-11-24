@@ -70,10 +70,10 @@ test("dragging a community reorders the switcher, its numbered shortcuts and the
   await expect(rows(picker).nth(1)).toHaveAttribute("aria-current", "true");
   await page.keyboard.press("Escape");
   await expect(picker).toBeHidden();
-  // Personal space keeps the first number; the communities follow in order.
-  await page.keyboard.press(`${modifier}+2`);
+  // The communities are numbered in order; Personal space has no number.
+  await page.keyboard.press(`${modifier}+1`);
   await expect(communitySwitcher(page, "Secondary")).toBeVisible();
-  await page.keyboard.press(`${modifier}+3`);
+  await page.keyboard.press(`${modifier}+2`);
   await expect(communitySwitcher(page, "Primary")).toBeVisible();
 
   await page.reload();
@@ -83,7 +83,7 @@ test("dragging a community reorders the switcher, its numbered shortcuts and the
   // A click that does not travel still selects.
   await rows(picker).nth(0).click();
   await expect(communitySwitcher(page, "Secondary")).toBeVisible();
-  await page.keyboard.press(`${modifier}+3`);
+  await page.keyboard.press(`${modifier}+2`);
   await expect(communitySwitcher(page, "Primary")).toBeVisible();
 });
 
@@ -148,9 +148,9 @@ test.describe("a switcher too tall for its window", () => {
       await page.clock.resume();
       await page.keyboard.press("Escape");
       await expect(picker).toBeHidden();
-      await page.keyboard.press(`${modifier}+3`);
-      await expect(communitySwitcher(page, "Secondary")).toBeVisible();
       await page.keyboard.press(`${modifier}+2`);
+      await expect(communitySwitcher(page, "Secondary")).toBeVisible();
+      await page.keyboard.press(`${modifier}+1`);
       await expect(communitySwitcher(page, "Primary")).toBeVisible();
     } finally {
       app.iconCongestion.release();

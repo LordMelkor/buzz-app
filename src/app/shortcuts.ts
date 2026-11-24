@@ -1,6 +1,9 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { isApplePlatform } from "../features/shortcuts/format";
-import type { ShortcutsService } from "../features/shortcuts/service";
+import type {
+  BindingOverrides,
+  ShortcutsService,
+} from "../features/shortcuts/service";
 import type { Appearance } from "../shared/theme/service";
 import { statusShortcut } from "../features/user-status/status-shortcut";
 import {
@@ -56,8 +59,13 @@ export function registerAppShortcuts(
   ready: boolean,
   /** Reloads every community in place, keeping running agents. */
   reload: () => void,
+  overrides?: BindingOverrides,
 ) {
   const apple = isApplePlatform(navigator.platform);
+  // macOS Buzz → Settings… owns ⌘, as Close owns ⌘W, so the page leaves the
+  // default chord to the menu and handles only a rebound one.
+  const menuSettings = isTauri() && apple;
+  let fromMenu = false;
   const remove = [
     shortcuts.registerHost({
       id: "focus-composer",
@@ -104,7 +112,9 @@ export function registerAppShortcuts(
       binding: { key: ",", mod: true },
       order: HOST_SHORTCUT_ORDER.settings,
       allowInEditable: true,
-      when: () => ready,
+      when: () =>
+        ready &&
+        (fromMenu || !menuSettings || !!overrides?.resolve("settings")),
       run: openSettings,
     }),
     ...(
@@ -218,7 +228,14 @@ export function registerAppShortcuts(
   }
   // macOS Buzz → Settings… runs the Open Settings shortcut, with its own
   // eligibility.
-  const settings = () => shortcuts.runHost("settings");
+  const settings = () => {
+    fromMenu = true;
+    try {
+      shortcuts.runHost("settings");
+    } finally {
+      fromMenu = false;
+    }
+  };
   window.addEventListener("buzz:open-settings", settings);
   remove.push(() => window.removeEventListener("buzz:open-settings", settings));
   return () => {

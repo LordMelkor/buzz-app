@@ -42,6 +42,15 @@ and token in both themes.
 | A transient result | The shared Toast |
 | A person or agent | `Avatar`; see [Identity shapes](#identity-shapes) |
 
+Use `NavigationSectionHeading` for workspace and channel headings. Its
+`overlay` actions can cover the trailing edge of the label on pointer
+devices. Keep the disclosure caret before the title so it stays clickable.
+Use `in-flow` to keep actions clear of the title and any accessory. Heading
+hover or keyboard focus reveals actions in place of passive metadata while
+the accessory stays mounted. Keep the Actions menu beside the title on touch.
+When there is no room for a separate New task button, keep New task in the
+menu.
+
 ## Colour structure
 
 | Layer | Example | Used by |

@@ -146,6 +146,8 @@ type Row = Readonly<{
   sessions?: readonly string[];
   /** Its channel's name, when the community lists it. */
   name?: string;
+  /** Started outside any conversation, such as a watch's or timer's turn. */
+  standalone?: true;
 }>;
 const placeOf = (key: string): Place => {
   const [channelId = key, root] = key.split("/");
@@ -199,7 +201,16 @@ export function activityRows(
   const standalone = starts
     .flatMap(({ id, at, title = "", conversation }): Row[] =>
       conversation === null && at !== undefined
-        ? [{ key: id, sessionId: id, title, at, channelId: "" }]
+        ? [
+            {
+              key: id,
+              sessionId: id,
+              title,
+              at,
+              channelId: "",
+              standalone: true as const,
+            },
+          ]
         : [],
     )
     .reverse()
@@ -897,7 +908,18 @@ export function createTabs({
       return (
         transcript && {
           ...transcript,
-          turns: runtime.prompts(agent.key).shown(transcript.turns),
+          turns: runtime.prompts(agent.key).shown(
+            row.standalone
+              ? transcript.turns
+              : // Without a known place, each turn shows only by its own source.
+                runtime.readableTurns(
+                  agent.key,
+                  row.channelId
+                    ? row
+                    : { ...row, channelId: "", community: true },
+                  transcript.turns,
+                ),
+          ),
         }
       );
     };
@@ -959,13 +981,14 @@ export function createTabs({
       () => runtime.prompts(agent.key).sessions(),
       [agent.key, live],
     );
-    const { conversations, standalone } = activityRows(
+    const { conversations: all, standalone } = activityRows(
       saved,
       live,
       starts,
       (id) => runtime.channelLabel(agent.key, id),
       (key) => runtime.source(agent.key, key),
     );
+    const conversations = runtime.readableRows(agent.key, all);
     // The opened conversation's session: a thread's saved or live one, else
     // its channel's, read again each render so a first save is picked up.
     // With neither, its transcript finds the place's sessions by their goose

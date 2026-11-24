@@ -131,7 +131,7 @@ function mountPeople(
   }: {
     items?: readonly object[];
     bundled?: boolean;
-    replace?: () => boolean;
+    replace?: () => boolean | "typed";
     tokens?: readonly { start: number; end: number }[];
     identityMarks?: Contribution<IdentityMark>[];
   } = {},
@@ -289,6 +289,32 @@ it("ignores the agent flag from providers outside the bundled people providers",
 });
 
 const folder = { kind: "folder", id: "/notes", label: "@notes" };
+it.each([
+  [true, true],
+  [false, true],
+  ["typed", true],
+  [true, false],
+] as const)(
+  "tells a bundled provider once about an applied choice, never a rejected or typed-only one (accepted: %s, bundled: %s)",
+  async (accepted, bundled) => {
+    const onSelect = vi.fn();
+    mountPeople("test.plugin", {
+      bundled,
+      replace: () => accepted,
+      items: [
+        { id: "first", label: "First", edit: { text: "1" }, onSelect },
+        { id: "second", label: "Second", edit: { text: "2" } },
+      ],
+    });
+    const option = await screen.findByRole("option", { name: "First" });
+    fireEvent.pointerMove(option);
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.click(option);
+    expect(onSelect).toHaveBeenCalledTimes(
+      accepted === true && bundled ? 1 : 0,
+    );
+  },
+);
 it.each([true, false])(
   "hands a chip edit to the composer only from a bundled provider (bundled: %s)",
   async (bundled) => {

@@ -39,7 +39,7 @@ while the app runs.
 
 **Treat every specific as unstable.** The API is a preview tied to the host
 version, nothing is promised across versions, and the author types are versioned
-`0.0.0-preview.1`. The code is the reference: the author types in
+`0.0.0-preview.2`. The code is the reference: the author types in
 [`src/plugins/author.ts`](../src/plugins/author.ts) and the bundled plugins in
 `src/bundled/`.
 

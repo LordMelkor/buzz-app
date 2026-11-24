@@ -26,9 +26,14 @@ import {
 } from "../messages/MessageManagement";
 import { MediaReviewViewer } from "../messages/MediaReviewViewer";
 import { ThreadPanel, type ThreadPanelProps } from "../messages/ThreadPanel";
+import {
+  ComposerScopeProvider,
+  type MediaReviewOrigin,
+} from "../messages/composer-overlay";
 import { useListedChannel } from "../relay/listed-channel";
 import { ownSolo } from "../solo/labels";
 import { useSoloHasPeople } from "../solo/people";
+import { AdminSetupRecovery } from "../solo/AdminSetupRecovery";
 import {
   ConversationHost,
   type ConversationHostServices,
@@ -58,12 +63,16 @@ export type MediaReview = Pick<
   | "initialAttachments"
   | "initialTime"
   | "hasComments"
+  | "opening"
   | "restoreFocus"
   | "close"
 >;
 
-/** A review that opens over its page and returns focus to its opener. */
-export function useMediaReview() {
+/** A review that opens over its page and returns focus to its opener. It is
+ * fullscreen unless `inline` keeps the view it was opened from, to read over. */
+export function useMediaReview(
+  inline?: (opening: MediaReviewOrigin | undefined) => boolean,
+) {
   const [media, setMedia] =
     useState<Omit<MediaReview, "restoreFocus" | "close">>();
   const trigger = useRef<HTMLElement | null>(null);
@@ -75,6 +84,7 @@ export function useMediaReview() {
       initialTime,
       hasComments = false,
       initialAttachments,
+      opening,
     ) => {
       trigger.current =
         document.activeElement instanceof HTMLElement
@@ -86,9 +96,10 @@ export function useMediaReview() {
         initialTime,
         hasComments,
         initialAttachments,
+        opening: inline?.(opening) ? opening : undefined,
       });
     },
-    [],
+    [inline],
   );
   const review: MediaReview | undefined = media && {
     ...media,
@@ -172,6 +183,7 @@ export function ConversationChannel(props: ChannelProps) {
       channel={channel}
       channelName={channelName}
       interactions={interactions}
+      shown={active !== false}
     >
       {children}
       {review && <ConversationMediaReview {...review} />}
@@ -217,9 +229,12 @@ function Provider({
   channel,
   channelName,
   interactions: { onOpenLink, canOpenLink, onOpenMediaReview },
+  shown,
 }: Pick<ChannelProps, "session" | "scope" | "extensions" | "channel"> & {
   channelName: string;
   interactions: ConversationInteractions;
+  /** Whether the conversation is on screen, for the dialogs its rows open. */
+  shown: boolean;
   children: ReactNode;
 }) {
   const id = channel?.id;
@@ -256,7 +271,12 @@ function Provider({
   );
   return (
     <Context.Provider value={value}>
-      <ActivityIndicatorPresentation>{children}</ActivityIndicatorPresentation>
+      {/* The conversation's own view; a thread view starts its own. */}
+      <ComposerScopeProvider shown={shown}>
+        <ActivityIndicatorPresentation>
+          {children}
+        </ActivityIndicatorPresentation>
+      </ComposerScopeProvider>
     </Context.Provider>
   );
 }
@@ -311,19 +331,28 @@ export function ConversationComposer(props: Own<MessageComposerProps>) {
     shared.soloConversation,
   );
   return (
-    <MessageComposer
-      evidenceOwner={hostComposerProvenance}
-      {...shared}
-      {...(shared.soloConversation
-        ? {
-            label: withPeople
-              ? "Message this conversation"
-              : "Message your agents",
-          }
-        : {})}
-      chatPresentation={shared.ownSoloConversation}
-      requireMention={shared.soloConversation}
-      {...props}
-    />
+    <>
+      {shared.session.outbox && !props.threadRootId && (
+        <AdminSetupRecovery
+          key={shared.channelId}
+          outbox={shared.session.outbox}
+          channelId={shared.channelId}
+        />
+      )}
+      <MessageComposer
+        evidenceOwner={hostComposerProvenance}
+        {...shared}
+        {...(shared.soloConversation
+          ? {
+              label: withPeople
+                ? "Message this conversation"
+                : "Message your agents",
+            }
+          : {})}
+        chatPresentation={shared.ownSoloConversation}
+        requireMention={shared.soloConversation}
+        {...props}
+      />
+    </>
   );
 }

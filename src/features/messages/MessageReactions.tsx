@@ -67,18 +67,19 @@ function useReactionAction({ row, session, disabled }: Props) {
     ["sending", "failed", "unknown"].includes(item.delivery) &&
     session.messages.reactionTarget(item.event) === row.id;
   const busy = operations.some(blocksToggle);
+  const mine = (content: string, emoji?: CustomEmoji) =>
+    row.reactions
+      .find(
+        (reaction) =>
+          reaction.content === content && reaction.emoji?.url === emoji?.url,
+      )
+      ?.events.filter((event) => event.authorId === session.viewer) ?? [];
   const toggle = (content: string, emoji?: CustomEmoji) => {
     if (!active.current || session.outbox?.snapshot().some(blocksToggle))
       return false;
     try {
-      const group = row.reactions.find(
-        (reaction) =>
-          reaction.content === content && reaction.emoji?.url === emoji?.url,
-      );
-      const mine =
-        group?.events.filter((event) => event.authorId === session.viewer) ??
-        [];
-      if (mine.length) session.messages.remove(mine.map((event) => event.id));
+      const own = mine(content, emoji);
+      if (own.length) session.messages.remove(own.map((event) => event.id));
       else {
         session.messages.react(row.id, content, emoji);
       }
@@ -93,7 +94,7 @@ function useReactionAction({ row, session, disabled }: Props) {
       return false;
     }
   };
-  return { toggle, disabled: disabled || busy, busy, error };
+  return { toggle, mine, disabled: disabled || busy, busy, error };
 }
 
 /** The emoji contribution owns the single reaction-picker action. */
@@ -107,6 +108,8 @@ export function MessageReactionControls(props: Props) {
   const action = useReactionAction(props);
   const select = (content: string) =>
     action.toggle(content, catalogEmoji(catalog.entries, content));
+  const reacted = (content: string) =>
+    action.mine(content, catalogEmoji(catalog.entries, content)).length > 0;
   return (
     <>
       <ReactionTool
@@ -116,6 +119,7 @@ export function MessageReactionControls(props: Props) {
         messageId={row.id}
         disabled={action.disabled}
         select={select}
+        reacted={reacted}
         showDelivery={false}
       />
       {action.error && <span role="alert">{action.error}</span>}
@@ -481,6 +485,8 @@ export function MessageReactions(
   const select = (content: string) => {
     return action.toggle(content, catalogEmoji(catalog.entries, content));
   };
+  const reacted = (content: string) =>
+    action.mine(content, catalogEmoji(catalog.entries, content)).length > 0;
   // Count people, not duplicate events. Each emoji shares one control and preview.
   const reactions = useMemo(
     () =>
@@ -584,6 +590,7 @@ export function MessageReactions(
               messageId={row.id}
               disabled={action.disabled}
               select={select}
+              reacted={reacted}
               showDelivery={false}
             />
           </span>

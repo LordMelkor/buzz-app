@@ -12,6 +12,8 @@ import type {
   SessionUsage,
 } from "../../features/agents/service";
 import { relayOrigin } from "../../features/communities/destination";
+import { ownerUsage } from "../../features/agents/owner-view";
+import { ownerReads } from "../../features/agents/reads";
 import type { Navigation } from "../../features/navigation/controller";
 import {
   ArrowDownIcon,
@@ -195,7 +197,15 @@ function useUsage(agents: Agents, keys: string, reload: number) {
         ? read(agent, { since: since(now), signal: controller.signal })
         : Promise.reject(new Error("No usage"))
       ).then(
-        (sessions) => settle(agent, sessions),
+        (sessions) =>
+          settle(
+            agent,
+            ownerUsage(
+              sessions,
+              agents.conversationReads?.(agent.key) ??
+                ownerReads(agents.relay(agent.key), agent.pubkey),
+            ),
+          ),
         (error: unknown) => {
           if (controller.signal.aborted) return;
           if (!read || !retry) return settle(agent, undefined, error);

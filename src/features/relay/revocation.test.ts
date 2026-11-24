@@ -675,6 +675,8 @@ it("a denied channel list keeps names and finishes a profile read in flight", as
   await vi.waitFor(() =>
     expect(h.session.channels.list().status).toBe("error"),
   );
+  // The relay refused the roster read, not either channel.
+  expect(h.session.channels.revoked?.("a")).toBe(false);
   // Profiles do not depend on channels, so even a denied list leaves them.
   expect(held.signal?.aborted).toBe(false);
   const bobName = profile(bob, { name: "Bob" });
@@ -741,6 +743,12 @@ it("a denied channel read keeps names", async () => {
   await vi.waitFor(() =>
     expect(h.session.channels.window("a").status).toBe("error"),
   );
+  // The denial answers for "a" itself, before any complete roster read.
+  const list = h.session.channels.list();
+  expect(list.channels.map((channel) => channel.id)).toEqual(["b"]);
+  expect(list.rosterAsOf).toBeUndefined();
+  expect(h.session.channels.revoked?.("a")).toBe(true);
+  expect(h.session.channels.revoked?.("b")).toBe(false);
   expect(h.session.profiles.snapshot().get(alice.pubkey)?.name).toBe("b");
   await flush();
   expect(h.pending).toEqual([]);
@@ -753,11 +761,15 @@ it("keeps a name learned only in the revoked channel but purges that channel's c
   await openNamed(h, "a", alice);
   h.emit([roster(relay, "a", [], 13)]);
   expect(h.session.channels.window("a").rows).toEqual([]);
+  expect(h.session.channels.revoked?.("a")).toBe(true);
   // Profiles are global relay events: losing "a" does not make Alice's private.
   expect(h.session.profiles.snapshot().get(alice.pubkey)?.name).toBe("a");
   expect(h.session.profiles.snapshot().get(bob.pubkey)?.name).toBe("b");
   await flush();
   expect(h.pending).toEqual([]);
+  // A later roster that names the viewer again withdraws the answer.
+  h.emit([roster(relay, "a", [viewer.pubkey], 14)]);
+  expect(h.session.channels.revoked?.("a")).toBe(false);
 });
 
 it("an ambiguous multi-channel read failure does not revoke unrelated evidence", async () => {

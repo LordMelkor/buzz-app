@@ -3513,7 +3513,7 @@ it("reports a dismissed review of an up-to-date plugin as cancelled, since nothi
       installedFrom(
         {
           repository: "https://example.com/plugins.git/",
-          reference: "main",
+          reference: "v1",
           path: ".",
         },
         "revision-.",
@@ -3895,7 +3895,7 @@ it("refuses a pinned link update from another repository or folder than the inst
   }
 });
 
-it("states the tracked ref change when a pinned link updates from another ref", async () => {
+it("reviews a pinned link ref change even when the installed code is identical", async () => {
   for (const { reference, shown } of [
     { reference: "stable", shown: "stable" },
     { reference: "", shown: "the repository default" },
@@ -3905,6 +3905,7 @@ it("states the tracked ref change when a pinned link updates from another ref", 
       pinnedLink,
       [
         installedFromLink({
+          revision: "revision-plugins/b",
           updateSource: {
             repository: "https://example.com/plugins.git",
             reference,

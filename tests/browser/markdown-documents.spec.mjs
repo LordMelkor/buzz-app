@@ -102,6 +102,24 @@ async function expand(page) {
   while ((await replies.count()) > 0) await replies.first().click();
 }
 
+test("the working status row stays inside its transcript turn", async ({
+  page,
+}) => {
+  await page.goto(`${url}?working&width=419`);
+  const status = page.locator(
+    '[data-screen="transcript"] p[data-status="working"]',
+  );
+  await status.scrollIntoViewIfNeeded();
+  await expect(status).toBeInViewport();
+  const inset = await status.evaluate((row) => {
+    const turn = row.closest("article").getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    return { left: box.left - turn.left, right: turn.right - box.right };
+  });
+  expect(inset.left, "left edge").toBeGreaterThanOrEqual(0);
+  expect(inset.right, "right edge").toBeGreaterThanOrEqual(0);
+});
+
 // Layout and interaction: jsdom resolves neither type roles nor hover.
 test("document screens keep their roles, elements and code actions in their hosts", async ({
   page,

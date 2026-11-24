@@ -51,6 +51,8 @@ import * as usage from "./usage";
 import inboxManifest from "./inbox/manifest.json";
 import * as inbox from "./inbox";
 import focusManifest from "./focus/manifest.json";
+import finderManifest from "./finder/manifest.json";
+import * as finder from "./finder";
 import * as focus from "./focus";
 import remindersManifest from "./reminders/manifest.json";
 import * as reminders from "./reminders";
@@ -74,6 +76,9 @@ import pluginDevelopmentManifest from "./plugin-development/manifest.json";
 import * as pluginDevelopment from "./plugin-development";
 import performanceDiagnosticsManifest from "./performance-diagnostics/manifest.json";
 import * as performanceDiagnostics from "./performance-diagnostics";
+
+import docsManifest from "./docs/manifest.json";
+import * as docs from "./docs";
 
 import relayNotesManifest from "./relay-notes/manifest.json";
 import * as relayNotes from "./relay-notes";
@@ -178,6 +183,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: true,
   },
   {
+    manifest: { ...docsManifest, apiVersion: 1 },
+    module: docs,
+    enabledByDefault: false,
+  },
+  {
     manifest: { ...githubManifest, apiVersion: 1 },
     module: github,
     enabledByDefault: true,
@@ -205,6 +215,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
   {
     manifest: { ...focusManifest, apiVersion: 1 },
     module: focus,
+    enabledByDefault: false,
+  },
+  {
+    manifest: { ...finderManifest, apiVersion: 1 },
+    module: finder,
     enabledByDefault: false,
   },
   {

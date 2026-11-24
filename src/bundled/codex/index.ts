@@ -1,6 +1,8 @@
 import { nativeHookOutput } from "../hook-output";
 import { CODEX_HOOK_EVENTS } from "./hook-bridge";
 import { repositoriesContext } from "../../features/communities/repositories";
+import { communityDestination } from "../../features/communities/destination";
+import { relayPartition } from "../../features/relay/partition";
 import { isTauri } from "@tauri-apps/api/core";
 import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads, readyOwnerReads } from "../../features/agents/reads";
@@ -49,7 +51,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const typeKey = `${ctx.pluginOwner?.id ?? "buzz.codex"}/${TYPE_ID}`;
   const runtime = new CodexRuntime(
     start,
-    (key) => ownerReads(ctx.agents.relay(key), pubkeyOf(key)),
+    (key) =>
+      ctx.agents.conversationReads?.(key) ??
+      ownerReads(ctx.agents.relay(key), pubkeyOf(key)),
     (key, signal) => ctx.agents.core(key, signal),
     ctx.agents.storage,
     (raw, remote) => providerController.resolve(raw, remote),
@@ -84,7 +88,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (pubkey) => ctx.agents.handle(pubkey),
     ctx.host.resolveDirectory?.bind(ctx.host),
     (agent, signal, channelId) =>
-      readyOwnerReads(ctx.agents.relay(agent.key), agent, signal, channelId),
+      readyOwnerReads(
+        ctx.agents.relay(agent.key),
+        agent,
+        signal,
+        channelId,
+        undefined,
+        () => ctx.agents.conversationReads?.(agent.key),
+      ),
     CODEX_ROUTES,
   );
   // Failed turns' notices link to where Codex signs in.
@@ -173,6 +184,13 @@ export const apply: PluginModule["apply"] = (ctx) => {
     ctx.agents.inspectExecution(key),
   );
   ctx.agents.register<Config>({
+    mayRestartForBaseInstructions: ({ key, owner, relay }) =>
+      !ctx.agents.executionBinding(key) &&
+      runtime.mayRestartForBaseInstructions(
+        key,
+        ctx.agents.relay(key)?.snapshot().scope ??
+          relayPartition(communityDestination(relay).url, owner),
+      ),
     id: TYPE_ID,
     conversationFolders: true,
     conversationSections: true,

@@ -2035,3 +2035,78 @@ fn pairing_revoke_all_policy_for_sign_out() {
     assert!(pairings_allow(&failed(true), false), "plain sign-out");
     assert!(!pairings_allow(&failed(true), true), "sign out and erase");
 }
+
+/// Agent keys a sign-out removes: there are none to keep here.
+struct NoKeys;
+impl buzz_agent_controller::Credentials for NoKeys {
+    fn read_legacy(
+        &self,
+        _: buzz_agent_controller::LegacySource,
+        _: &str,
+    ) -> Result<buzz_agent_controller::Secret, String> {
+        unreachable!()
+    }
+    fn read(&self, _: &str, _: &str) -> Result<Option<buzz_agent_controller::Secret>, String> {
+        unreachable!()
+    }
+    fn add(&self, _: &str, _: &buzz_agent_controller::Secret) -> Result<(), String> {
+        unreachable!()
+    }
+    fn delete(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_pending_erase_deletes_every_agents_own_list_and_retries_after_a_failure() {
+    use crate::agent_env::tests::{agent_row, FakeStore, Stores, ADA, BO};
+    use std::sync::Arc;
+    let (_dir, paths) = fixture();
+    fs::remove_dir_all(paths.app_data.join(OLD_AGENTS)).unwrap();
+    let index = paths.app_data.join(AGENTS).join("identities.json");
+    let rows = serde_json::to_vec(&[agent_row(ADA), agent_row(BO)]).unwrap();
+    fs::write(&index, &rows).unwrap();
+    // An agent only the legacy registry still names.
+    let old = "d".repeat(64);
+    let legacy = paths.app_data.join(migrate_agents::LEGACY);
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(
+        legacy.join("identities.json"),
+        serde_json::to_vec(&[agent_row(&old)]).unwrap(),
+    )
+    .unwrap();
+    mark(&paths, true, true);
+    let stores: Stores = Default::default();
+    for pubkey in [ADA, BO, &old] {
+        let store = Arc::new(FakeStore::default());
+        *store.text.lock().unwrap() = Some("{}".into());
+        stores.lock().unwrap().insert(pubkey.into(), store);
+    }
+    let open = |pubkey: &str| -> Box<dyn crate::claude_key::KeyStore> {
+        Box::new(stores.lock().unwrap()[pubkey].clone())
+    };
+    let saved = |pubkey: &str| {
+        stores.lock().unwrap()[pubkey]
+            .text
+            .lock()
+            .unwrap()
+            .is_some()
+    };
+    let erase = || {
+        finish_pending(
+            &paths,
+            |app_data| remove_local_agents(app_data, &NoKeys, &open),
+            || Ok(()),
+        )
+    };
+    *stores.lock().unwrap()[BO].unwritable.lock().unwrap() = true;
+    assert!(erase().is_err());
+    // The registry and the marker stay, so the next launch tries again.
+    assert!(saved(BO));
+    assert_eq!(fs::read(&index).unwrap(), rows);
+    assert!(pending(&paths.marker).unwrap().is_some());
+    *stores.lock().unwrap()[BO].unwritable.lock().unwrap() = false;
+    erase().unwrap();
+    assert!(!saved(ADA) && !saved(BO) && !saved(&old));
+    assert!(pending(&paths.marker).unwrap().is_none());
+}

@@ -1,5 +1,12 @@
 import { expect } from "@playwright/test";
 
+export async function clickSidebarHeadingAction(action) {
+  // The heading must reveal its actions before the pointer can enter them.
+  const section = action.locator("xpath=ancestor::*[@data-sidebar-section][1]");
+  await section.locator("summary").first().hover();
+  await action.click();
+}
+
 export async function pageChoices(page, query = "") {
   await page.getByRole("button", { name: "Search Buzz", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Search Buzz", exact: true });

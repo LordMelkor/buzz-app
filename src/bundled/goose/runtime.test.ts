@@ -32,6 +32,7 @@ import { keypair, signed } from "../../features/relay/testing";
 import type { RelayData } from "../../features/relay/service";
 import { fakeSpawn, flush, gated } from "./goose-testing";
 import { REQUEST_TIMEOUT_MS } from "./goose";
+import { GATEWAY_TOKEN } from "./forwarded";
 import { AcpSession } from "../../features/agent-harness/acp/session";
 import { AgentProcess, AgentSessions, localSessions } from "./sessions";
 import { gooseTurns, marked, unmarked } from "./transcript";
@@ -3971,6 +3972,25 @@ describe("goose turns through the agent gateway", () => {
       expect(f.fake.geese[0]?.env).toMatchObject({
         NO_PROXY: list,
         no_proxy: list,
+      });
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+
+  it("asks for a local agent's variables for its forwarded goose", async () => {
+    const g = gateway(enabled);
+    const f = setup({ forwarding: g.forwarding, provider: "databricks" });
+    try {
+      await f.deliver(root, dispatched());
+      await vi.waitFor(() => expect(g.calls).toContain("close 1"));
+      const goose = f.fake.geese[0];
+      expect(goose?.options.secrets).toEqual(["agent-env"]);
+      expect(goose?.options.envAgent).toBeTruthy();
+      // The gateway's own environment still reaches it, winning over a list.
+      expect(goose?.env).toMatchObject({
+        DATABRICKS_HOST: expect.stringMatching(/^http:\/\/127\.0\.0\.1/),
+        DATABRICKS_TOKEN: GATEWAY_TOKEN,
       });
     } finally {
       f.runtime.dispose();

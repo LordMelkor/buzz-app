@@ -14,10 +14,14 @@ const state = vi.hoisted(() => ({
   saves: [] as string[],
   clears: 0,
   refusals: [] as string[],
+  /** Each local agent's own variable names (`agent_env.rs`). */
+  agentEnv: new Map<string, string[]>(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
-  invoke: async (command: string, args?: { value: string }) => {
+  invoke: async (command: string, args?: { value: string; agent?: string }) => {
+    if (command === "agent_env_status")
+      return { names: state.agentEnv.get(args?.agent ?? "") ?? [] };
     if (command === "claude_api_key_status") {
       state.asked += 1;
       return state.saved;
@@ -46,6 +50,7 @@ function store(saved = true) {
     clears: 0,
     refusals: [],
   });
+  state.agentEnv.clear();
 }
 beforeEach(() => void store());
 
@@ -123,6 +128,27 @@ it("refuses a turn's claude without a key, but lets setup run its checks", async
       secrets: ["anthropic-api-key"],
     },
   });
+});
+
+it("starts a turn's claude with no saved key when its agent's own variables set one", async () => {
+  const { spawn, started } = host();
+  store(false);
+  const agent = "a".repeat(64);
+  const other = "b".repeat(64);
+  state.agentEnv.set(agent, ["ANTHROPIC_API_KEY"]);
+  state.agentEnv.set(other, ["OTHER"]);
+  const authorized = new ClaudeAuth(spawn).authorize(spawn, true);
+  const options = { env: ENV, secrets: ["agent-env" as const] };
+  await authorized("claude", { ...options, envAgent: agent });
+  expect(started.at(-1)?.options?.envAgent).toBe(agent);
+  await expect(
+    authorized("claude", { ...options, envAgent: other }),
+  ).rejects.toThrow("Claude needs an Anthropic API key.");
+  // An inherited key is still no credential: Claude's env removes it.
+  await expect(authorized("claude", options)).rejects.toThrow(
+    "Claude needs an Anthropic API key.",
+  );
+  expect(started).toHaveLength(1);
 });
 
 it("passes a full host's refusal on, rather than taking it for no setup", async () => {

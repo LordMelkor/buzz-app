@@ -250,3 +250,59 @@ it("reuses the readable channels until a change", () => {
   state.abandon("started");
   expect(state.readable()).toEqual([]);
 });
+
+// Thread tabs read any confirmed listed channel without checking its members
+// again (useConversationTabs), so the joined list must never hold a preview.
+it.each([
+  { name: "live", cached: false },
+  { name: "saved", cached: true },
+])(
+  "serves a $name public channel the viewer has not joined through get() alone",
+  ({ cached }) => {
+    const viewer = keypair(),
+      relay = keypair();
+    const state = new DiscoveryState(viewer.pubkey, relay.pubkey);
+    const open = (id: string) =>
+      state.accept(
+        signed(relay, {
+          kind: 39000,
+          content: "",
+          tags: [["d", id], ["name", id], ["public"]],
+        }),
+        cached,
+      );
+    // One preview has no roster yet; the other's roster names someone else.
+    open("unlisted");
+    open("others");
+    state.accept(
+      signed(relay, {
+        kind: 39002,
+        content: "",
+        tags: [
+          ["d", "others"],
+          ["p", keypair().pubkey],
+        ],
+      }),
+      cached,
+    );
+    for (const id of ["unlisted", "others"]) {
+      expect(state.get(id)).toMatchObject({ id, readOnly: true });
+      expect(state.readable().map((channel) => channel.id)).not.toContain(id);
+      expect(state.channels().map((channel) => channel.id)).not.toContain(id);
+    }
+
+    // Joining lists it.
+    state.accept(
+      signed(relay, {
+        kind: 39002,
+        content: "",
+        created_at: 1_800_000_000,
+        tags: [
+          ["d", "others"],
+          ["p", viewer.pubkey],
+        ],
+      }),
+    );
+    expect(state.readable().map((channel) => channel.id)).toEqual(["others"]);
+  },
+);

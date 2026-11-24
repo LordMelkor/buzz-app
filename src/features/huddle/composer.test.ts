@@ -13,7 +13,6 @@ import {
   within,
 } from "@testing-library/react";
 import { createElement } from "react";
-import { attachmentDraft } from "../messages/attachment-draft";
 import { MessageComposer } from "../messages/MessageComposer";
 import { composerDOMFixture, typedDraft } from "../messages/composer-testing";
 import { followupDraft, mentionDraft } from "../messages/mention-draft";
@@ -24,6 +23,8 @@ import {
   relayGifRequests,
 } from "../relay/gifs";
 import { createRelaySession } from "../relay/session";
+import { UPLOAD_FAILURES, UploadError } from "../relay/attachments";
+import { attachmentDraft } from "../messages/attachment-draft";
 import {
   readView,
   subscribeView,
@@ -516,9 +517,9 @@ it("keeps a peer draft saved while a detached send prepares its files", async ()
   expect(h.send).not.toHaveBeenCalled();
 });
 
-it("retains valid voice metadata and releases enriched upload identities", async () => {
-  // Node's BroadcastChannel does not preserve File instances as browsers do.
-  // Keep message ordering while retaining files in this owner/client fixture.
+/** Node's BroadcastChannel does not preserve File instances as browsers do.
+ * Keeps message ordering while retaining files in this owner/client fixture. */
+function keepFiles() {
   const peers = new Set<{
     name: string;
     onmessage?: (event: { data: unknown }) => void;
@@ -544,6 +545,10 @@ it("retains valid voice metadata and releases enriched upload identities", async
       }
     },
   );
+}
+
+it("retains valid voice metadata and releases enriched upload identities", async () => {
+  keepFiles();
   const h = harness();
   const { remote } = await h.connect();
   const file = new File([new Uint8Array(64)], "voice.wav", {
@@ -601,6 +606,41 @@ it("retains valid voice metadata and releases enriched upload identities", async
       [{ ...invalid, voice: { ...voice, duration: Infinity } }],
     ),
   ).rejects.toThrow("Invalid voice");
+});
+
+it("carries an upload's failure code to the detached editor, so its draft marks a refused type", async () => {
+  keepFiles();
+  const h = harness();
+  const { remote } = await h.connect();
+  if (!remote.attachments) throw new Error("Missing attachments");
+  const file = () => new File(["MZ"], "setup.exe");
+  const signal = new AbortController().signal;
+  h.session.attachments.upload.mockRejectedValueOnce(new UploadError("type"));
+  const refusal = await remote.attachments
+    .upload(file(), "room", signal)
+    .catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(UploadError);
+  expect(refusal).toMatchObject({
+    code: "type",
+    message: UPLOAD_FAILURES.type,
+  });
+  // A failure without a code stays a plain error with its own text.
+  h.session.attachments.upload.mockRejectedValueOnce(new Error("Relay down"));
+  const plain = await remote.attachments
+    .upload(file(), "room", signal)
+    .catch((error: unknown) => error);
+  expect(plain).not.toBeInstanceOf(UploadError);
+  expect(plain).toMatchObject({ message: "Relay down" });
+  // The detached editor's own draft offers no Retry for the refused file.
+  h.session.attachments.upload.mockRejectedValueOnce(new UploadError("type"));
+  const draft = attachmentDraft(remote, "detached", "room");
+  cleanup.push(() => draft.clear());
+  draft.add([file()]);
+  await vi.waitFor(() =>
+    expect(draft.snapshot()).toMatchObject([
+      { status: "error", error: UPLOAD_FAILURES.type, unsupported: true },
+    ]),
+  );
 });
 
 it("projects owned model choices and carries validated picks through the companion transport", async () => {

@@ -17,6 +17,9 @@ import { test, expect } from "./fixture.mjs";
 import { animationsSettled } from "./animations.mjs";
 
 test.use({ historyCounts: { alpha: 0, beta: 0 } });
+// Every case owns its app, browser storage and IPC state. Let workers and
+// shards schedule them independently instead of keeping this long file serial.
+test.describe.configure({ mode: "parallel" });
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 // A closed plugin dialog returns to Settings, the only remaining modal.
 async function expectOnlySettings(page) {

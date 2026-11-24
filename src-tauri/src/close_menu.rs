@@ -2,8 +2,7 @@
 //! Cmd+Shift+W only clears the current channel's tabs.
 //! The red button still closes the window directly.
 //! Edit → Paste and Match Style (Cmd+Shift+V) pastes the clipboard as plain text.
-//! Buzz → Settings… runs the app's Open Settings shortcut. It has no native
-//! accelerator, so Cmd+, keeps the web shortcut's rebinding and IME rules.
+//! Buzz → Settings… (Cmd+,) runs the app's Open Settings shortcut.
 //! Ctrl+Tab bypasses macOS menu highlighting latency. Menu commands and the
 //! native key handler both work while a raw guest webview owns keyboard focus.
 use std::{cell::RefCell, ptr::NonNull};
@@ -82,7 +81,7 @@ pub(crate) fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
         app_menu.insert_items(
             &[
-                &MenuItem::with_id(app, SETTINGS, "Settings…", true, None::<&str>)?,
+                &MenuItem::with_id(app, SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?,
                 &PredefinedMenuItem::separator(app)?,
             ],
             2,

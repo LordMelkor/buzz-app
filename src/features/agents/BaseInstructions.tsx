@@ -1,47 +1,55 @@
 // Settings → Agent setup → Base instructions: the owner's choice for each
-// section of the base prompt they can configure, as a draft with an explicit
-// Save, and every section's text to read. It applies to all the owner's
-// agents on this device.
+// section of the base prompt they can configure, and every section's text
+// to read. Choices apply to all the owner's agents on this device.
 import {
-  useCallback,
+  memo,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
+import remarkGfm from "remark-gfm";
 import { Accordion } from "../../shared/design-system/ui/Accordion";
 import { Button } from "../../shared/design-system/ui/Button";
-import { Field } from "../../shared/design-system/ui/Field";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
-import { Select } from "../../shared/design-system/ui/Select";
+import {
+  MenuItem,
+  MenuPopup,
+  MenuRoot,
+  MenuTrigger,
+} from "../../shared/design-system/ui/Menu";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
-import { Textarea } from "../../shared/design-system/ui/Textarea";
+import { useToastNotification } from "../../shared/design-system/ui/Toast";
+import { Tooltip } from "../../shared/design-system/ui/Tooltip";
+import { useScrollEdges } from "../../shared/design-system/ui/useScrollEdges";
 import { SECTIONS, type Section } from "../agent-harness/sections";
 import {
   SECTION_TEXT_BYTES,
   textProblem,
 } from "../agent-harness/sections/choices";
 import {
+  MarkdownDocument,
+  MarkdownSource,
+  sharedComponents,
+} from "../markdown/MarkdownDocument";
+import type { MarkdownProfile } from "../markdown/profiles";
+import { DocumentEditor } from "../messages/DocumentEditor";
+import { MAX_MARKDOWN_LENGTH, scanMarkdown } from "../relay/message-content";
+import {
   committedOwnerSections,
   defaultHash,
-  type OwnerSections,
   ownerSections,
+  type SavedChoice,
   saveOwnerSections,
 } from "./prompt-sections";
 import type { AgentStore } from "./store";
+import styles from "./BaseInstructions.module.css";
 
 type Mode = "default" | "off" | "custom";
-/** One section's choice as it is being edited. `text` is kept while the
- * mode is not Custom, so switching back shows it again. */
-type Draft = Readonly<{ mode: Mode; text: string; basedOn?: string }>;
-
-const MODES = [
-  { value: "default", label: "Default" },
-  { value: "off", label: "Off" },
-  { value: "custom", label: "Custom" },
-] as const;
-const CONFIGURABLE = SECTIONS.filter((section) => section.owner);
+type SectionEdit = { text: string } | "default";
+const PREVIEW_SECTION_COUNT = 4;
 /** A section's default text; the one of a thread session in the agent's own
  * workspace where Buzz picks it. */
 const defaultText = (section: Section) =>
@@ -51,413 +59,647 @@ const defaultText = (section: Section) =>
   ).trim();
 const bytes = (text: string) => new TextEncoder().encode(text.trim()).length;
 
-const drafts = (saved: OwnerSections) =>
-  Object.fromEntries(
-    CONFIGURABLE.map(({ id }): [string, Draft] => {
-      const choice = saved.choices[id];
-      return [
-        id,
-        choice
-          ? {
-              mode: choice.mode,
-              text: choice.mode === "custom" ? choice.text : "",
-              basedOn: choice.basedOn,
-            }
-          : { mode: "default", text: "" },
-      ];
-    }),
-  );
-/** What Save would keep for a draft. Custom text that is the default text
- * is the default, unless it is the saved text: a later default can become
- * the owner's text, which stays theirs until they reset it. */
-const kept = (
-  section: Section,
-  { mode, text, basedOn }: Draft,
-  saved: OwnerSections["choices"],
-) => {
-  const own = saved[section.id];
-  return mode === "default" ||
-    (mode === "custom" &&
-      text.trim() === defaultText(section) &&
-      !(own?.mode === "custom" && own.text === text.trim()))
-    ? undefined
-    : {
-        ...(mode === "custom" ? { mode, text: text.trim() } : { mode }),
-        ...(basedOn ? { basedOn } : {}),
-      };
-};
-/** What Save would keep for every section's draft. */
-const keptChoices = (
-  all: Record<string, Draft>,
-  saved: OwnerSections["choices"],
-) =>
-  Object.fromEntries(
-    CONFIGURABLE.flatMap((section) => {
-      const choice = kept(section, all[section.id] as Draft, saved);
-      return choice ? [[section.id, choice] as const] : [];
-    }),
-  );
+const firstChoiceNotice =
+  "Older Codex conversations on this device may start over once on their next turn.";
 
-const prose = "m-0 whitespace-pre-wrap break-words text-body-sm text-subtle";
+const PROFILE: MarkdownProfile = {
+  syntax: [remarkGfm],
+  transforms: [],
+  html: "literal",
+};
+
+const InstructionText = memo(function InstructionText({
+  text,
+}: {
+  text: string;
+}) {
+  const className = "min-w-0 select-text break-words text-message text-subtle";
+  if (text.length > MAX_MARKDOWN_LENGTH || scanMarkdown(text).tooDeep)
+    return <MarkdownSource content={text} className={className} />;
+  return (
+    <MarkdownDocument
+      content={text}
+      profile={PROFILE}
+      components={sharedComponents}
+      scale="inherit"
+      className={`${className} ${styles.markdown}`}
+    />
+  );
+});
+
+function InstructionReadingArea({ children }: { children: ReactNode }) {
+  const scrollRef = useScrollEdges("block");
+  return (
+    <div
+      ref={scrollRef}
+      className={styles.readingArea}
+      data-instruction-reading-area=""
+      data-scroll-fade="scrolled"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: Plain text needs a keyboard scroll target.
+      tabIndex={0}
+    >
+      <div>{children}</div>
+    </div>
+  );
+}
+
 const names = new Intl.ListFormat("en", { type: "conjunction" });
 const canReplace = (plugins: readonly string[]) =>
   `${names.format(plugins)} can replace this in chats ${plugins.length > 1 ? "they manage" : "it manages"}.`;
-/** The choice that takes focus when the control that has it leaves: its
- * section's, or the first one for the form's own actions. */
-const choiceNear = (from: Element) =>
-  (
-    from.closest("[data-section]") ?? from.closest("form")
-  )?.querySelector<HTMLElement>('[role="combobox"]') ?? null;
+const sectionTitle = (section: Section) => section.title ?? "Opening lines";
+const instructionStatus = (mode: Mode | undefined) =>
+  mode === "custom" ? "Modified" : mode === "off" ? "Disabled" : undefined;
+
+function InstructionTitle({
+  title,
+  mode,
+  changed,
+}: {
+  title: string;
+  mode?: Mode | undefined;
+  changed?: boolean | undefined;
+}) {
+  const status = instructionStatus(mode);
+  return (
+    <>
+      <span className={mode === "off" ? "opacity-60" : undefined}>{title}</span>
+      {status && (
+        <span
+          className={
+            mode === "off"
+              ? "text-body-sm text-subtle"
+              : "text-caption text-subtle"
+          }
+        >
+          {` (${status})`}
+        </span>
+      )}
+      {changed && (
+        <span className="text-caption text-subtle">{" · Default changed"}</span>
+      )}
+    </>
+  );
+}
+
+function InstructionRowTitle({
+  title,
+  position,
+  mode,
+  changed,
+  retired,
+}: {
+  title: string;
+  position: number;
+  mode?: Mode | undefined;
+  changed?: boolean;
+  retired?: boolean;
+}) {
+  return (
+    <span className="flex items-center gap-4 text-left text-body-sm">
+      <span
+        aria-hidden="true"
+        className="w-5 shrink-0 whitespace-nowrap text-center text-secondary tabular-nums"
+      >
+        {position}
+      </span>
+      <span aria-hidden="true" className={`min-w-0 grow ${styles.rowTitle}`}>
+        <InstructionTitle title={title} mode={mode} changed={changed} />
+      </span>
+      {mode && <span className="shrink-0 text-caption text-subtle">Edit</span>}
+      {retired && <span className="text-secondary">No longer used</span>}
+    </span>
+  );
+}
+const defaultChanged = (section: Section, choice: SavedChoice | undefined) =>
+  !!choice?.basedOn && choice.basedOn !== defaultHash(section);
 
 export function BaseInstructions({
   store,
   replacedBy,
+  mayRestart = false,
 }: {
   store: AgentStore;
+  mayRestart?: boolean;
   /** The names of the plugins that can replace a section's text in the
    * chats they manage. */
   replacedBy?: ((section: string) => readonly string[]) | undefined;
 }) {
-  // A save from a form closed since can still be in flight: this one
-  // starts from what is saved and holds until that save ends.
+  const notify = useToastNotification();
+  const savedTrigger = useRef<HTMLButtonElement | null>(null);
   const [start] = useState(() => committedOwnerSections(store));
   const [saved, setSaved] = useState(start.sections);
-  const [draft, setDraft] = useState(() => drafts(saved));
-  const [saving, setSaving] = useState(Boolean(start.writing));
-  const [error, setError] = useState("");
+  const [resumingSave, setResumingSave] = useState(!!start.writing);
+  const [edits, setEdits] = useState<Record<string, SectionEdit>>({});
+  const [editorRevisions, setEditorRevisions] = useState<
+    Record<string, number>
+  >({});
+  const [write, setWrite] = useState<{
+    id: string;
+    enabledChanged: boolean;
+  } | null>(null);
+  const saving = write?.id ?? null;
+  const [error, setError] = useState<{ id?: string; message: string }>();
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const busy = saving !== null || resumingSave;
+  const noticeId = useId();
+  const listId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  const focusRevealedRow = useRef(false);
+  const openSectionActions = () =>
+    listRef.current?.querySelector<HTMLElement>(
+      ".buzz-accordion-item[data-open] [data-instruction-actions]",
+    );
   useEffect(() => {
+    if (!start.writing) return;
     let live = true;
-    start.writing
-      ?.then(
-        () => "",
-        (reason: unknown) =>
-          reason instanceof Error ? reason.message : String(reason),
-      )
-      .then((failed) => {
-        if (!live) return;
-        const next = ownerSections(store);
-        setSaved(next);
-        setDraft(drafts(next));
-        setError(failed);
-        setSaving(false);
-      });
+    // The previous panel can still be writing to the optimistic store.
+    const settled = (failure?: { message: string }) => {
+      if (!live) return;
+      setSaved(ownerSections(store));
+      setError(failure);
+      setResumingSave(false);
+    };
+    void start.writing.then(
+      () => settled(),
+      (reason: unknown) =>
+        settled({
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+    );
     return () => {
       live = false;
     };
   }, [start, store]);
-  const noticeId = useId();
-  const pendingFocus = useRef<HTMLElement | null>(null);
-  const actionsRef = useCallback((node: HTMLDivElement | null) => {
-    if (!node) return;
-    // Capture focus before the conditional actions leave the DOM.
-    return () => {
-      if (node.contains(document.activeElement))
-        pendingFocus.current = choiceNear(node);
-    };
-  }, []);
   useLayoutEffect(() => {
-    // After the commit, when the control that had the focus has left.
-    const target = pendingFocus.current;
-    pendingFocus.current = null;
-    if (target?.isConnected) target.focus();
+    if (focusRevealedRow.current) {
+      focusRevealedRow.current = false;
+      const rows = listRef.current?.querySelectorAll<HTMLButtonElement>(
+        ".buzz-accordion-trigger",
+      );
+      rows?.[PREVIEW_SECTION_COUNT]?.focus();
+    }
   });
-  const change = (id: string, next: Partial<Draft>) => {
-    setError("");
-    setDraft((current) => ({
+  const resetEditor = (id: string) => {
+    setEditorRevisions((current) => ({
       ...current,
-      [id]: { ...(current[id] as Draft), ...next },
+      [id]: (current[id] ?? 0) + 1,
     }));
   };
-  const choices = keptChoices(draft, saved.choices);
-  const dirty =
-    JSON.stringify(choices) !==
-    JSON.stringify(keptChoices(drafts(saved), saved.choices));
-  const invalid = CONFIGURABLE.some(({ id }) => {
-    const { mode, text } = draft[id] as Draft;
-    return mode === "custom" && textProblem(text);
-  });
-  const save = async () => {
-    if (saving || !dirty || invalid) return;
-    setSaving(true);
-    setError("");
+  const closeEdit = (id: string) => {
+    setEdits(({ [id]: _, ...remaining }) => remaining);
+    resetEditor(id);
+    setError((current) => (current?.id === id ? undefined : current));
+  };
+  const saveSection = async (
+    id: string,
+    choice: SavedChoice | undefined,
+    from?: HTMLElement,
+    successMessage?: string,
+  ) => {
+    if (busy) return false;
+    const choices = { ...ownerSections(store).choices };
+    const hadChoice = !!choices[id];
+    const enabledChanged =
+      (choices[id]?.mode === "off") !== (choice?.mode === "off");
+    if (choice) choices[id] = choice;
+    else delete choices[id];
+    savedTrigger.current = null;
+    const initialFocus = document.activeElement;
+    setWrite({ id, enabledChanged });
+    setError(undefined);
     try {
-      await saveOwnerSections(store, choices);
-      const next = ownerSections(store);
-      setSaved(next);
-      setDraft(drafts(next));
+      if (choice || hadChoice) await saveOwnerSections(store, choices);
+      setSaved(ownerSections(store));
+      if (successMessage) {
+        const item = from?.closest(".buzz-accordion-item");
+        const active = document.activeElement;
+        if (
+          item &&
+          (active === document.body ||
+            item.querySelector(".buzz-accordion-panel")?.contains(active) ||
+            (enabledChanged && active === initialFocus))
+        ) {
+          const trigger = item.querySelector<HTMLButtonElement>(
+            ".buzz-accordion-trigger",
+          );
+          savedTrigger.current = trigger;
+          trigger?.focus();
+        }
+        setOpenRow((current) => (current === id ? null : current));
+        notify(successMessage, "success");
+      }
+      if (enabledChanged) resetEditor(id);
+      else closeEdit(id);
+      return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError({
+        id,
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+      return false;
     } finally {
-      setSaving(false);
+      setWrite(null);
     }
   };
   /** The names of the plugins that can replace `section`. */
   const plugins = (section: Section) =>
     section.plugin ? (replacedBy?.(section.id) ?? []) : [];
-  /** What a section that the owner cannot configure is, in a few words. */
-  const fixed = (section: Section) => {
-    const able = plugins(section);
-    if (able.length) return canReplace(able);
-    return typeof section.text === "string" ? "Always on" : "Set by Buzz";
-  };
   const unused = Object.entries(saved.unused);
+  const visibleSections = showAll
+    ? SECTIONS
+    : SECTIONS.slice(0, PREVIEW_SECTION_COUNT);
+  const toggleRow = (id: string, value: string[]) => {
+    const opening = value.length > 0;
+    if (opening) setShowAll(true);
+    setOpenRow(opening ? id : null);
+  };
 
-  return (
-    <>
-      <div className="mt-section-gap">
-        <InlineHeader
-          title="Base instructions"
-          subtitle="What Buzz tells every agent on this device before its own instructions. You can turn some sections off or replace them with your own text."
-        />
-        {saved.unreadable && (
-          <p role="alert" className="m-0 text-body-sm text-danger">
-            Your saved choices could not be read, so every section uses its
-            default text. Saving replaces them.
+  const renderEditor = (section: Section, defaultHasChanged: boolean) => {
+    const { id } = section;
+    const title = sectionTitle(section);
+    const choice = saved.choices[id];
+    const savedMode = choice?.mode ?? "default";
+    const content = edits[id];
+    const resetting = content === "default";
+    const enabled = savedMode !== "off";
+    const mode = enabled && resetting ? "default" : savedMode;
+    const textEdit = resetting ? undefined : content;
+    const defaultSource = defaultText(section);
+    const savedSource = choice?.mode === "custom" ? choice.text : defaultSource;
+    const initialText = resetting ? defaultSource : savedSource;
+    const source = textEdit?.text ?? initialText;
+    const text = source.trim();
+    const usesDefault = text === defaultSource;
+    const dirty = enabled && (mode !== savedMode || text !== savedSource);
+    const defaultSaved = savedMode === "default" && !dirty;
+    const defaultHint = defaultSaved
+      ? "Already set"
+      : enabled
+        ? undefined
+        : "Enable to edit";
+    const savingText = saving === id && !write?.enabledChanged;
+    const problem =
+      dirty && mode !== "off" && !usesDefault ? textProblem(source) : undefined;
+    const byteCount = bytes(source);
+    const showCount = byteCount >= SECTION_TEXT_BYTES * 0.9;
+    const count = `${byteCount.toLocaleString("en")} of ${SECTION_TEXT_BYTES.toLocaleString("en")} bytes`;
+    const changed = !dirty && defaultHasChanged;
+    const basedOn = defaultHash(section);
+    const notice = `${noticeId}-${id}-default-changed`;
+    const details = `${noticeId}-${id}-editor-details`;
+    const able = plugins(section);
+    const pluginNote = !able.length
+      ? undefined
+      : mode === "default" && !dirty
+        ? canReplace(able)
+        : `Your choice also applies in chats that ${names.format(able)} ${able.length > 1 ? "manage" : "manages"}.`;
+    const pluginNoteId = `${noticeId}-${id}-plugin-note`;
+    const restartNoteId = `${noticeId}-${id}-restart-note`;
+    const restartNote = mayRestart && enabled ? restartNoteId : undefined;
+    const actionDescription =
+      [pluginNote && pluginNoteId, changed && notice, restartNote]
+        .filter(Boolean)
+        .join(" ") || undefined;
+    const updateEdit = (next: SectionEdit) => {
+      if (next === "default") resetEditor(id);
+      setEdits((current) => ({ ...current, [id]: next }));
+      setError((current) => (current?.id === id ? undefined : current));
+    };
+    const defaultItem = (
+      <MenuItem disabled={!!defaultHint} onClick={() => updateEdit("default")}>
+        Set to default instruction
+      </MenuItem>
+    );
+    return (
+      <div className="grid gap-1">
+        <h4 className="m-0 min-w-0 break-words py-0.5 text-body-lg font-medium">
+          <InstructionTitle title={title} mode={mode} changed={changed} />
+        </h4>
+        <div className={`grid gap-3 ${styles.editor}`}>
+          {enabled ? (
+            <DocumentEditor
+              key={editorRevisions[id]}
+              variant="field"
+              editing
+              label={`Your text for ${title}`}
+              aria-describedby={details}
+              aria-invalid={!!problem}
+              value={source}
+              placeholder=""
+              maxLength={MAX_MARKDOWN_LENGTH}
+              disabled={saving === id || resumingSave}
+              onChange={(text) => updateEdit({ text })}
+            />
+          ) : (
+            <InstructionReadingArea>
+              <InstructionText text={defaultSource} />
+            </InstructionReadingArea>
+          )}
+          {changed && choice && (
+            <div className="grid gap-2">
+              <p id={notice} className="m-0 text-body-sm text-secondary">
+                The default text changed after you made this choice.
+                {mode === "custom" && " The default is now:"}
+              </p>
+              {mode === "custom" && (
+                <InstructionReadingArea>
+                  <InstructionText text={defaultSource} />
+                </InstructionReadingArea>
+              )}
+            </div>
+          )}
+        </div>
+        {pluginNote && (
+          <p id={pluginNoteId} className="m-0 text-caption text-subtle">
+            {pluginNote}
           </p>
         )}
-        <SettingsGroup layout="form">
-          <form
-            className="grid gap-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void save();
-            }}
-          >
-            {CONFIGURABLE.map((section) => {
-              const title = section.title ?? section.id;
-              const { mode, text, basedOn } = draft[section.id] as Draft;
-              const current = defaultHash(section);
-              // The default text is another one than when the owner chose.
-              const changed =
-                mode !== "default" && !!basedOn && basedOn !== current;
-              const problem = mode === "custom" ? textProblem(text) : undefined;
-              const count = `${bytes(text).toLocaleString("en")} of ${SECTION_TEXT_BYTES.toLocaleString("en")} bytes`;
-              const notice = `${noticeId}-${section.id}`;
-              const able = plugins(section);
-              const pluginNote = !able.length
-                ? undefined
-                : mode === "default"
-                  ? canReplace(able)
-                  : // The owner's choice wins over a plugin's text.
-                    `Your choice also applies in chats that ${names.format(able)} ${able.length > 1 ? "manage" : "manages"}.`;
-              const pluginNoteId = `${notice}-plugins`;
-              return (
-                <div key={section.id} data-section="" className="grid gap-2">
-                  <Select
-                    variant="preference"
-                    label={title}
-                    description={
-                      changed || pluginNote ? (
-                        <>
-                          {changed && "Default changed"}
-                          {changed && pluginNote && ". "}
-                          {pluginNote && (
-                            <span id={pluginNoteId}>{pluginNote}</span>
-                          )}
-                        </>
-                      ) : undefined
-                    }
-                    describedBy={
-                      [pluginNote && pluginNoteId, changed && notice]
-                        .filter(Boolean)
-                        .join(" ") || undefined
-                    }
-                    value={mode}
-                    // Read-only, not disabled: a choice takes the focus when
-                    // Save leaves, and a disabled control cannot.
-                    readOnly={saving}
-                    groups={[{ label: "", options: MODES }]}
-                    onValueChange={(next) =>
-                      change(section.id, {
-                        mode: next as Mode,
-                        // A new choice is made on the default as it is now.
-                        basedOn: current,
-                        // Custom starts from the default text.
-                        ...(next === "custom" && !text.trim()
-                          ? { text: defaultText(section) }
-                          : {}),
-                      })
-                    }
-                  />
-                  {mode !== "off" && (
-                    <Field
-                      label={`${mode === "default" ? "Default text" : "Your text"} for ${title}`}
-                      labelVisibility={
-                        mode === "default" ? "hidden" : "visible"
-                      }
-                      description={
-                        mode === "default" ? "Choose Custom to edit." : count
-                      }
-                      error={
-                        problem && bytes(text) > SECTION_TEXT_BYTES
-                          ? `${problem} ${count}.`
-                          : problem
-                      }
-                    >
-                      <Textarea
-                        appearance="outlined"
-                        rows={6}
-                        value={mode === "default" ? defaultText(section) : text}
-                        readOnly={mode === "default"}
-                        disabled={mode === "custom" && saving}
-                        onChange={(event) =>
-                          change(section.id, { text: event.target.value })
-                        }
-                      />
-                    </Field>
-                  )}
-                  {changed && (
-                    <div className="grid gap-2">
-                      <p
-                        id={notice}
-                        className="m-0 text-body-sm text-secondary"
-                      >
-                        The default text changed after you made this choice. The
-                        default is now:
-                      </p>
-                      <p className={prose}>{defaultText(section)}</p>
-                    </div>
-                  )}
-                  {mode !== "default" && (
-                    <div
-                      ref={actionsRef}
-                      className="flex flex-wrap items-center gap-2"
-                    >
-                      {changed && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          disabled={saving}
-                          onClick={(event) => {
-                            pendingFocus.current = choiceNear(
-                              event.currentTarget,
-                            );
-                            change(section.id, { basedOn: current });
-                          }}
-                        >
-                          Keep mine
-                        </Button>
-                      )}
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={saving}
-                        onClick={() =>
-                          change(section.id, { mode: "default", text: "" })
-                        }
-                      >
-                        Reset to default
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <p className="m-0 text-caption text-secondary">
-              Applies to each agent from its next turn. A session that is
-              running a turn changes when the turn ends. Agents in the
-              standalone agent host get a change when it next starts. Mesh
-              agents do not get the base instructions.
-            </p>
-            {error && (
-              <p role="alert" className="m-0 text-body-sm text-danger">
-                {error}
-              </p>
-            )}
-            {dirty &&
-              !Object.keys(saved.choices).length &&
-              Object.keys(choices).length > 0 && (
-                <p className="m-0 text-body-sm text-secondary">
-                  Older Codex conversations on this device start over once.
-                  Older ones on another computer keep their instructions until
-                  you start a new session.
+        {restartNote && (
+          <p id={restartNoteId} className="m-0 text-caption text-subtle">
+            {firstChoiceNotice}
+          </p>
+        )}
+        <footer className="mt-1 flex flex-wrap items-center gap-2">
+          {mode !== "off" && (
+            <div
+              id={details}
+              className="mr-auto grid gap-1 text-caption text-subtle"
+            >
+              <p className="m-0">This instruction can be changed.</p>
+              {problem ? (
+                <p role="alert" className="m-0 text-danger">
+                  {byteCount > SECTION_TEXT_BYTES
+                    ? `${problem} ${count}.`
+                    : source.trim()
+                      ? problem
+                      : "Enter the instructions."}
                 </p>
+              ) : (
+                showCount && <p className="m-0 tabular-nums">{count}</p>
               )}
-            {dirty && (
-              <div
-                ref={actionsRef}
-                className="flex flex-wrap items-center justify-end gap-3"
-              >
-                <Button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => {
-                    setDraft(drafts(saved));
-                    setError("");
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  loading={saving}
-                  disabled={invalid}
-                >
-                  Save
-                </Button>
-              </div>
-            )}
-          </form>
-        </SettingsGroup>
-      </div>
-      <div className="mt-section-gap">
-        <InlineHeader
-          title="All sections"
-          subtitle="The default text of every section, in the order agents get them."
-        />
-        <SettingsGroup>
-          {SECTIONS.map((section) => {
-            const title = section.title ?? "Opening lines";
-            const status = section.owner
-              ? "You can change this"
-              : fixed(section);
-            return (
-              <Accordion
-                key={section.id}
-                variant="settings"
-                items={[
-                  {
-                    // The row's accessible name: its title and what it is.
-                    value: `${title}, ${status}`,
-                    title: (
-                      <span className="flex items-center justify-between gap-3 text-left text-body-sm">
-                        <span>{title}</span>
-                        <span className="text-secondary">{status}</span>
-                      </span>
-                    ),
-                    content: <p className={prose}>{defaultText(section)}</p>,
-                  },
-                ]}
+            </div>
+          )}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <MenuRoot>
+              <MenuTrigger
+                disabled={busy}
+                render={
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Options for ${title}`}
+                    aria-describedby={actionDescription}
+                    data-instruction-actions=""
+                    loading={saving === id && !!write?.enabledChanged}
+                    focusableWhenDisabled
+                  >
+                    Options
+                  </Button>
+                }
               />
-            );
-          })}
-          {unused.map(([id, choice]) => (
-            <Accordion
-              key={`unused/${id}`}
-              variant="settings"
-              items={[
-                {
-                  value: `${id}, no longer used`,
-                  title: (
-                    <span className="flex items-center justify-between gap-3 text-left text-body-sm">
-                      <span>{id}</span>
-                      <span className="text-secondary">No longer used</span>
-                    </span>
-                  ),
-                  content: (
-                    <p className={prose}>
-                      {choice.mode === "custom"
-                        ? choice.text
-                        : "You turned this section off. Buzz no longer has it."}
-                    </p>
-                  ),
-                },
-              ]}
-            />
-          ))}
-        </SettingsGroup>
+              <MenuPopup
+                align="end"
+                size="compact"
+                finalFocus={() => {
+                  const trigger = savedTrigger.current;
+                  return trigger && openRow === null ? trigger : true;
+                }}
+              >
+                <MenuItem
+                  onClick={() =>
+                    void saveSection(
+                      id,
+                      enabled
+                        ? { ...choice, mode: "off", basedOn }
+                        : choice?.mode === "off" && choice.text
+                          ? {
+                              mode: "custom",
+                              text: choice.text,
+                              basedOn: choice.basedOn,
+                            }
+                          : undefined,
+                      openSectionActions() ?? undefined,
+                      enabled
+                        ? "Instruction disabled."
+                        : "Instruction enabled.",
+                    )
+                  }
+                >
+                  {mode === "off" ? "Enable" : "Disable"}
+                </MenuItem>
+                {defaultHint ? (
+                  <Tooltip content={defaultHint} disableHoverablePopup>
+                    {defaultItem}
+                  </Tooltip>
+                ) : (
+                  defaultItem
+                )}
+                {changed && choice && (
+                  <MenuItem
+                    onClick={() => void saveSection(id, { ...choice, basedOn })}
+                  >
+                    Keep mine
+                  </MenuItem>
+                )}
+              </MenuPopup>
+            </MenuRoot>
+            <Button
+              size="sm"
+              variant="subtle"
+              onClick={(event) => {
+                if (saving !== id) closeEdit(id);
+                event.currentTarget
+                  .closest(".buzz-accordion-item")
+                  ?.querySelector<HTMLButtonElement>(".buzz-accordion-trigger")
+                  ?.focus();
+                setOpenRow(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="prominent"
+              aria-describedby={restartNote}
+              loading={savingText}
+              disabled={!dirty || !!problem || (busy && !savingText)}
+              focusableWhenDisabled
+              onClick={(event) => {
+                if (!dirty || problem) return;
+                const next: SavedChoice | undefined = usesDefault
+                  ? undefined
+                  : { mode: "custom", text, basedOn };
+                void saveSection(
+                  id,
+                  next,
+                  event.currentTarget,
+                  "Instruction saved.",
+                );
+              }}
+            >
+              Save
+            </Button>
+          </div>
+        </footer>
+        {error?.id === id && (
+          <p role="alert" className="m-0 text-body-sm text-danger">
+            {error.message}
+          </p>
+        )}
       </div>
-    </>
+    );
+  };
+
+  return (
+    <section className="mt-section-gap" aria-labelledby={`${noticeId}-title`}>
+      <InlineHeader
+        id={`${noticeId}-title`}
+        title="Base instructions"
+        subtitle="What Buzz tells every agent on this device before its own instructions. You can turn some sections off or replace them with your own text."
+      />
+      {saved.unreadable && (
+        <p role="alert" className="m-0 text-body-sm text-danger">
+          Your saved choices could not be read, so every section uses its
+          default text. Saving replaces them.
+        </p>
+      )}
+      {error && error.id !== openRow && (
+        <p role="alert" className="m-0 text-body-sm text-danger">
+          {error.message}
+        </p>
+      )}
+      <div className="grid gap-4">
+        <div>
+          <div
+            id={listId}
+            ref={listRef}
+            className={showAll ? undefined : styles.sectionPreview}
+          >
+            <SettingsGroup>
+              {visibleSections.map((section, index) => {
+                const title = sectionTitle(section);
+                const choice = saved.choices[section.id];
+                const replacements = section.owner ? [] : plugins(section);
+                const mode =
+                  choice?.mode ?? (section.owner ? "default" : undefined);
+                const changed = defaultChanged(section, choice);
+                const status = instructionStatus(mode);
+                return (
+                  <Accordion
+                    key={section.id}
+                    variant="popout"
+                    value={openRow === section.id ? [title] : []}
+                    onValueChange={(value) => toggleRow(section.id, value)}
+                    items={[
+                      {
+                        value: title,
+                        triggerLabel: title,
+                        triggerDescription: changed
+                          ? `${status}. Default changed.`
+                          : status,
+                        title: (
+                          <InstructionRowTitle
+                            title={title}
+                            position={index + 1}
+                            mode={mode}
+                            changed={changed}
+                          />
+                        ),
+                        content: section.owner ? (
+                          renderEditor(section, changed)
+                        ) : (
+                          <div className="grid gap-1">
+                            <h4 className="m-0 min-w-0 break-words py-0.5 text-body-lg font-medium">
+                              {title}
+                            </h4>
+                            <InstructionReadingArea>
+                              {replacements.length > 0 && (
+                                <p className="m-0 mb-2 text-body-sm text-secondary">
+                                  {canReplace(replacements)}
+                                </p>
+                              )}
+                              <InstructionText text={defaultText(section)} />
+                            </InstructionReadingArea>
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                );
+              })}
+              {showAll &&
+                unused.map(([id, choice], index) => (
+                  <Accordion
+                    key={`unused/${id}`}
+                    variant="popout"
+                    value={
+                      openRow === `unused/${id}`
+                        ? [`${id}, no longer used`]
+                        : []
+                    }
+                    onValueChange={(value) => toggleRow(`unused/${id}`, value)}
+                    items={[
+                      {
+                        value: `${id}, no longer used`,
+                        triggerLabel: `${id}, no longer used`,
+                        title: (
+                          <InstructionRowTitle
+                            title={id}
+                            position={SECTIONS.length + index + 1}
+                            retired
+                          />
+                        ),
+                        content: (
+                          <div className="grid gap-1">
+                            <h4 className="m-0 min-w-0 break-words py-0.5 text-body-lg font-medium">
+                              {id}
+                            </h4>
+                            <InstructionReadingArea>
+                              <InstructionText
+                                text={
+                                  choice.mode === "custom"
+                                    ? choice.text
+                                    : "You turned this section off. Buzz no longer has it."
+                                }
+                              />
+                            </InstructionReadingArea>
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                ))}
+            </SettingsGroup>
+          </div>
+          <div className="mt-2 flex justify-center">
+            <Button
+              size="sm"
+              aria-controls={listId}
+              aria-expanded={showAll}
+              data-highlight-expanded="false"
+              onClick={() => {
+                if (showAll) {
+                  setOpenRow(null);
+                } else {
+                  focusRevealedRow.current = true;
+                }
+                setShowAll(!showAll);
+              }}
+            >
+              {showAll
+                ? "Show less"
+                : `Show all (${SECTIONS.length + unused.length})`}
+            </Button>
+          </div>
+        </div>
+        <p className="m-0 text-caption text-secondary">
+          Applies to each agent from its next turn. A session that is running a
+          turn changes when the turn ends. Agents in the standalone agent host
+          get a change when it next starts. Mesh agents do not get the base
+          instructions.
+        </p>
+      </div>
+    </section>
   );
 }

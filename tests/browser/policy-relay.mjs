@@ -280,7 +280,9 @@ export function policyRelay({
           filters[1].kinds[0] === 40099
         ) {
           expect(filters[1]["#h"]).toEqual(filters[0]["#h"]);
-          const parts = await Promise.all(
+          // Returned, not awaited: a part held and then cancelled by the app
+          // is consumer cancellation, not a fault (see the presence hold).
+          return Promise.all(
             filters.map((filter) =>
               api.fetch(url, {
                 ...init,
@@ -288,14 +290,15 @@ export function policyRelay({
                 [REQUEST_PART]: true,
               }),
             ),
-          );
-          const failed = parts.find((response) => !response.ok);
-          if (failed) return failed;
-          return Response.json(
-            (
-              await Promise.all(parts.map((response) => response.json()))
-            ).flat(),
-          );
+          ).then(async (parts) => {
+            const failed = parts.find((response) => !response.ok);
+            if (failed) return failed;
+            return Response.json(
+              (
+                await Promise.all(parts.map((response) => response.json()))
+              ).flat(),
+            );
+          });
         }
         if (filters.length === 2 && filters[1].depth_limit) {
           const [root, replies] = filters;
@@ -643,19 +646,30 @@ export function policyRelay({
           filter.authors?.some((id) => heldAuthors.has(id))
         )
           return holdProfile(result);
+        // An older page's aux closure, read apart from its rows, is not held.
         if (
           filter.search === undefined &&
           filter.until !== undefined &&
+          !(filter.include_aux && !filter.include_summaries) &&
           holdOlder
         )
           return new Promise((resolve, reject) => {
-            const abort = () => reject(init.signal.reason);
+            const abort = () => {
+              // A read the app cancels is no longer pending.
+              const index = pending.indexOf(receipt);
+              if (index >= 0) pending.splice(index, 1);
+              reject(init.signal.reason);
+            };
             init.signal.addEventListener("abort", abort, { once: true });
             const receipt = {
               community,
               channel,
               filter,
               events: result.filter((event) => event.kind === 9),
+              // The app abandoned the read, such as a cancelled read-ahead.
+              get closed() {
+                return init.signal.aborted;
+              },
               release() {
                 init.signal.removeEventListener("abort", abort);
                 resolve(Response.json(result));

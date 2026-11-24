@@ -1447,6 +1447,7 @@ it.each([
             attachment,
             { ...attachment, url: "https://fixture.test/second.png" },
           ],
+      undefined,
     );
     cleanup();
   },
@@ -1577,6 +1578,12 @@ it.each(["peer", "own"] as const)(
       },
       messages: { report: vi.fn(async () => {}) },
       profiles: { subscribe: () => () => {}, event: () => undefined },
+      read: async () => [],
+      subscribeLive: () => () => {},
+      live: {
+        snapshot: () => ({ status: "connected", heads: [] }),
+        subscribe: () => () => {},
+      },
       outbox: {
         supports: () => true,
         subscribe: () => () => {},
@@ -1620,6 +1627,7 @@ it.each(["peer", "own"] as const)(
               "Copy message",
               "Send to channel",
               "Copy link",
+              "Pin to channel",
               "Delete message",
               "Follow thread",
               "Report",
@@ -1628,6 +1636,7 @@ it.each(["peer", "own"] as const)(
               "Mark as unread",
               "Copy message",
               "Copy link",
+              "Pin to channel",
               "Follow thread",
               "Report",
             ],
@@ -2344,6 +2353,7 @@ it.each([true, false])(
           0,
           true,
           attachments,
+          undefined,
         );
       } else {
         expect(screen.queryByText("+3")).toBeNull();
@@ -2599,6 +2609,12 @@ it.each(["own", "other", "root", "pending", "archived", "read-only"])(
       channels: { list: () => snapshot, subscribeList: () => () => {} },
       messages: { sendToChannel: send },
       outbox: { supports: () => true },
+      read: async () => [],
+      subscribeLive: () => () => {},
+      live: {
+        snapshot: () => ({ status: "connected", heads: [] }),
+        subscribe: () => () => {},
+      },
       unread: {
         subscribe: () => () => {},
         subscribeSync: () => () => {},

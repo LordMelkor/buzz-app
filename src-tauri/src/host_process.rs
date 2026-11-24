@@ -391,8 +391,10 @@ enum Stream {
 /// Starts the declared process `process_id` with `args` after its declared
 /// arguments. `env` adds variables (`null` removes one) to the app's own
 /// environment, less any Buzz identity: an agent's key never leaves the app.
-/// `secrets` names native-held secrets set after `env`, each only for the
-/// processes it belongs to; a secret that is not saved is left unset.
+/// `secrets` names native-held secrets, each only for the processes it belongs
+/// to; a secret that is not saved is left unset. `agent-env`, the list saved
+/// for the local agent `env_agent`, is set before `env` so the harness's
+/// variables win; the others are set after it.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
@@ -411,6 +413,7 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     agent_credential: Option<bool>,
     protected_agent: Option<ProtectedAgent>,
     secrets: Option<Vec<String>>,
+    env_agent: Option<String>,
 ) -> Result<u64, String> {
     // Any plugin process with either ID conservatively blocks managed deletion
     // app-wide, regardless of program/path. Attachment adapters use these IDs.
@@ -522,9 +525,26 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
         process_command(&program, helper.as_deref(), None, &declared.args, &args)
     };
     let environment = env.unwrap_or_default();
+    let secrets = secrets.unwrap_or_default();
+    // Only a process that asks for the list touches the agent stores.
+    let agent_env = if secrets.iter().any(|s| s == crate::agent_env::SECRET) {
+        crate::agent_env::for_spawn(
+            &app.state(),
+            &app.state(),
+            &secrets,
+            env_agent.as_deref(),
+            &plugin,
+            &declared.id,
+            protected,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
     set_environment(
         &mut command,
         login_shell_environment(),
+        &agent_env,
         &path,
         &environment,
         &app.package_info().version.to_string(),
@@ -550,11 +570,18 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
             }
         }
     }
-    for secret in secrets.unwrap_or_default() {
+    for secret in secrets {
+        if secret == crate::agent_env::SECRET {
+            continue;
+        }
         if secret != crate::claude_key::SECRET
             || !crate::claude_key::may_have(&plugin, &declared.id)
         {
             return Err("That secret is not available to this process".into());
+        }
+        // The agent's own key outranks the shared one.
+        if agent_key(&agent_env).is_some() {
+            continue;
         }
         if let Some(key) = app.state::<crate::claude_key::ClaudeKey>().key().await? {
             command.env(crate::claude_key::ENV, &*key);
@@ -611,13 +638,16 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
 }
 
 /// Sets a process's environment: the app's own, less any AppImage bundle
-/// paths, plus the `login_shell` variables it forwards, less any Buzz identity
-/// either holds, plus the plugin's `environment` (`None` removes a variable).
+/// paths, plus the `login_shell` variables it forwards and then the agent's
+/// `agent_env`, less any Buzz identity these hold, plus the plugin's
+/// `environment` (`None` removes a variable), which wins over `agent_env`
+/// except for an Anthropic API key the agent's list sets.
 /// `BUZZ_VERSION` is always this app's version, so a command can tell it runs
 /// under Buzz.
 fn set_environment(
     command: &mut Command,
     login_shell: &[(std::ffi::OsString, std::ffi::OsString)],
+    agent_env: &[(std::ffi::OsString, std::ffi::OsString)],
     path: &OsStr,
     environment: &HashMap<String, Option<String>>,
     version: &str,
@@ -636,11 +666,13 @@ fn set_environment(
         }
     }
     command.envs(login_shell.iter().cloned());
+    command.envs(agent_env.iter().cloned());
     // Never pass on an identity the app was started with, even one the user
-    // asked their login shell to forward.
+    // asked their login shell or the agent list to forward.
     for name in std::env::vars_os()
         .map(|(name, _)| name)
         .chain(login_shell.iter().map(|(name, _)| name.clone()))
+        .chain(agent_env.iter().map(|(name, _)| name.clone()))
     {
         let text = name.to_string_lossy();
         if text.starts_with("BUZZ_") || text.starts_with("NOSTR_") {
@@ -660,8 +692,22 @@ fn set_environment(
             None => command.env_remove(name),
         };
     }
+    // An Anthropic key saved for the agent is one the person chose for it,
+    // unlike an inherited one, which a harness may remove.
+    if let Some((name, value)) = agent_key(agent_env) {
+        command.env(name, value);
+    }
     command.env("BUZZ_VERSION", version);
     Ok(())
+}
+
+/// The Anthropic API key in an agent's list, if it has one.
+fn agent_key(
+    agent_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Option<&(std::ffi::OsString, std::ffi::OsString)> {
+    agent_env
+        .iter()
+        .find(|(name, _)| name == crate::claude_key::ENV)
 }
 
 /// The mounted or extracted AppImage this app runs from: `APPDIR` only when

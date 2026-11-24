@@ -33,6 +33,8 @@ export interface HeadPersistence {
   remove(channelId: string): Promise<void>;
   retain(channelIds: readonly string[]): Promise<void>;
   clear(): Promise<void>;
+  /** Bytes saved for this viewer and relay, as recorded when each was written. */
+  usage?(): Promise<number>;
   close(): void;
 }
 const DB = "buzz-channel-heads-v1";
@@ -341,6 +343,34 @@ export function createHeadPersistence(
           done(undefined);
         }),
       );
+    },
+    usage: async () => {
+      type Sized = { bytes: number } | undefined;
+      const startup = await transact<number>(
+        "readonly",
+        (store, done, then) =>
+          then(store.get(scope), (saved: Sized) =>
+            then(store.get(profiles), (mirror: Sized) =>
+              done((saved?.bytes ?? 0) + (mirror?.bytes ?? 0)),
+            ),
+          ),
+        STARTUP,
+      );
+      // Metadata rows carry each head's size without loading its events.
+      const heads = await transact<number>("readonly", (store, done, then) =>
+        then(
+          store.getAll(metadataKeys()),
+          (rows: { scope: string; head: HeadMeta }[]) =>
+            done(
+              rows.reduce(
+                (total, row) =>
+                  row.scope === scope ? total + row.head.bytes : total,
+                0,
+              ),
+            ),
+        ),
+      );
+      return startup + heads;
     },
     close() {
       closed = true;

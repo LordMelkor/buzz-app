@@ -15,7 +15,11 @@ export const PROMPT_SECTIONS_KEY = "buzz.agents.prompt-sections.v1";
 
 /** A saved choice. `basedOn` is the hash of the section's default text when
  * the owner made it, so Settings can say when that default has changed. */
-export type SavedChoice = OwnerChoice & Readonly<{ basedOn: string }>;
+export type SavedChoice = (
+  | Readonly<{ mode: "off"; text?: string }>
+  | Extract<OwnerChoice, { mode: "custom" }>
+) &
+  Readonly<{ basedOn: string }>;
 type Saved = Readonly<Record<string, SavedChoice>>;
 export type OwnerSections = Readonly<{
   /** Each choice in force, by its section's current id. */
@@ -42,7 +46,10 @@ function savedChoice(value: unknown): SavedChoice | undefined {
   if (!value || typeof value !== "object") return undefined;
   const { mode, text, basedOn } = value as Record<string, unknown>;
   if (typeof basedOn !== "string") return undefined;
-  if (mode === "off") return { mode, basedOn };
+  if (mode === "off")
+    return typeof text === "string" && !textProblem(text)
+      ? { mode, basedOn, text }
+      : { mode, basedOn };
   return mode === "custom" && typeof text === "string" && !textProblem(text)
     ? { mode, text, basedOn }
     : undefined;
@@ -110,7 +117,7 @@ export function ownerChoices(store: Pick<AgentStore, "get">) {
       ownerSections(store, SECTIONS, committed(store)).choices,
     ).map(([id, { basedOn: _, ...choice }]): [string, OwnerChoice] => [
       id,
-      choice,
+      choice.mode === "off" ? { mode: "off" } : choice,
     ]),
   );
 }
@@ -122,7 +129,14 @@ export function ownerChoices(store: Pick<AgentStore, "get">) {
 export async function saveOwnerSections(
   store: AgentStore,
   choices: Readonly<
-    Record<string, OwnerChoice & Readonly<{ basedOn?: string }>>
+    Record<
+      string,
+      (
+        | Readonly<{ mode: "off"; text?: string }>
+        | Extract<OwnerChoice, { mode: "custom" }>
+      ) &
+        Readonly<{ basedOn?: string }>
+    >
   >,
   sections: readonly Section[] = SECTIONS,
 ) {
@@ -136,7 +150,7 @@ export async function saveOwnerSections(
         `The base instructions have no section "${id}" to change`,
       );
     const basedOn = choice.basedOn ?? defaultHash(section);
-    if (choice.mode === "off") global[id] = { mode: "off", basedOn };
+    if (choice.mode === "off") global[id] = { ...choice, basedOn };
     else {
       const problem = textProblem(choice.text);
       if (problem) throw new Error(`${section.title}: ${problem}`);
@@ -152,9 +166,9 @@ export async function saveOwnerSections(
   };
   pending.count += 1;
   saving.set(store, pending);
-  const write = store.set(PROMPT_SECTIONS_KEY, value);
-  pending.write = write;
   try {
+    const write = store.set(PROMPT_SECTIONS_KEY, value);
+    pending.write = write;
     await write;
     // Writes are saved in order, so this is now the saved value.
     pending.saved = value;

@@ -34,6 +34,7 @@ import { composerDOMFixture } from "../messages/composer-testing";
 import { SPRING_LOAD_DELAY_MS } from "../messages/spring-loaded-drag";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { MenuItem } from "../../shared/design-system/ui/Menu";
+import { FlagIcon } from "../../shared/design-system/icons";
 import { SoloHeading } from "../../bundled/channels/SoloHeading";
 import { WorkspaceControl } from "../solo/WorkspaceControl";
 import type { OpenTarget } from "../navigation/targets";
@@ -2848,6 +2849,208 @@ it.each([
     ).toBe(writable);
   },
 );
+
+it("shows channel actions with artwork and help below details for the row that supplied them", async () => {
+  const h = fixture();
+  const viewer = h.session.viewer;
+  assert(viewer);
+  h.session.channelWrites = { ...h.session.channelWrites, available: true };
+  const channel = {
+    id: "source",
+    name: "Source channel",
+    channelType: "stream",
+    members: [viewer],
+  } as const satisfies ChannelSummary;
+  const other = { ...channel, id: "other", name: "Other channel" };
+  h.roster([channel, other]);
+  const inspect = vi.fn();
+  await h.register({
+    component: ({ ui }) => {
+      const Group = ui.ChannelGroup;
+      assert(Group);
+      return [channel, other].map(({ id }) => (
+        <Group
+          key={id}
+          channelId={id}
+          onSelect={() => {}}
+          expanded={false}
+          controls={`${id}-tasks`}
+          disclosureLabel="Show tasks"
+          onToggle={() => {}}
+          onNewTask={() => {}}
+          headerMenuActions={
+            id === channel.id
+              ? [
+                  {
+                    id: "inspect",
+                    label: "Inspect catalog",
+                    icon: <FlagIcon data-testid="catalog-icon" />,
+                    hint: "Inspect the catalog for this channel",
+                    onSelect: () => inspect(id),
+                  },
+                ]
+              : undefined
+          }
+        />
+      ));
+    },
+  });
+  mount(h, conversationTarget(h.scope, other.id));
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "Actions for Other channel" }),
+  );
+  expect(
+    within(await screen.findByRole("menu"))
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent),
+  ).toEqual(["New task", "View channel details"]);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+  const trigger = screen.getByRole("button", {
+    name: "Actions for Source channel",
+  });
+  await user.click(trigger);
+  const menu = within(await screen.findByRole("menu"));
+  const action = menu.getByRole("menuitem", { name: "Inspect catalog" });
+  expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(
+    ["New task", "View channel details", "Inspect catalog"],
+  );
+  expect(within(action).getByTestId("catalog-icon")).toBeVisible();
+  await user.click(action);
+  expect(inspect).toHaveBeenCalledExactlyOnceWith(channel.id);
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+  trigger.focus();
+  await user.keyboard("{ArrowDown}");
+  const keyboardAction = await screen.findByRole("menuitem", {
+    name: "Inspect catalog",
+  });
+  await user.keyboard("{End}");
+  expect(keyboardAction).toHaveFocus();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    "Inspect the catalog for this channel",
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  expect(trigger).toHaveFocus();
+  expect(inspect).toHaveBeenCalledTimes(1);
+
+  await user.keyboard("{ArrowDown}");
+  await screen.findByRole("menu");
+  await user.keyboard("{End}");
+  await user.keyboard("{Enter}");
+  expect(inspect).toHaveBeenCalledTimes(2);
+  expect(inspect).toHaveBeenLastCalledWith(channel.id);
+});
+
+it("adds region entries to the existing workspace and channel heading menus", async () => {
+  const h = fixture();
+  const viewer = h.session.viewer;
+  assert(viewer);
+  h.roster([
+    { id: "source", name: "Source", channelType: "stream", members: [viewer] },
+  ]);
+  const preferences = {
+    status: "ready" as const,
+    data: {
+      sections: [{ id: "work", name: "Work", order: 0 }],
+      assignments: {},
+      starred: [],
+      muted: [],
+    },
+  };
+  h.session.sidebarPreferences = {
+    ...h.session.sidebarPreferences,
+    snapshot: () => preferences,
+  };
+  const pin = vi.fn();
+  const unpin = vi.fn().mockRejectedValue(new Error("Action failed"));
+  await h.register({
+    composeWorkspaces: true,
+    component: ({ ui }) => {
+      const { Workspace, ChannelGroup } = ui;
+      assert(Workspace && ChannelGroup);
+      return (
+        <>
+          <Workspace
+            id="work"
+            headerMenuActions={
+              ui.headerMenuActions === true
+                ? [{ id: "pin", label: "Pin", onSelect: pin }]
+                : undefined
+            }
+          />
+          <ChannelGroup
+            channelId="source"
+            onSelect={() => {}}
+            expanded
+            controls="source-tasks"
+            disclosureLabel="Hide source tasks"
+            onToggle={() => {}}
+            headerMenuActions={
+              ui.headerMenuActions === true
+                ? [{ id: "unpin", label: "Unpin", onSelect: unpin }]
+                : undefined
+            }
+          />
+        </>
+      );
+    },
+  });
+  const target = { version: 1, kind: "home" } as const;
+  function Inventory() {
+    const sidebar = useSidebarView(h.scope, true);
+    return (
+      <SoloInventory
+        session={h.session}
+        scope={h.scope}
+        navigator={h.navigator}
+        target={target}
+        renderContents={(ordinary, _header, pendingClick, composeOrdinary) => (
+          <SoloRegions
+            session={h.session}
+            scope={h.scope}
+            navigator={h.navigator}
+            target={target}
+            sidebar={sidebar}
+            ordinary={ordinary}
+            composeOrdinary={composeOrdinary}
+            pendingClick={pendingClick}
+          />
+        )}
+      />
+    );
+  }
+  render(<Inventory />);
+  const user = userEvent.setup();
+  screen.getByRole("button", { name: "Actions for Work" }).focus();
+  await user.keyboard("{Enter}");
+  const workspaceMenu = await screen.findByRole("menu");
+  expect(
+    within(workspaceMenu).getByRole("menuitem", { name: "Workspace settings" }),
+  ).toBeEnabled();
+  await user.click(
+    within(workspaceMenu).getByRole("menuitem", { name: "Pin" }),
+  );
+  expect(pin).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+  );
+  await user.click(screen.getByRole("button", { name: "Actions for Source" }));
+  const channelMenu = await screen.findByRole("menu");
+  expect(
+    within(channelMenu).getByRole("menuitem", { name: "View channel details" }),
+  ).toBeEnabled();
+  await user.click(
+    within(channelMenu).getByRole("menuitem", { name: "Unpin" }),
+  );
+  expect(unpin).toHaveBeenCalledOnce();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The action could not run.",
+  );
+});
 
 it("channel groups separate selection from disclosure, preserve children, and recheck task access", async () => {
   const h = fixture();

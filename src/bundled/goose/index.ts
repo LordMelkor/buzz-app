@@ -67,6 +67,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       : undefined,
     // Read at a forwarded turn, after `setup` exists.
     () => setup.defaultProvider(),
+    agents.conversationReads,
   );
   runtime.usageOn = usageOn(ctx.settingsCards);
   const desktop =

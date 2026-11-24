@@ -61,7 +61,8 @@ export function eventVisibility(
         : event.tags.flatMap(([name, value]) =>
             name === "h" && value ? [value] : [],
           );
-    if ([39000, 39001, 39002].includes(event.kind)) {
+    // Relay-signed per-channel state names its channel in d, not h.
+    if ([39000, 39001, 39002, 30623].includes(event.kind)) {
       const channel = event.tags.find((tag) => tag[0] === "d")?.[1];
       if (channel) channels.push(channel);
     }

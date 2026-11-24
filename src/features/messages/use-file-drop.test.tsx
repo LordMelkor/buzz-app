@@ -171,6 +171,70 @@ it("an available composer claims the drop once and preserves the copy cursor", (
   expect(screen.queryByText("Drop files")).not.toBeInTheDocument();
 });
 
+it("a drop reports which of its files are folders, which an empty file is not", () => {
+  const attach = vi.fn();
+  render(<Composer enabled attach={attach} />);
+  const folder = new File([], "top-recipes");
+  const empty = new File([], "empty.txt");
+  const dragged = new File(["pixels"], "photo.png");
+  const item = (entry: { isDirectory: boolean } | null) => ({
+    kind: "file",
+    webkitGetAsEntry: () => entry,
+  });
+  fireEvent.drop(screen.getByRole("textbox"), {
+    dataTransfer: {
+      types: ["text/uri-list", "Files"],
+      files: [folder, empty, dragged],
+      // Text dragged along has no file. Bytes dragged from a page have no entry.
+      items: [
+        { kind: "string" },
+        item({ isDirectory: true }),
+        item({ isDirectory: false }),
+        item(null),
+      ],
+    },
+  });
+  expect(attach).toHaveBeenCalledTimes(1);
+  const [files, folders] = attach.mock.calls[0] ?? [];
+  expect(files.map((file: File) => file.name)).toEqual([
+    "top-recipes",
+    "empty.txt",
+    "photo.png",
+  ]);
+  expect(folders.size).toBe(1);
+  expect(folders.has(folder)).toBe(true);
+});
+
+it.each([
+  ["fewer", 1],
+  ["more", 3],
+])(
+  "a drop with %s entries than files reports no folders, rather than call a real file one",
+  (_, count) => {
+    const attach = vi.fn();
+    render(<Composer enabled attach={attach} />);
+    fireEvent.drop(screen.getByRole("textbox"), {
+      dataTransfer: {
+        types: ["Files"],
+        files: [new File(["pixels"], "photo.png"), new File([], "top-recipes")],
+        // Paired by position, the first entry would make photo.png the folder.
+        items: Array.from({ length: count }, () => ({
+          kind: "file",
+          webkitGetAsEntry: () => ({ isDirectory: true }),
+        })),
+      },
+    });
+    expect(attach).toHaveBeenCalledTimes(1);
+    const [files, folders] = attach.mock.calls[0] ?? [];
+    // Both still reach the draft, which takes the folder for an empty file.
+    expect(files.map((file: File) => file.name)).toEqual([
+      "photo.png",
+      "top-recipes",
+    ]);
+    expect(folders.size).toBe(0);
+  },
+);
+
 it("availability changes clear the drag hint and disabling rejects attachment", () => {
   const attach = vi.fn();
   const view = render(<Composer enabled attach={attach} />);

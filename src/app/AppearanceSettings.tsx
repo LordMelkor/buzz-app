@@ -457,7 +457,7 @@ export function AppearanceSettings({
 
             <PreferenceRow
               title="Open threads in"
-              subtitle="New threads open here. Already-open threads stay where you placed them."
+              subtitle="New threads open here. Inline opens threads, profiles and links over the conversation instead of in tabs; calls, canvases and apps still open as tabs. Already-open threads stay where you placed them."
               trailing={
                 <Select
                   variant="compact"
@@ -465,15 +465,20 @@ export function AppearanceSettings({
                   value={placement}
                   groups={[
                     {
-                      label: "Pane",
+                      label: "Open in",
                       options: [
+                        { value: "inline", label: "Inline" },
                         { value: "side", label: "Side pane" },
                         { value: "main", label: "Main pane" },
                       ],
                     },
                   ]}
                   onValueChange={(value) => {
-                    if (value === "main" || value === "side")
+                    if (
+                      value === "inline" ||
+                      value === "main" ||
+                      value === "side"
+                    )
                       setThreadPlacementPreference(value);
                   }}
                 />

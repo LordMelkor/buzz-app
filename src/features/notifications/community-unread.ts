@@ -69,6 +69,8 @@ export function observeCommunityUnread(
           (channel) =>
             !channel.huddle &&
             !channel.metadataPending &&
+            !channel.archived &&
+            (channel.channelType === "dm" || !channel.hidden) &&
             channel.members?.includes(viewer) &&
             (!gates ||
               gates.allows({

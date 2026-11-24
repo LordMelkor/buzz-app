@@ -1187,9 +1187,18 @@ fn every_process_is_told_the_buzz_version_a_plugin_cannot_change() {
             ("NOSTR_KEY", "from-profile"),
         ]
         .map(|(name, value)| (name.into(), value.into()));
+        let agent_env = [
+            ("PROFILE_SETTING", "from-list"),
+            ("PLUGIN_SETTING", "from-list"),
+            ("LIST_SETTING", "listed"),
+            ("BUZZ_FROM_LIST", "1"),
+            ("NOSTR_FROM_LIST", "1"),
+        ]
+        .map(|(name, value)| (name.into(), value.into()));
         set_environment(
             &mut command,
             &login_shell,
+            &agent_env,
             OsStr::new("/bin"),
             &environment,
             "0.7.12",
@@ -1200,10 +1209,39 @@ fn every_process_is_told_the_buzz_version_a_plugin_cannot_change() {
         assert_eq!(get(&command, "PATH").as_deref(), Some("/bin"));
         assert_eq!(
             get(&command, "PROFILE_SETTING").as_deref(),
-            Some("forwarded")
+            Some("from-list")
         );
+        assert_eq!(get(&command, "LIST_SETTING").as_deref(), Some("listed"));
+        assert_eq!(get(&command, "BUZZ_FROM_LIST"), None);
+        assert_eq!(get(&command, "NOSTR_FROM_LIST"), None);
         assert_eq!(get(&command, "BUZZ_RESOLVING_ENVIRONMENT"), None);
         assert_eq!(get(&command, "NOSTR_KEY"), None);
+    }
+}
+
+#[test]
+fn an_agents_saved_anthropic_key_survives_its_harness_removing_inherited_ones() {
+    let get = |command: &Command, name: &str| {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    };
+    let removed = HashMap::from([("ANTHROPIC_API_KEY".to_owned(), None)]);
+    let saved = [("ANTHROPIC_API_KEY".into(), "sk-ant-agent".into())];
+    for (agent_env, expected) in [(&saved[..], Some("sk-ant-agent")), (&[][..], None)] {
+        let mut command = Command::new("/usr/bin/true");
+        set_environment(
+            &mut command,
+            &[],
+            agent_env,
+            OsStr::new("/bin"),
+            &removed,
+            "0.7.12",
+        )
+        .unwrap();
+        assert_eq!(get(&command, "ANTHROPIC_API_KEY").as_deref(), expected);
     }
 }
 

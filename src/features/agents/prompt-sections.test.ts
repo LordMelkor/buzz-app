@@ -103,6 +103,21 @@ describe("the owner's choices for the base prompt's sections", () => {
     expect(ownerChoices(store)).toEqual({ progress: { mode: "off" } });
   });
 
+  it("reads the latest saved choices after storage throws before returning a promise", async () => {
+    const backing = memory();
+    const store = {
+      ...backing,
+      set: () => {
+        throw new Error("Storage unavailable");
+      },
+    };
+    await expect(
+      saveOwnerSections(store, { progress: { mode: "off" } }),
+    ).rejects.toThrow("Storage unavailable");
+    await saveOwnerSections(backing, { etiquette: { mode: "off" } });
+    expect(ownerChoices(store)).toEqual({ etiquette: { mode: "off" } });
+  });
+
   it("are refused for a section the owner cannot configure, and for a text that cannot be used", async () => {
     const store = memory();
     await saveOwnerSections(store, { progress: { mode: "off" } });

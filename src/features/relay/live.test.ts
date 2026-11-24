@@ -6220,6 +6220,44 @@ it("establishes a carried batch whose renewal replay carried a reply", async () 
   }
   expect(vi.getTimerCount()).toBe(0);
 });
+it("keeps a channel continuous when its renewal replay carried a pin list", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  try {
+    h.owner.update(["a", "b", "c"], ["a", "b"]);
+    await establish(h.first);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    for (const request of h.first.requests())
+      await h.first.receive(["EOSE", request[1]]);
+    h.callbacks.established.mockClear();
+    renew(h.first);
+    const second = h.sockets[1];
+    assert.exists(second);
+    await second.auth();
+    await vi.advanceTimersByTimeAsync(750);
+    const batch = second.requests().find((r) => scopeOf(r).includes("a"));
+    assert.exists(batch);
+    // Its `e` tags name pins, not replies: no thread changed.
+    const pins = signed(keypair(), {
+      kind: 30623,
+      content: "",
+      created_at: 1700000000,
+      tags: [
+        ["d", "a"],
+        ["h", "a"],
+        ["e", "1".repeat(64)],
+      ],
+    });
+    await second.receive(["EVENT", batch[1], pins]);
+    for (const request of second.requests())
+      await second.receive(["EOSE", request[1]]);
+    // As with a renewal that carried nothing, no channel owes catch-up.
+    expect(h.callbacks.established).not.toHaveBeenCalled();
+  } finally {
+    h.owner.dispose();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
 it("keeps a planned renewal connected and skips catch-up for carried routes", async () => {
   vi.useFakeTimers();
   const h = setup([]);

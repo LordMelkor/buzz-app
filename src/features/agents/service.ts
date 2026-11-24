@@ -115,7 +115,8 @@ import {
   type AgentHookContext,
   type AgentHookDispatchOptions,
 } from "./hooks";
-import { ownerReads, readyOwnerReads } from "./reads";
+import { ownerReads, readyOwnerReads, type AgentReads } from "./reads";
+import { AgentInbox } from "./inbox";
 import { createToolOperation, type AgentToolProvider } from "./tool-operation";
 import {
   assignConversationFolder as assignFolder,
@@ -1129,6 +1130,10 @@ export type AgentType<Config = unknown> = {
   /** Huddles supplies a running agent owned by the current viewer.
    * Full-duplex voice on the existing room conversation; abort closes the pipe. */
   voice?(seat: AgentVoiceSeat<Config>): Promise<AgentVoiceConnection>;
+  /** Whether saved local conversations may restart when base instructions are customized. */
+  mayRestartForBaseInstructions?(
+    agent: Pick<Agent, "key" | "owner" | "relay">,
+  ): boolean;
   /** Native callback events this harness exposes to plugins. */
   hooks?: Readonly<{ events: readonly string[] }>;
   id: string;
@@ -1787,6 +1792,15 @@ export type Agents = {
     agent: Agent,
     options?: NoteChange,
   ): Promise<Readonly<{ previous: ModelSettings }>>;
+  /** Bundled plugins only: stops a local agent's processes in every
+   * community it is in, with each type's `retire`, so its next turn starts
+   * them again. Refused while it answers or is in a call, and for protected,
+   * hosted and execution-target agents. */
+  restartAgent(pubkey: string): Promise<void>;
+  /** Counts a Huddle seat from before its call opens, so Restart agent
+   * refuses it (bundled only). Throws while the agent restarts; returns the
+   * seat's end. */
+  reserveVoice(key: AgentKey): () => void;
   /** Undoes a switch: off Automatic, with `previous` back, saved the same
    * way. */
   restoreSettings(
@@ -1883,6 +1897,8 @@ export type Agents = {
   /** The owner's connection to a running agent's community, which need not be
    * the selected one: read the agent's conversations through this. */
   relay(agent: AgentKey): RelayData | undefined;
+  /** Conversation reads may use the agent’s identity for channels its owner cannot read. */
+  conversationReads?(agent: AgentKey): AgentReads | undefined;
   /** The agent's `core` memory, as this device keeps it current: its text,
    * `null` when it has none, or undefined when it could not be read. A start
    * reads it here, which needs no relay request once this device has read it
@@ -2885,6 +2901,26 @@ export class AgentsService extends Service implements Agents {
       savedAttention: (key) => this.records[key]?.attention ?? EMPTY,
       member: (agent, event) => this.member(agent, event),
       reads: (agent, event) => this.reads(agent, event),
+      privateMentionsDue: (agent) => this.inbox(agent.key)?.due(),
+      readPrivateMentions: (agent, filter, signal) => {
+        const inbox = this.inbox(agent.key);
+        if (!inbox) throw new Error("The agent has no reads of its own here");
+        return inbox.mentions(filter, signal);
+      },
+      ownerHidden: (agent, event) => {
+        const channel = event.tags.find((tag) => tag[0] === "h")?.[1];
+        const channels = this.bindingOf(agent)?.session.channels;
+        return (
+          !!channel &&
+          !!this.inbox(agent.key)?.channel(channel) &&
+          !(
+            channels?.list().channels.some((item) => item.id === channel) ||
+            channels?.get?.(channel)
+          )
+        );
+      },
+      readAsAgent: (agent, filter, signal) =>
+        this.inbox(agent.key)?.readAsAgent(filter, signal),
       resolveChannels: async (agent, ids, signal) => {
         const channels = this.bindingOf(agent)?.session.channels;
         const unknown = ids.filter(
@@ -2897,7 +2933,15 @@ export class AgentsService extends Service implements Agents {
       unattended: (agent, event, live) => {
         const channel = event.tags.find((tag) => tag[0] === "h")?.[1];
         const session = this.bindingOf(agent)?.session;
-        return !channel || !session || session.unattended(channel, live);
+        const inbox = this.inbox(agent.key);
+        if (!live && inbox && channel && !this.channelOf(agent, event))
+          return false;
+        return (
+          !channel ||
+          !session ||
+          !!inbox?.channel(channel) ||
+          session.unattended(channel, live)
+        );
       },
       flat: (agent, channelId) => {
         const { channelType } =
@@ -3970,6 +4014,33 @@ export class AgentsService extends Service implements Agents {
       base: { settings: agent.configBase.settings },
     });
   }
+  reserveVoice(key: AgentKey) {
+    this.bundledCaller("reserveVoice");
+    return this.runners.reserveVoice(key);
+  }
+  async restartAgent(pubkey: string) {
+    this.bundledCaller("restartAgent");
+    const members = this.identities.filter(
+      (agent) => agent.pubkey === pubkey && !agent.deleted,
+    );
+    const agent = members[0];
+    if (!this.native || !agent) throw new Error("No such agent on this device");
+    if (agent.protection)
+      throw new Error("A protected agent can't be restarted here");
+    const type = this.types().find((type) => type.key === agent.type);
+    if (!type || type.remote)
+      throw new Error("A hosted agent can't be restarted here");
+    if (!type.retire)
+      throw new Error("This agent's provider can't restart one agent");
+    for (const member of members)
+      if (await this.executions.inspect(member.key))
+        throw new Error(
+          "An agent on another execution target can't be restarted here",
+        );
+    await this.runners.restart(agent.key, agent.name, async () => {
+      for (const member of members) await type.retire?.(member.key);
+    });
+  }
   async switchToAutomatic(agent: Agent, options: NoteChange = {}) {
     const plugin = this.bundledCaller("switchToAutomatic");
     const config = (agent.config ?? {}) as Record<string, unknown>;
@@ -4504,6 +4575,7 @@ export class AgentsService extends Service implements Agents {
   tools = () => this.addedTools.snapshot();
   readonly harness = harnessKit({
     relay: (key) => this.relay(key),
+    reads: (key) => this.conversationReads(key),
     core: (key) => this.core(key),
     added: () => this.tools(),
     repositories: repositoriesContext,
@@ -4654,13 +4726,19 @@ export class AgentsService extends Service implements Agents {
     this.runners.dismissInterrupted(this.interruptedKeys());
     this.update();
   };
+  // Shown to the owner, so only what the owner's own session knows.
   interruptedTurns = (agent: Agent) =>
     Object.entries(this.runners.interruptedTurns(agent.key)).map(
-      ([id, channelId]) => ({
-        id,
-        channelId,
-        channel: this.channelOf(agent, { tags: [["h", channelId]] }),
-      }),
+      ([id, channelId]) => {
+        const channels = this.bindingOf(agent)?.session.channels;
+        return {
+          id,
+          channelId,
+          channel:
+            channels?.list().channels.find((item) => item.id === channelId) ??
+            channels?.get?.(channelId),
+        };
+      },
     );
   readInterrupted = async (agent: Agent, signal: AbortSignal) => {
     const session = this.bindingOf(agent)?.session;
@@ -4858,6 +4936,47 @@ export class AgentsService extends Service implements Agents {
     const origin = originOf(this.agent(key)?.relay ?? "");
     return origin ? this.bound.get(origin)?.relay : undefined;
   };
+  private readonly inboxes = new WeakMap<Binding, Map<AgentKey, AgentInbox>>();
+  private inbox(key: AgentKey) {
+    const agent = this.agent(key);
+    const binding = agent && this.bindingOf(agent);
+    const owner = ownerReads(this.relay(key), pubkeyOf(key));
+    const native = this.native;
+    if (!agent || !binding?.session.relayAuthor || !owner || !native)
+      return undefined;
+    let inboxes = this.inboxes.get(binding);
+    if (!inboxes) {
+      inboxes = new Map();
+      this.inboxes.set(binding, inboxes);
+    }
+    let inbox = inboxes.get(key);
+    if (!inbox) {
+      inbox = new AgentInbox(
+        owner,
+        agent.pubkey,
+        binding.session.relayAuthor,
+        async (filters) => {
+          const current = () => {
+            if (
+              !this.runners.runs(key) ||
+              this.bindingOf(agent) !== binding ||
+              !this.liveMember(key)
+            )
+              throw new Error("The agent is no longer running here");
+          };
+          current();
+          const events = await native.query(agent, filters);
+          current();
+          return events;
+        },
+        binding.controller.signal,
+      );
+      inboxes.set(key, inbox);
+    }
+    return inbox;
+  }
+  conversationReads = (key: AgentKey): AgentReads | undefined =>
+    this.inbox(key)?.reads ?? ownerReads(this.relay(key), pubkeyOf(key));
   core = (key: AgentKey, signal?: AbortSignal) =>
     this.coreMemory.core(key, signal);
   private localCache:
@@ -9286,7 +9405,8 @@ export class AgentsService extends Service implements Agents {
     if (!channel || !channels) return undefined;
     return (
       channels.list().channels.find((item) => item.id === channel) ??
-      channels.get?.(channel)
+      channels.get?.(channel) ??
+      this.inbox(agent.key)?.channel(channel)
     );
   }
   /** Whether the agent is in the event's channel, by its relay-signed roster.

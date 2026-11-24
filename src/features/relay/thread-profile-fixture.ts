@@ -180,6 +180,10 @@ export async function threadSample(
         assert.deepEqual(first["#h"], ["a"]);
         assert.equal(first.limit, data.headRows.length);
         events = [...data.headRows, data.head];
+      } else if (first?.kinds?.includes(30623)) {
+        // The channel pin list: none here.
+        assert.deepEqual(first["#h"], ["a"]);
+        events = [];
       } else if (first?.kinds?.includes(30315)) {
         assert.equal(filters.length, 1);
         statusRead(first);

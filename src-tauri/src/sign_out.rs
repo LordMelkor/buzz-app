@@ -308,6 +308,31 @@ fn wait_for<E>(mut attempt: impl FnMut() -> Result<(), E>) -> bool {
     }
 }
 
+/// A pending erase's agent cleanup: the old agents' keys, then each registry's
+/// own environment variables and keys, while the registry still names them.
+/// A failure leaves the marker, so the next launch retries.
+pub(crate) fn remove_local_agents(
+    app_data: &Path,
+    credentials: &dyn buzz_agent_controller::Credentials,
+    env: &dyn Fn(&str) -> Box<dyn crate::claude_key::KeyStore>,
+) -> Result<(), String> {
+    let old = app_data.join(OLD_AGENTS);
+    if old
+        .try_exists()
+        .map_err(|error| format!("check agent registry: {error}"))?
+    {
+        buzz_agent_controller::delete_local_agent_keys(old, credentials)?;
+    }
+    // The pending erase runs before the temporary startup migration.
+    for folder in [AGENTS, migrate_agents::LEGACY] {
+        let agents =
+            buzz_agent_controller::AppAgents::open(app_data.join(folder).join("identities.json"));
+        crate::agent_env::forget_registry(&agents, env)?;
+        agents.delete_keys(credentials)?;
+    }
+    Ok(())
+}
+
 /// Run at launch, before anything else. Returns this instance's lock, or the
 /// message to show before exiting.
 #[allow(clippy::incompatible_msrv)] // `File` locking; see `Instance`.

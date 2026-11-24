@@ -40,6 +40,7 @@ errors before trusting a number.
 | `scroll-long` | 12,000px upward through 360 fully loaded messages |
 | `scroll-paging-fast` | Scrolling to the oldest of 640 messages while older pages arrive after 100ms |
 | `scroll-paging-delayed` | The same with 500ms page delays |
+| `scroll-paging-delayed-short` | The delayed case with one- and two-line messages |
 | `scroll-paging-fast-keyboard`, `-markdown`, `-first-seen` | The fast case in keyboard modality, with Markdown messages, or with older pages the app hasn't verified yet |
 | `thread-open-rich`, `-close-rich`, `-reopen-rich` | A 120-reply thread with media, tables and code |
 | `thread-unread-open-60`, `-200` | Opening a thread whose 60 or 200 replies are all unread |
@@ -59,6 +60,7 @@ never arrive) fails instead of reporting a fast time.
 | `scriptMs`, `layoutMs`, `styleMs`, `taskMs` | Chromium's JavaScript, layout, style and main-thread task time |
 | `loafBlockingMs` | Long-animation-frame blocking time, from every frame that overlaps the action |
 | `rafP95GapMs`, `rafMaxGapMs`, `rafGapsOver33`, `rafGapsOver50` | Animation-frame spacing during a scroll gesture |
+| `edgeWaitMs` | Paging time spent held at the top edge, waiting for older history |
 | `domGapFrames` | Thread scroll frames with no loaded reply in view |
 | `idleTaskMsPerSec`, `trafficTaskMsPerSec`, `taskMsPerMessage` (and script, style and layout per message) | Background traffic cost |
 | `heapGrowthKBPerMessage`, `nodesDelta`, `listenersDelta` | Background traffic growth, measured after a forced GC |
@@ -136,11 +138,11 @@ within one run, not across machines or sessions.
 
 ### Current measurements
 
-Native medians on one MacBook Pro with a 60 Hz display, four ABBA runs per build
-in one session (2026-11-05). Each change that moves these numbers adds its row.
+Native medians on one Apple silicon macOS VM with a 60 Hz display (`1920×1200`,
+1×), four ABBA runs per build in one session (2026-11-24). Each change that
+moves these numbers adds its row.
 
 | Build | p95 frame interval | Frames over two 60 Hz frames | Dropped frames | Blank frames | Longest blank |
 | --- | --- | --- | --- | --- | --- |
-| Before thread scrolling fixes | 85 ms | 76 | 194 | 54 | 300 ms |
-| Closed action bars skip the glass | 50 ms | 44 | 94 | 9 | 133 ms |
-| Thread rows isolated in the scroller | 30 ms | 10 | 44 | 6 | 67 ms |
+| 2026-11-05 (`83c48be0aa`, before scrolling fixes) | 88 ms | 77 | 208 | 48 | 233 ms |
+| 2026-11-24 (`20c9e4c154`, `main`) | 31 ms | 12 | 27 | 0 | 0 ms |

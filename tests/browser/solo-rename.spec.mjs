@@ -76,7 +76,6 @@ for (const variant of [
     const toggle = header.getByRole("button", {
       name: "Show tasks and chats in Work",
     });
-    const newTask = header.getByRole("button", { name: "New task in Work" });
     const point = await header.evaluate((row) => {
       const bounds = row.getBoundingClientRect();
       const buttons = [...row.querySelectorAll("button")].map((button) =>
@@ -127,16 +126,10 @@ for (const variant of [
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     const actions = header.getByRole("button", { name: "Actions for Work" });
     const newTaskItem = page.getByRole("menuitem", { name: "New task" });
-    if (variant.name === "dark-narrow") {
-      // Without room for both controls, New task is reached through Actions.
-      await expect(newTask).toBeHidden();
-      await actions.focus();
-      await page.keyboard.press("Enter");
-      await expect(newTaskItem).toBeFocused();
-      await page.keyboard.press("Enter");
-    } else {
-      await newTask.click();
-    }
+    await actions.focus();
+    await page.keyboard.press("Enter");
+    await expect(newTaskItem).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(title).not.toHaveAttribute("aria-current", "page");
     await toggle.click();
     await expect(

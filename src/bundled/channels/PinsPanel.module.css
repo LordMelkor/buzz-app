@@ -1,0 +1,58 @@
+@reference "../../shared/styles/globals.css";
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+}
+.status {
+  padding: var(--space-3);
+  color: var(--text-secondary);
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  text-align: start;
+}
+.open:hover {
+  background: var(--affordance-panel-hover);
+}
+html[data-keyboard-navigation] .open:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+.byline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}

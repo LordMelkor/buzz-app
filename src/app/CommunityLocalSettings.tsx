@@ -17,20 +17,13 @@ import { Button } from "../shared/design-system/ui/Button";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { useToastNotification } from "../shared/design-system/ui/Toast";
 import { writeClipboardText } from "../shared/clipboard";
-import {
-  nativeMediaUsage,
-  type NativeMediaUsage,
-} from "../features/relay/native";
+import { relayCacheUsage } from "../features/relay/partition-purge";
 import { formatFileSize } from "../features/messages/FileAttachment";
 
 const size = (bytes: number) => (bytes ? formatFileSize(bytes) : "0 MB");
 
-/** With one community the shared limit is this community's own. */
-function usageText({ community, total, budget }: NativeMediaUsage) {
-  return total === community
-    ? `Saved images: ${size(community)} of ${size(budget)}.`
-    : `Saved images: ${size(community)} here, ${size(total)} of ${size(budget)} across communities.`;
-}
+const measureCache = (address: string, viewer: string | undefined) =>
+  viewer ? relayCacheUsage(address, viewer) : Promise.resolve(undefined);
 
 /** Captured viewer/community; never saves into a newly selected destination. */
 export function CommunityLocalSettings({
@@ -59,18 +52,18 @@ export function CommunityLocalSettings({
       setCopying(false);
     }
   };
-  const [usage, setUsage] = useState<NativeMediaUsage>();
+  const [usage, setUsage] = useState<number>();
   useEffect(() => {
     let alive = true;
     // The readout is optional; without it the row still clears.
-    nativeMediaUsage(address).then(
+    measureCache(address, viewer).then(
       (next) => alive && setUsage(next),
       () => alive && setUsage(undefined),
     );
     return () => {
       alive = false;
     };
-  }, [address]);
+  }, [address, viewer]);
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState("");
   const clearCache = async () => {
@@ -84,7 +77,7 @@ export function CommunityLocalSettings({
       setClearError("Couldn’t clear the cache. Try again.");
     } finally {
       setClearing(false);
-      nativeMediaUsage(address).then(setUsage, () => setUsage(undefined));
+      measureCache(address, viewer).then(setUsage, () => setUsage(undefined));
     }
   };
   const [editingConnection, setEditingConnection] = useState(false);
@@ -225,7 +218,7 @@ export function CommunityLocalSettings({
         <SettingsGroup>
           <PreferenceRow
             title="Cached data"
-            subtitle={`Channels, messages and images this device saved from this community. Buzz loads them again as needed. Clearing also cancels uploads in progress.${usage ? ` ${usageText(usage)}` : ""}`}
+            subtitle={`Channels, messages and images this device saved from this community. Buzz loads them again as needed. Clearing also cancels uploads in progress.${usage === undefined ? "" : ` Uses ${size(usage)} on this device.`}`}
             trailing={
               <Button
                 type="button"

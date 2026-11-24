@@ -510,9 +510,13 @@ describe("update, enable and remove requests", () => {
     expect(requests.pending()).toEqual([]);
   });
 
-  it.each([false, true])(
-    "requests a same-revision update only for a new signature (%s)",
-    async (signed) => {
+  it.each([
+    { signed: false, reference: "main", allowed: false },
+    { signed: true, reference: "main", allowed: true },
+    { signed: false, reference: "stable", allowed: true },
+  ])(
+    "requests a same-revision update only for a new signature or ref: %j",
+    async ({ signed, reference, allowed }) => {
       const checked = preview({
         path: "notes",
         id: "example.notes",
@@ -526,14 +530,17 @@ describe("update, enable and remove requests", () => {
       const request = agent.request({
         action: "update",
         id: "example.notes",
+        reference,
         reason,
       });
-      if (signed) {
+      if (allowed) {
         await expect(request).resolves.toMatchObject({
           applied: false,
           action: "update",
         });
-        expect(requests.pending()).toHaveLength(1);
+        expect(requests.pending()).toMatchObject([
+          { source: { reference, commit: COMMIT, path: "notes" } },
+        ]);
         expect(change).not.toHaveBeenCalled();
       } else {
         await expect(request).rejects.toThrow(

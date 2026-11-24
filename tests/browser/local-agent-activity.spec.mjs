@@ -769,7 +769,12 @@ test("the published-activity tab shows turns its agent published", async ({
     key,
   );
   await page
-    .getByRole("form", { name: "Send a message to Alpha", exact: true })
+    .locator("[data-composer-dock]", {
+      has: page.getByRole("form", {
+        name: "Send a message to Alpha",
+        exact: true,
+      }),
+    })
     .locator("..")
     .getByRole("button", { name: /^Activity: .+ working$/ })
     .hover();

@@ -17,7 +17,8 @@ import { channelIcon } from "../channels/channel-icon";
 import { NavigationCard } from "../../shared/design-system/ui/NavigationItem";
 import { NavigationSectionHeading } from "../../shared/design-system/ui/NavigationSection";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { MenuItem } from "../../shared/design-system/ui/Menu";
+import { MenuIcon, MenuItem } from "../../shared/design-system/ui/Menu";
+import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { PlusIcon } from "../../shared/design-system/icons";
 import type { ChannelSummary } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
@@ -345,17 +346,22 @@ export function RegionChannelGroup(props: SoloChannelGroupProps) {
       <NavigationCard tone="tonal" body={body}>
         <NavigationSectionHeading
           disclosure
-          revealActions
+          revealActions="in-flow"
           trailing={{
             metadata: props.headerMetadata,
             accessory: accessory != null && (
-              <div className="flex shrink-0 items-center">{accessory}</div>
+              <div
+                className={`${styles.headerAccessory} flex shrink-0 items-center`}
+              >
+                {accessory}
+              </div>
             ),
           }}
           actions={
             <>
               {newTaskButton}
               <ChannelHeaderMenu
+                key={channel.id}
                 channel={channel}
                 session={session}
                 trigger={trigger}
@@ -371,6 +377,60 @@ export function RegionChannelGroup(props: SoloChannelGroupProps) {
                 }
                 startChat={
                   newTask && <MenuItem onClick={newTask}>New task</MenuItem>
+                }
+                afterDetails={(close) =>
+                  props.headerMenuActions?.map((action) => {
+                    const item = (
+                      <MenuItem
+                        key={action.id}
+                        label={action.label}
+                        onBlur={(event) => {
+                          // The menu restores focus to itself as the pointer
+                          // leaves the item. Let the hint track that pointer.
+                          if (
+                            action.hint &&
+                            event.relatedTarget ===
+                              event.currentTarget.closest('[role="menu"]')
+                          )
+                            event.preventBaseUIHandler();
+                        }}
+                        onKeyDown={(event) => {
+                          if (
+                            event.key !== "Escape" ||
+                            event.nativeEvent.isComposing ||
+                            !event.currentTarget.hasAttribute(
+                              "aria-describedby",
+                            )
+                          )
+                            return;
+                          // The hint would otherwise consume Escape before the menu.
+                          event.preventDefault();
+                          event.stopPropagation();
+                          close();
+                        }}
+                        onClick={() => {
+                          if (eligible(current()))
+                            void context.runAction(() => action.onSelect());
+                        }}
+                      >
+                        {action.icon != null && (
+                          <MenuIcon>{action.icon}</MenuIcon>
+                        )}
+                        {action.label}
+                      </MenuItem>
+                    );
+                    return action.hint ? (
+                      <Tooltip
+                        key={action.id}
+                        content={action.hint}
+                        side="right"
+                      >
+                        {item}
+                      </Tooltip>
+                    ) : (
+                      item
+                    );
+                  })
                 }
               />
             </>

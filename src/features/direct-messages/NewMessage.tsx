@@ -628,8 +628,11 @@ export function NewMessage({
           </p>
         )}
         {uploadFailed && (
+          // A failed send also pauses the files queued behind the one that
+          // failed, and each chip names its own way out.
           <p role="status">
-            A file couldn’t upload. Retry or remove it, then send again.
+            A file couldn’t upload. Follow the guidance on each file that shows
+            an error, then send again.
           </p>
         )}
         {!session.directMessages.available && (

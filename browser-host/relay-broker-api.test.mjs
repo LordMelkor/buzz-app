@@ -145,6 +145,9 @@ async function harness(
 /** Native media URLs name one sha256 blob; the broker enforces the same shape. */
 const blob = "c".repeat(64);
 const filters = [{ kinds: [0], limit: 1 }];
+// Mirrors MAX_INFLIGHT in relay-broker.mjs (not exported).
+const MAX_INFLIGHT = 10;
+const QUEUED_LIMIT = 99;
 
 test.each([
   [202, { status: "aborted" }],
@@ -1321,11 +1324,13 @@ test("each community has its own query capacity", async () => {
     return h.post(route, filters, controller.signal);
   };
   try {
-    const primary = Array.from({ length: 6 }, () => post("primary/query"));
-    await vi.waitFor(() => expect(h.calls).toHaveLength(6));
+    const primary = Array.from({ length: MAX_INFLIGHT }, () =>
+      post("primary/query"),
+    );
+    await vi.waitFor(() => expect(h.calls).toHaveLength(MAX_INFLIGHT));
     expect((await h.post("primary/query", filters)).status).toBe(429);
     const secondary = post("secondary/query");
-    await vi.waitFor(() => expect(h.calls).toHaveLength(7));
+    await vi.waitFor(() => expect(h.calls).toHaveLength(MAX_INFLIGHT + 1));
     release();
     for (const response of [...primary, secondary])
       expect((await response).status).toBe(200);
@@ -1347,12 +1352,12 @@ test("local capacity is explicitly unsent, not relay quota; unknown upstream pub
   });
   const controllers = [];
   try {
-    const requests = Array.from({ length: 6 }, () => {
+    const requests = Array.from({ length: MAX_INFLIGHT }, () => {
       const controller = new AbortController();
       controllers.push(controller);
       return h.post("query", filters, controller.signal);
     });
-    await vi.waitFor(() => expect(h.calls).toHaveLength(6));
+    await vi.waitFor(() => expect(h.calls).toHaveLength(MAX_INFLIGHT));
     const refused = await h.post("profile", { name: "Fixture", picture: "" });
     expect(refused.status).toBe(429);
     expect(await refused.json()).toEqual({
@@ -1363,11 +1368,11 @@ test("local capacity is explicitly unsent, not relay quota; unknown upstream pub
     await Promise.all(
       requests.map(async (response) => (await response).text()),
     );
-    expect(h.calls).toHaveLength(6);
+    expect(h.calls).toHaveLength(MAX_INFLIGHT);
     const transport = await connectBrokerTransport(h.base);
     // Generic upstream 503 is not proof of non-delivery (separate fixture below).
     await transport.query(filters);
-    expect(h.calls).toHaveLength(7); // Local capacity did not introduce a relay cooldown.
+    expect(h.calls).toHaveLength(MAX_INFLIGHT + 1); // Local capacity did not introduce a relay cooldown.
   } finally {
     release();
     for (const c of controllers) c.abort();
@@ -1483,7 +1488,7 @@ test("query keeps relay 403 refusals but turns an edge 403 page into a gateway f
 });
 
 test("a queued request's community refusal marks its own response", async () => {
-  // A held sidebar write and five held queries fill the community's six-slot
+  // A held sidebar write and nine held queries fill the community's ten-slot
   // lane. The next query waits and starts from whichever finishes first, so
   // its refusal must mark its own response, not that one's.
   const releases = new Map();
@@ -1491,7 +1496,7 @@ test("a queued request's community refusal marks its own response", async () => 
   const h = await harness(async (call, count, event) => {
     const filter = call.body?.[0];
     const sidebar = filter?.kinds?.[0] === 30078;
-    if (filter?.limit === 7)
+    if (filter?.limit === QUEUED_LIMIT)
       return new Response("authorization denied\n", { status: 403 });
     if (holding && call.url.endsWith("/query"))
       await new Promise((resolve) =>
@@ -1513,13 +1518,13 @@ test("a queued request's community refusal marks its own response", async () => 
       sectionIds: [],
     });
     await vi.waitFor(() => expect(releases.has("sidebar")).toBe(true));
-    const held = [1, 2, 3, 4, 5].map((limit) =>
-      h.post("query", [{ kinds: [0], limit }]),
+    const held = Array.from({ length: MAX_INFLIGHT - 1 }, (_, i) =>
+      h.post("query", [{ kinds: [0], limit: i + 1 }]),
     );
-    await vi.waitFor(() => expect(releases.size).toBe(6));
-    const queued = h.post("query", [{ kinds: [0], limit: 7 }]);
+    await vi.waitFor(() => expect(releases.size).toBe(MAX_INFLIGHT));
+    const queued = h.post("query", [{ kinds: [0], limit: QUEUED_LIMIT }]);
     await delay(20);
-    expect(h.calls).toHaveLength(6);
+    expect(h.calls).toHaveLength(MAX_INFLIGHT);
     releases.get(1)();
     const first = await held[0];
     const refused = await queued;
@@ -1875,6 +1880,7 @@ test("real outbox creates, invites and sends", async () => {
         ["visibility", "open"],
         ["channel_type", "stream"],
         ["ttl", "604800"],
+        ["migration", "slack"],
       ],
     });
     await vi.waitFor(() =>
@@ -1890,6 +1896,8 @@ test("real outbox creates, invites and sends", async () => {
       tags: [
         ["h", id],
         ["p", "a".repeat(64)],
+        ["p", "b".repeat(64)],
+        ["migration", "slack"],
       ],
     });
     await vi.waitFor(() =>
@@ -1915,6 +1923,13 @@ test("real outbox creates, invites and sends", async () => {
     expect(h.publications.map((event) => event.kind)).toEqual([
       9007, 9007, 9000, 9,
     ]);
+    expect(
+      h.publications.map(({ tags }) =>
+        tags.filter(([name]) => name === "migration"),
+      ),
+    ).toEqual([[], [["migration", "slack"]], [["migration", "slack"]], []]);
+    for (const event of h.publications)
+      expect(verifyEvent(structuredClone(event))).toBe(true);
   } finally {
     owner?.dispose();
     traffic?.dispose();
@@ -2637,6 +2652,32 @@ test("an addition can ask the relay first, and its refusal reaches the app as wo
       ).status,
     ).toBe(400);
     expect(h.calls).toHaveLength(4);
+  } finally {
+    await h.close();
+  }
+});
+
+test("direct-message passes on which agent's add policy refused it", async () => {
+  const agent = "d".repeat(64);
+  const reasons = [
+    `forbidden: policy:owner_only — only the agent owner can add this agent (agent ${agent})`,
+    `forbidden: policy:nobody — this agent has disabled external channel additions (agent ${agent})`,
+  ];
+  const h = await harness(() =>
+    Response.json({ error: reasons.shift() }, { status: 400 }),
+  );
+  try {
+    const transport = await connectBrokerTransport(h.base);
+    const person = "a".repeat(64);
+    await expect(
+      transport.openDirectMessage([person], new AbortController().signal),
+    ).rejects.toThrow(`policy:owner_only (agent ${agent})`);
+    await expect(
+      transport.openDirectMessage([person], new AbortController().signal, {
+        channelId: "11111111-1111-4111-8111-111111111111",
+        includeHistory: "ask",
+      }),
+    ).rejects.toThrow(`policy:nobody (agent ${agent})`);
   } finally {
     await h.close();
   }

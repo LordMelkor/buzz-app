@@ -45,6 +45,8 @@ type ImageReviewStageProps = {
   media(url: string): string | undefined;
   select(url: string): void;
   onOpenLink(url: string): boolean;
+  /** The selected image's source failed to load or decode. */
+  onImageError?(source: string): void;
   allowCopy?: boolean;
 };
 
@@ -54,6 +56,7 @@ export function ImageReviewStage({
   media,
   select,
   onOpenLink,
+  onImageError,
   allowCopy = true,
 }: ImageReviewStageProps) {
   const stage = useRef<HTMLDivElement>(null);
@@ -219,8 +222,16 @@ export function ImageReviewStage({
       event.preventDefault();
       choose(selectedIndex + (event.key === "ArrowRight" ? 1 : -1));
     };
+    // A dialog may stop arrow keys inside it, as the composer-attached sheet's
+    // popup does, so listen at the viewer too. Its handled keys are
+    // prevented, so the document only acts when focus is on the body.
+    const viewer = stage.current?.closest<HTMLElement>('[role="dialog"]');
+    viewer?.addEventListener("keydown", keydown);
     document.addEventListener("keydown", keydown);
-    return () => document.removeEventListener("keydown", keydown);
+    return () => {
+      viewer?.removeEventListener("keydown", keydown);
+      document.removeEventListener("keydown", keydown);
+    };
   }, [attachments.length, selectedIndex, choose]);
 
   useEffect(() => clearCopyNoticeTimer, [clearCopyNoticeTimer]);
@@ -320,6 +331,11 @@ export function ImageReviewStage({
               aria-hidden={!current || undefined}
               draggable={false}
               onLoad={current ? constrain : undefined}
+              onError={
+                current
+                  ? () => item.source && onImageError?.(item.source)
+                  : undefined
+              }
               style={{ transform: item.transform }}
             />
           ) : (

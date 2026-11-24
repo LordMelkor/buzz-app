@@ -14,6 +14,7 @@ import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 import { ClaudeSettings, type ClaudeConnection } from "./ClaudeSettings";
 import { ApiKeyForm } from "../../features/settings/ApiKeyForm";
 import inlineStyles from "../../shared/InlineReference.module.css";
+import { ownEnvNames } from "../agents/agent-env";
 import { ENV, type Spawn } from "./claude";
 import { PROCESS_LIMIT } from "./sessions";
 import type { ClaudeSetup } from "./setup";
@@ -306,7 +307,12 @@ export class ClaudeAuth {
         (!args.includes("--setting-sources") || !(await this.has()));
       if (ownSetupUsable && (await this.connection()))
         return spawn(id, options);
-      if (required && !(await this.has())) throw new Error(NO_KEY);
+      if (
+        required &&
+        !(await this.has()) &&
+        !(await agentSetsKey(options?.envAgent))
+      )
+        throw new Error(NO_KEY);
       return spawn(id, {
         ...options,
         secrets: [...(options?.secrets ?? []), "anthropic-api-key"],
@@ -349,6 +355,11 @@ export class ClaudeAuth {
       : error;
   }
 }
+
+/** Whether the local agent's own variables set an Anthropic API key, which
+ * native code gives its `claude` in place of the saved one. */
+const agentSetsKey = async (agent: string | undefined) =>
+  !!agent && !!(await ownEnvNames(agent))?.includes("ANTHROPIC_API_KEY");
 
 /** Whether a turn's error is Buzz's own refusal to start Claude without a
  * key, rather than anything Claude said. */

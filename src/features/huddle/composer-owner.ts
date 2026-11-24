@@ -12,6 +12,7 @@ import { canAddMembers } from "../channel-members/members";
 import { prepareAttachment } from "../messages/prepare-attachment";
 import {
   UPLOAD_MAX_BYTES,
+  UploadError,
   type UploadedAttachment,
 } from "../relay/attachments";
 import type {
@@ -493,6 +494,7 @@ export function createHuddleComposerOwner(
             ? cause.message
             : "Could not complete this request."
           ).slice(0, 2048),
+          ...(cause instanceof UploadError ? { code: cause.code } : {}),
         };
       }
       if (

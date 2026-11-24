@@ -68,6 +68,11 @@ import { standaloneSessions } from "../../features/agents/standalone-sessions";
 import { withWakes } from "../../features/agents/session-usage";
 import { localStore, type AgentStore } from "../../features/agents/store";
 import { type AgentReads, workflowMarked } from "../../features/agents/reads";
+import {
+  ownerLabel,
+  ownerRows,
+  ownerTurns,
+} from "../../features/agents/owner-view";
 import type {
   Agent,
   AgentHandle,
@@ -477,7 +482,14 @@ export class PiRuntime {
    * when shown, not with `places`, so a channel going private shows so at
    * once. */
   channelLabel(agent: AgentKey, channelId: string) {
-    return this.reads(agent)?.channelLabel(channelId);
+    return ownerLabel(this.reads(agent), channelId);
+  }
+  /** The places among `rows` whose conversation its owner can read. */
+  readablePlaces<T extends Readonly<{ channelId: string; community?: true }>>(
+    agent: AgentKey,
+    rows: readonly T[],
+  ) {
+    return ownerRows(rows, this.reads(agent));
   }
   /** Tells `listener` when `channelLabel` may answer differently: the
    * community's channel list changed, or the connection it is read through
@@ -585,7 +597,9 @@ export class PiRuntime {
       this.reads(agent)?.name(pubkey),
     ).then((transcript) => ({
       ...transcript,
-      turns: this.prompts(agent).shown(transcript.turns),
+      turns: this.prompts(agent).shown(
+        ownerTurns(transcript.turns, this.reads(agent), place),
+      ),
     }));
   }
   /** What each of the agent's sessions started with, by

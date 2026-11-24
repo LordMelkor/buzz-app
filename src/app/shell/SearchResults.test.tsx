@@ -15,11 +15,13 @@ import {
 import { type Filter, matchFilter } from "nostr-tools";
 import { npubEncode } from "nostr-tools/nip19";
 import userEvent from "@testing-library/user-event";
+import { publicKeyLabels } from "../../shared/identity/public-key";
 import {
   bindNames,
   type IdentityNames,
 } from "../../features/identity-names/service";
 import { createAgentDirectory } from "../../features/identity-names/testing";
+import { localAgentsFixture } from "../../features/agents/local-testing";
 import { BestieConversationContext } from "./bestie-context";
 import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "../../features/relay/session";
@@ -4785,6 +4787,13 @@ it("offers a bounded from:@ picker with distinct identities and selects an exact
   }
 });
 
+/** A picker row's whole text: its title, then its second row if it has one. */
+function rowLines(row: HTMLElement) {
+  return [...row.querySelectorAll("span.block")]
+    .map((line) => line.textContent)
+    .join(" | ");
+}
+
 it.each(
   ["from:@", "from:", "in:@"].flatMap((operator) =>
     ["crew", undefined].flatMap((scope) =>
@@ -4880,9 +4889,17 @@ it.each(
     try {
       render(<Search />);
       const input = screen.getByRole("combobox");
-      expect(
-        await screen.findByRole("option", { name: new RegExp(label) }),
-      ).toBeVisible();
+      const row = await screen.findByRole("option", {
+        name: new RegExp(label),
+      });
+      expect(row).toBeVisible();
+      // Under the preferred verified name, only the other one: no key and no
+      // self-declared handle.
+      expect(rowLines(row)).toBe(
+        preference === "full-name"
+          ? "Robin Example | @robinz"
+          : "robinz | Robin Example",
+      );
       fireEvent.change(input, { target: { value: `${operator}robinz` } });
       expect(
         await screen.findByRole("option", { name: new RegExp(label) }),
@@ -5237,7 +5254,7 @@ it.each(
       expect(reads).toEqual([]);
       fireEvent.click(
         screen.getByRole("option", {
-          name: new RegExp(person.pubkey.slice(0, 12)),
+          name: /Robinexample/,
         }),
       );
       expect(change).toHaveBeenCalledWith(`from:${person.pubkey} deploy`);
@@ -5411,7 +5428,7 @@ it.each([
         expect(reads).toEqual([]);
         fireEvent.click(
           screen.getByRole("option", {
-            name: new RegExp(person.pubkey.slice(0, 12)),
+            name: /Robinexample/,
           }),
         );
         expect(change).toHaveBeenCalledWith(`from:${person.pubkey} deploy`);
@@ -5502,7 +5519,19 @@ it.each(["cancel", "fail"])(
   },
 );
 
+// Up to three search debounces chain before an ambiguous author picker
+// answers: useSearchMessages' first resolution, its re-resolution once the
+// member's verified name lands, then SearchResults' author lookup. In real
+// time they fill a wait's one-second default, so callers control the clock.
+async function settleSearchDebounces(steps = 3) {
+  for (let step = 0; step < steps; step += 1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    });
+}
+
 it("offers every scoped alias match when completion is ambiguous", async () => {
+  vi.useFakeTimers();
   const { owner, person, reads } = verifiedAuthorSession({
     profileName: "alice",
     namesakeName: "alice",
@@ -5523,17 +5552,22 @@ it("offers every scoped alias match when completion is ambiguous", async () => {
         openConversation={() => {}}
       />,
     );
-    await waitFor(() =>
-      expect(
-        within(screen.getByRole("group", { name: "People" })).getAllByRole(
-          "option",
-        ),
-      ).toHaveLength(2),
-    );
+    // Pins the current phases: after two SEARCH_DEBOUNCE_MS windows People is
+    // still pending, and the options arrive within the third.
+    await settleSearchDebounces(2);
+    const people = screen.getByRole("group", { name: "People" });
+    expect(people).toHaveTextContent("Searching people…");
+    expect(within(people).queryAllByRole("option")).toHaveLength(0);
+    await settleSearchDebounces(1);
+    expect(
+      within(screen.getByRole("group", { name: "People" })).getAllByRole(
+        "option",
+      ),
+    ).toHaveLength(2);
     expect(reads).toEqual([]);
     fireEvent.click(
       screen.getByRole("option", {
-        name: new RegExp(person.pubkey.slice(0, 12)),
+        name: /Robinexample/,
       }),
     );
     expect(change).toHaveBeenCalledWith(`from:${person.pubkey} deploy`);
@@ -5622,21 +5656,17 @@ it.each(
 )(
   "completes verified alias $alias in $scope with $preference and namesake $namesake",
   async ({ scope, preference, alias, namesake }) => {
-    // A controlled clock: the namesake lands after up to three chained search
-    // debounces, which in real time sits at a wait's one-second default.
+    // The namesake lands after the chained debounces settleSearchDebounces
+    // names.
     vi.useFakeTimers();
-    const settle = async () => {
-      for (let step = 0; step < 3; step += 1)
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
-        });
-    };
     const previous = namePreference();
     setNamePreference(preference as "username" | "full-name");
     const { owner, person, reads } = verifiedAuthorSession(
       namesake ? { namesakeName: alias } : {},
     );
     const change = vi.fn();
+    // The person's row shows both verified names; a namesake has only `alias`.
+    const personRow = alias === "robinz" ? /Robinexample/ : /robinz/;
     const props = {
       session: owner.session,
       onQueryChange: change,
@@ -5656,13 +5686,11 @@ it.each(
           query={alias === "robinz" ? `from:@${alias}` : completed}
         />,
       );
-      await settle();
+      await settleSearchDebounces();
       if (alias === "robinz") {
-        screen.getByRole("option", {
-          name: new RegExp(person.pubkey.slice(0, 12)),
-        });
+        screen.getByRole("option", { name: personRow });
         mounted.rerender(<SearchResults {...props} query={completed} />);
-        await settle();
+        await settleSearchDebounces();
       }
       if (namesake) {
         expect(
@@ -5671,11 +5699,7 @@ it.each(
           ),
         ).toHaveLength(2);
         expect(reads).toEqual([]);
-        fireEvent.click(
-          screen.getByRole("option", {
-            name: new RegExp(person.pubkey.slice(0, 12)),
-          }),
-        );
+        fireEvent.click(screen.getByRole("option", { name: personRow }));
         expect(change).toHaveBeenCalledWith(`from:${person.pubkey} deploy`);
       } else {
         expect(reads).toContainEqual(
@@ -6011,7 +6035,7 @@ const alexSession = (
     query(filters) {
       if (filters.some((filter) => filter.kinds?.includes(0)))
         return Promise.resolve([
-          profile(exact, { display_name: "Alex" }),
+          profile(exact, { display_name: "Alex", name: "alexk" }),
           ...page,
         ]);
       if (filters.some((filter) => filter.kinds?.includes(9)))
@@ -6051,11 +6075,7 @@ it.each([
       expect(await people.findAllByRole("option")).toHaveLength(shown);
       // The picker follows the resolver's completed lookup.
       expect(reads).toEqual([]);
-      fireEvent.click(
-        people.getByRole("option", {
-          name: new RegExp(exact.pubkey.slice(0, 12)),
-        }),
-      );
+      fireEvent.click(people.getByRole("option", { name: /@alexk/ }));
       expect(change).toHaveBeenCalledWith(`from:${exact.pubkey} `);
       mounted.rerender(
         <SearchResults {...props} query={`from:${exact.pubkey} `} />,
@@ -6458,8 +6478,8 @@ it("keeps both exact authors selectable ahead of a crowded prefix page", async (
           ...prefixes.map((person, index) =>
             profile(person, { display_name: `Samantha ${index}` }),
           ),
-          profile(first, { display_name: "Sam" }),
-          profile(second, { display_name: "Sam" }),
+          profile(first, { display_name: "Sam", name: "samira" }),
+          profile(second, { display_name: "Sam", name: "samuel" }),
         ]);
       return Promise.resolve([]);
     },
@@ -6479,19 +6499,267 @@ it("keeps both exact authors selectable ahead of a crowded prefix page", async (
     );
     const people = within(await screen.findByRole("group", { name: "People" }));
     await waitFor(() => expect(people.getAllByRole("option")).toHaveLength(12));
-    for (const pubkey of [first.pubkey, second.pubkey]) {
-      expect(
-        people.getByRole("option", { name: new RegExp(pubkey.slice(0, 12)) }),
-      ).toBeVisible();
-    }
+    for (const handle of [/@samira/, /@samuel/])
+      expect(people.getByRole("option", { name: handle })).toBeVisible();
     expect(reads).toHaveLength(0);
-    fireEvent.click(
-      people.getByRole("option", {
-        name: new RegExp(second.pubkey.slice(0, 12)),
-      }),
-    );
+    fireEvent.click(people.getByRole("option", { name: /@samuel/ }));
     expect(change).toHaveBeenCalledExactlyOnceWith(
       `from:${second.pubkey} deploy`,
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+// Two people whose profiles hold one name in both kind-0 fields, as Buzz
+// writes them. Neither is a member of `crew`. The relay's name search does not
+// cache what it finds; without that endpoint the NIP-50 fallback does.
+function namesakeSession(policy: boolean, endpoint = true) {
+  const relay = keypair(),
+    viewer = keypair();
+  const sams = [keypair(), keypair()];
+  const found = sams.map((person) =>
+    profile(person, { display_name: "Sam", name: "Sam" }),
+  );
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey]),
+    ...found,
+  ];
+  // The default naming policy, as the bundled plugin registers it.
+  const directory = createAgentDirectory();
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      async query(filters) {
+        return discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        );
+      },
+      ...(endpoint ? { searchProfiles: async () => found } : {}),
+    },
+    policy
+      ? {
+          identityNames: {
+            bind: (source) =>
+              bindNames(source, {
+                snapshot: () => [directory],
+                subscribe: () => () => {},
+              }),
+          } as IdentityNames,
+        }
+      : {},
+  );
+  return { owner, sams };
+}
+
+it.each([
+  { operator: "from:", scope: undefined, policy: false },
+  { operator: "in:@", scope: undefined, policy: false },
+  // The naming policy never compares these two: it sees neither uncached
+  // profile, and in a channel it compares each with the members alone.
+  { operator: "from:", scope: undefined, policy: true },
+  { operator: "in:@", scope: undefined, policy: true },
+  { operator: "from:", scope: "crew", policy: true },
+  { operator: "in:@", scope: "crew", policy: true },
+])(
+  "tells namesakes with nothing but a name apart by key for $operator in $scope with policy $policy",
+  async ({ operator, scope, policy }) => {
+    const { owner, sams } = namesakeSession(policy);
+    const labels = publicKeyLabels(sams.map(({ pubkey }) => pubkey));
+    const change = vi.fn();
+    const chosen = () => {
+      const queries = change.mock.calls.flat();
+      change.mockClear();
+      return queries;
+    };
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={`${operator}sam`}
+          onQueryChange={change}
+          input={createRef()}
+          pages={[]}
+          scopedChannelId={scope}
+          openNewMessage={() => {}}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(
+        await screen.findByRole("group", { name: "People" }),
+      );
+      await waitFor(() =>
+        expect(people.getAllByRole("option").map(rowLines).sort()).toEqual(
+          sams.map(({ pubkey }) => `Sam | ${labels.get(pubkey)}`).sort(),
+        ),
+      );
+      // Each row is announced with its key label and selects that key.
+      const rows = people.getAllByRole("option");
+      const own = rows.map((row) => {
+        const person = sams.find(
+          ({ pubkey }) => rowLines(row) === `Sam | ${labels.get(pubkey)}`,
+        );
+        assert.exists(person);
+        // jsdom joins the two lines without the space a browser reads.
+        expect(row).toHaveAccessibleName(`Sam${labels.get(person.pubkey)}`);
+        return `${operator}${person.pubkey} `;
+      });
+      expect(new Set(own).size).toBe(2);
+      for (const row of rows) fireEvent.click(row);
+      expect(chosen()).toEqual(own);
+      const input = screen.getByRole("combobox");
+      for (const row of rows) {
+        expect(input).toHaveAttribute("aria-activedescendant", row.id);
+        fireEvent.keyDown(input, { key: "Enter" });
+        fireEvent.keyDown(input, { key: "ArrowDown" });
+      }
+      expect(chosen()).toEqual(own);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["from:", "in:@"])(
+  "adds no key label for %s to namesakes the naming policy already qualifies",
+  async (operator) => {
+    const { owner, sams } = namesakeSession(true, false);
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={`${operator}sam`}
+          onQueryChange={() => {}}
+          input={createRef()}
+          pages={[]}
+          openNewMessage={() => {}}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(
+        await screen.findByRole("group", { name: "People" }),
+      );
+      await waitFor(() =>
+        expect(people.getAllByRole("option").map(rowLines).sort()).toEqual(
+          sams
+            .map(({ pubkey }) => `Sam · ${npubEncode(pubkey).slice(-4)}`)
+            .sort(),
+        ),
+      );
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["from:@sam", "in:@sam"])(
+  "shows a handle under a different profile name for %s, never a key",
+  async (query) => {
+    const relay = keypair(),
+      viewer = keypair();
+    const found = [
+      { display_name: "Sam Reader", name: "sreader" },
+      // No profile name: the handle is the title and is not repeated.
+      { name: "samwise" },
+      { display_name: "samantha", name: "samantha" },
+      // Namesakes are told apart by their handles.
+      { display_name: "Sam", name: "samira" },
+      { display_name: "Sam", name: "samuel" },
+    ].map((content) => profile(keypair(), content));
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query: (filters) =>
+        Promise.resolve(
+          filters.some((filter) => filter.kinds?.includes(0)) ? found : [],
+        ),
+    });
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={() => {}}
+          input={createRef()}
+          pages={[]}
+          openNewMessage={() => {}}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(
+        await screen.findByRole("group", { name: "People" }),
+      );
+      await waitFor(() =>
+        expect(people.getAllByRole("option").map(rowLines).sort()).toEqual([
+          "Sam Reader | @sreader",
+          "Sam | @samira",
+          "Sam | @samuel",
+          "samantha",
+          "samwise",
+        ]),
+      );
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("omits a handle that repeats the title an agent's own name gives it", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const scope = "https://relay.example.test";
+  // This machine's name for its agent is the title, not its profile name.
+  const control = localAgentsFixture([
+    {
+      pubkey: agent.pubkey,
+      name: "scout",
+      relayUrl: scope,
+      owner: viewer.pubkey,
+    },
+  ]);
+  const directory = createAgentDirectory(control);
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      scope,
+      query: (filters) =>
+        Promise.resolve(
+          filters.some((filter) => filter.kinds?.includes(0))
+            ? [profile(agent, { display_name: "Scout Bot", name: "scout" })]
+            : [],
+        ),
+    },
+    {
+      agentChoices: control,
+      identityNames: {
+        bind: (source) =>
+          bindNames(source, {
+            snapshot: () => [directory],
+            subscribe: () => () => {},
+          }),
+      } as IdentityNames,
+    },
+  );
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:@scout"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openNewMessage={() => {}}
+        openConversation={() => {}}
+      />,
+    );
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    await waitFor(() =>
+      expect(agents.getAllByRole("option").map(rowLines)).toEqual(["scout"]),
     );
   } finally {
     cleanup();
