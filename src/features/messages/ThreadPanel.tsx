@@ -842,6 +842,7 @@ function ThreadMessages({
     };
   }, []);
   const jumpingToLatest = useRef(false);
+  const pendingSendLatest = useRef(false);
   const jumpTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -1534,6 +1535,7 @@ function ThreadMessages({
       remounted.current = undefined;
       lineTop.current = undefined;
       jumpingToLatest.current = false;
+      pendingSendLatest.current = false;
       follow.current = true;
     } else if (
       navigation &&
@@ -1709,7 +1711,7 @@ function ThreadMessages({
       setInitialPositioned(true);
       readingPositioned(element);
     }
-    if (jumpingToLatest.current) {
+    if (jumpingToLatest.current || pendingSendLatest.current) {
       setShowJumpToLatest(false);
     } else {
       const bottom =
@@ -1797,6 +1799,20 @@ function ThreadMessages({
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retry DOM lookup after history or branch visibility changes.
   useLayoutEffect(() => {
     if (!sent) return;
+    if (pendingSendLatest.current) {
+      if (snapshot.status === "error") {
+        pendingSendLatest.current = false;
+        setSent(undefined);
+        return;
+      }
+      if (detached || snapshot.status !== "ready") return;
+      pendingSendLatest.current = false;
+      follow.current = true;
+      const element = scroller.current;
+      if (element) element.scrollTop = element.scrollHeight;
+      setShowJumpToLatest(false);
+      setNewMessageCount(0);
+    }
     const row = [
       ...(scroller.current?.querySelectorAll<HTMLElement>(
         "[data-message-id]",
@@ -1807,7 +1823,14 @@ function ThreadMessages({
       captureResizePosition();
       setSent(undefined);
     }
-  }, [sent, snapshot.replies, expanded, captureResizePosition]);
+  }, [
+    sent,
+    detached,
+    snapshot.status,
+    snapshot.replies,
+    expanded,
+    captureResizePosition,
+  ]);
   // Parent commits already position history, exact targets and own sends. Save
   // their result; only child-only reflow and viewport resizing need correction.
   useLayoutEffect(() => {
@@ -1859,6 +1882,7 @@ function ThreadMessages({
     positioned.current = true;
     follow.current = true;
     jumpingToLatest.current = true;
+    pendingSendLatest.current = false;
     element.focus({ preventScroll: true });
     setShowJumpToLatest(false);
     setNewMessageCount(0);
@@ -1875,6 +1899,7 @@ function ThreadMessages({
   };
   const keepReadingPosition = () => {
     jumpingToLatest.current = false;
+    pendingSendLatest.current = false;
     remounted.current = undefined;
     if (jumpTimer.current !== undefined) {
       clearTimeout(jumpTimer.current);
@@ -2160,7 +2185,11 @@ function ThreadMessages({
       );
     });
   }
-  const selectedParent = snapshot.replies.find((row) => row.id === replyParent);
+  const selectedParent =
+    snapshot.replies.find((row) => row.id === replyParent) ??
+    (snapshot.pinnedTarget?.id === replyParent
+      ? snapshot.pinnedTarget
+      : undefined);
   // The banner's one line about its target. `plainText` flattens CommonMark,
   // replaces control characters and cuts the result at 200 characters; GFM
   // that the row renders (strikethrough, tables, task-list boxes) still
@@ -2324,7 +2353,7 @@ function ThreadMessages({
           const bottom =
             element.scrollHeight - element.clientHeight - element.scrollTop <
             80;
-          if (jumpingToLatest.current) return;
+          if (jumpingToLatest.current || pendingSendLatest.current) return;
           captureResizePosition();
           if (element.scrollTop !== lineTop.current) {
             follow.current = bottom && !detached;
@@ -2615,8 +2644,13 @@ function ThreadMessages({
             follow.current = !selectedParent;
             // Never count this composer's own send as a new arrival.
             previousReplies.current.ids.add(id);
-            // The reply lands at the newest end; return the window there.
-            if (detached && !selectedParent) void view.latest();
+            const returnToLatest = detached && !selectedParent;
+            pendingSendLatest.current = returnToLatest;
+            if (returnToLatest) {
+              setShowJumpToLatest(false);
+              setNewMessageCount(0);
+              void view.latest();
+            }
             if (selectedParent)
               setExpanded(
                 (current) =>

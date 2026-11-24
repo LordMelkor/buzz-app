@@ -56,6 +56,7 @@ export type ThreadSnapshot = Readonly<{
   /** Exact navigation target, folded independently of bounded thread traversal. */
   target?: ChannelMessage | undefined;
   targetStatus?: "loading" | "ready" | "unavailable" | "error" | undefined;
+  pinnedTarget?: ChannelMessage | undefined;
   /** Rows include a closed view's resumed rows, until this view's first
    * refresh settles either way. */
   resumed?: true | undefined;
@@ -322,7 +323,7 @@ export function createThreadView({
     for (const event of remote)
       if (isReply(event) && !gone(event)) hold(event.id);
     if (exact) hold(messageId);
-    hold(pinned);
+    if (pinned && byId.has(pinned)) kept.add(pinned);
     const dropped = new Set(
       remote
         .filter((event) => isReply(event) && !kept.has(event.id))
@@ -460,7 +461,7 @@ export function createThreadView({
     );
     const ids = new Set([
       ...(selectedId ? [selectedId] : []),
-      ...[...remote, ...staged, ...selectionStaged, ...rows].map(
+      ...[...remote, ...staged, ...selectionStaged, ...arrivals, ...rows].map(
         (event) => event.id,
       ),
     ]);
@@ -581,7 +582,11 @@ export function createThreadView({
       return next;
     };
     const sourceRows = shareMessageRows(
-      snapshot.root ? [snapshot.root, ...snapshot.replies] : snapshot.replies,
+      [
+        ...(snapshot.root ? [snapshot.root] : []),
+        ...snapshot.replies,
+        ...(snapshot.pinnedTarget ? [snapshot.pinnedTarget] : []),
+      ],
       foldMessages(
         channelId,
         relayAuthor,
@@ -632,13 +637,57 @@ export function createThreadView({
     const readable = rows.filter(
       (row) => !exact || row.id !== messageId || targetStatus === "ready",
     );
-    const nextReplies = readable
-      .filter(
-        (row) =>
-          row.id !== displayedRoot &&
-          (!rootUnavailable || row.id === messageId),
+    const pinnedTarget = pinned
+      ? readable.find((row) => row.id === pinned)
+      : undefined;
+    const byId = new Map(remote.map((event) => [event.id, event]));
+    const inWindow = new Set<string>();
+    const holdWindow = (id: string | undefined) => {
+      for (
+        let event = id ? byId.get(id) : undefined;
+        event && !inWindow.has(event.id);
+        event = byId.get(threadReference(event)?.parentId ?? "")
       )
-      .sort(compareMessages);
+        inWindow.add(event.id);
+    };
+    for (const event of remote)
+      if (isReply(event) && !outside(event)) holdWindow(event.id);
+    if (exact) holdWindow(messageId);
+    const windowReplies = readable.filter(
+      (row) =>
+        row.id !== displayedRoot &&
+        (!rootUnavailable || row.id === messageId) &&
+        (!byId.has(row.id) || inWindow.has(row.id)),
+    );
+    const cutSecond =
+      mode === "older" && lo > 0 ? starts[lo]?.created_at : undefined;
+    const cutKeep = new Set<string>();
+    if (
+      cutSecond !== undefined &&
+      windowReplies.some((row) => row.createdAt !== cutSecond)
+    ) {
+      const rowById = new Map(windowReplies.map((row) => [row.id, row]));
+      const keepRow = (id: string | undefined) => {
+        for (
+          let row = id ? rowById.get(id) : undefined;
+          row && !cutKeep.has(row.id);
+          row = row.replyParentId ? rowById.get(row.replyParentId) : undefined
+        )
+          cutKeep.add(row.id);
+      };
+      for (const row of windowReplies)
+        if (
+          row.createdAt !== cutSecond ||
+          (exact && row.id === messageId) ||
+          deliveries.has(row.id)
+        )
+          keepRow(row.id);
+    }
+    const nextReplies = (
+      cutKeep.size
+        ? windowReplies.filter((row) => cutKeep.has(row.id))
+        : windowReplies
+    ).sort(compareMessages);
     for (const row of nextReplies)
       clock.observe(channelId, row.createdAtMs ?? row.createdAt * 1000);
     let nextRoot = !rootUnavailable
@@ -665,6 +714,7 @@ export function createThreadView({
       ...patch,
       root: nextRoot,
       replies,
+      pinnedTarget,
       resumed: shown ? true : undefined,
       ...(exact ? { target, targetStatus } : {}),
     });
@@ -683,8 +733,9 @@ export function createThreadView({
     const incoming = found.filter(
       (event) => !isReply(event) || !outside(event),
     );
-    if (controller)
-      arrivals.push(...found.filter((event) => !incoming.includes(event)));
+    const heldOff = found.filter((event) => isReply(event) && outside(event));
+    for (const event of heldOff) evicted.add(event.id);
+    if (controller && heldOff.length) arrivals.push(...heldOff);
     if (!incoming.length) return;
     setRemote(union(remote, incoming));
     // A read in progress fits the window when it lands.
@@ -1524,10 +1575,10 @@ export function createThreadView({
       loadBack: () => page("back"),
       latest: () => (mode === "older" ? page("latest") : Promise.resolve()),
       pin(id: string | undefined) {
+        if (pinned === id) return;
         pinned = id;
-        const before = remote;
         evict();
-        if (remote !== before) publish();
+        publish();
       },
       dispose() {
         listeners.clear();

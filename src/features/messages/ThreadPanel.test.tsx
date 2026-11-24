@@ -3659,3 +3659,102 @@ it("reveals a completed step selected by an exact thread link", async () => {
     screen.getByRole("button", { name: /Collapse activity history/ }),
   ).toBeVisible();
 });
+
+it("keeps the reply composer enabled from pinnedTarget after the reply target leaves replies", () => {
+  const h = messagesHarness();
+  const target = {
+    ...row,
+    id: "1".repeat(64),
+    content: "Pinned reply target",
+    threadRootId: row.id,
+    replyParentId: row.id,
+    createdAt: 10,
+  };
+  const older = {
+    ...row,
+    id: "2".repeat(64),
+    content: "Older window reply",
+    threadRootId: row.id,
+    replyParentId: row.id,
+    createdAt: 2,
+  };
+  h.snapshot.direction = "older";
+  h.snapshot.replies = [target];
+  h.render();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Reply to Pinned reply target" }),
+  );
+  expect(h.view.pin).toHaveBeenCalledWith(target.id);
+
+  h.snapshot.canLoadBack = true;
+  h.snapshot.replies = [older];
+  h.snapshot.pinnedTarget = target;
+  h.render();
+  expect(screen.queryByText("Pinned reply target")).toBeNull();
+  expect(screen.getByRole("region", { name: "Composer" })).toHaveAttribute(
+    "data-disabled",
+    "false",
+  );
+
+  h.snapshot.pinnedTarget = undefined;
+  h.render();
+  expect(screen.getByRole("region", { name: "Composer" })).toHaveAttribute(
+    "data-disabled",
+    "true",
+  );
+});
+
+it("keeps detached scrolling off follow and scrolls to bottom only after latest commits a root send", () => {
+  const h = messagesHarness();
+  const middle = {
+    ...row,
+    id: "3".repeat(64),
+    content: "Middle window reply",
+    threadRootId: row.id,
+    replyParentId: row.id,
+    createdAt: 10,
+  };
+  const own = {
+    ...row,
+    id: "own-reply",
+    content: "Own detached send",
+    threadRootId: row.id,
+    replyParentId: row.id,
+    createdAt: 20,
+  };
+  h.snapshot.direction = "older";
+  h.snapshot.canLoadMore = true;
+  h.snapshot.canLoadBack = true;
+  h.snapshot.replies = [middle];
+  const section = h.render();
+
+  h.scroll(3400);
+  expect(
+    within(section).getByRole("button", { name: "Jump to latest" }),
+  ).toBeVisible();
+  h.resize(4400);
+  h.snapshot.replies = [
+    middle,
+    { ...middle, id: "4".repeat(64), content: "Another reply", createdAt: 11 },
+  ];
+  h.render();
+  expect(h.element.scrollTop).toBe(3400);
+
+  fireEvent.click(screen.getByRole("button", { name: "Send fixture reply" }));
+  expect(h.view.latest).toHaveBeenCalledOnce();
+  h.snapshot.status = "loading";
+  h.snapshot.replies = [...h.snapshot.replies, own];
+  h.render();
+  h.scroll(0);
+
+  h.resize(2400);
+  h.snapshot.canLoadBack = false;
+  h.snapshot.status = "ready";
+  h.snapshot.replies = [own];
+  h.render();
+  expect(h.element.scrollTop).toBe(1800);
+  expect(
+    within(section).queryByRole("button", { name: "Jump to latest" }),
+  ).toBeNull();
+  expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+});

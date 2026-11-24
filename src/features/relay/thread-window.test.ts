@@ -2271,12 +2271,15 @@ it("keeps a reply being answered loaded through eviction until the target clears
   const h = await setup(pager(rows));
   await h.view.refresh();
   h.view.pin(at(615).id);
+  expect(h.view.snapshot().pinnedTarget?.id).toBe(at(615).id);
   for (let page = 1; page <= 10; page++) await h.view.loadMore();
-  expect(ids(h).has(at(615).id)).toBe(true);
+  expect(h.view.snapshot().pinnedTarget?.id).toBe(at(615).id);
+  expect(ids(h).has(at(615).id)).toBe(false);
   expect(ids(h).has(at(618).id)).toBe(false);
   h.view.pin(undefined);
+  expect(h.view.snapshot().pinnedTarget).toBeUndefined();
   expect(ids(h).has(at(615).id)).toBe(false);
-}, 30_000);
+});
 
 it("withdraws a pinned reply once its deletion arrives", async () => {
   const rows = Array.from({ length: 620 }, (_, n) => at(n + 1));
@@ -2284,6 +2287,7 @@ it("withdraws a pinned reply once its deletion arrives", async () => {
   await h.view.refresh();
   h.view.pin(at(615).id);
   for (let page = 1; page <= 10; page++) await h.view.loadMore();
+  expect(h.view.snapshot().pinnedTarget?.id).toBe(at(615).id);
   h.traffic.receive([
     signed(author, {
       kind: 5,
@@ -2292,8 +2296,67 @@ it("withdraws a pinned reply once its deletion arrives", async () => {
       tags: [["e", at(615).id]],
     }),
   ]);
+  expect(h.view.snapshot().pinnedTarget).toBeUndefined();
   expect(ids(h).has(at(615).id)).toBe(false);
-}, 30_000);
+});
+
+it("retains deletions for replies held outside a detached window", async () => {
+  const rows = Array.from({ length: 620 }, (_, n) => at(n + 1));
+  const serve = pager(rows);
+  let hold: Promise<void> | undefined;
+  let started!: () => void;
+  const latestStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const h = await setup(async (f) => {
+    const page = serve(f);
+    if (hold && f.thread_window && f.until === undefined) {
+      started();
+      await hold;
+    }
+    return page;
+  });
+  await h.view.refresh();
+  for (let page = 1; page <= 10; page++) await h.view.loadMore();
+  let release!: () => void;
+  hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const jump = h.view.latest();
+  await latestStarted;
+  const late = at(700);
+  rows.push(late);
+  h.traffic.receive([late]);
+  h.traffic.receive([
+    signed(author, {
+      kind: 5,
+      content: "",
+      created_at: 8000,
+      tags: [["e", late.id]],
+    }),
+  ]);
+  hold = undefined;
+  release();
+  await jump;
+  expect(ids(h).has(late.id)).toBe(false);
+  await h.view.refresh();
+  expect(ids(h).has(late.id)).toBe(false);
+
+  for (let page = 1; page <= 10; page++) await h.view.loadMore();
+  const idleLate = at(701);
+  rows.push(idleLate);
+  h.traffic.receive([idleLate]);
+  h.traffic.receive([
+    signed(author, {
+      kind: 5,
+      content: "",
+      created_at: 8001,
+      tags: [["e", idleLate.id]],
+    }),
+  ]);
+  await h.view.latest();
+  expect(ids(h).has(idleLate.id)).toBe(false);
+});
 
 it("fills an evicted page that a backdated reply grew, leaving no gap before the window", async () => {
   const rows = Array.from({ length: 620 }, (_, n) => at(n + 1));
@@ -2317,18 +2380,41 @@ it("fills an evicted page that a backdated reply grew, leaving no gap before the
 });
 
 it("keeps every reply of a busy second when a page boundary falls inside it", async () => {
-  // Three replies a second: the relay orders a second's replies by id
-  // ascending, and the window's boundaries must agree.
-  const rows = Array.from({ length: 620 }, (_, n) => reply(n));
+  const rows = Array.from({ length: 620 }, (_, n) =>
+    message(author, channel, `reply ${n}`, 10 + Math.floor(n / 3), [
+      ["e", root.id, "", "reply"],
+      ["ms", String((2 - (n % 3)) * 300)],
+    ]),
+  );
   const newest = [...rows].sort(
     (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+  );
+  const boundary = newest[9];
+  assert(boundary);
+  const cutSecond = boundary.created_at;
+  const expectedDetached = new Set(
+    newest
+      .slice(10, 510)
+      .filter((row) => row.created_at !== cutSecond)
+      .map((row) => row.id),
   );
   const h = await setup(pager(rows));
   await h.view.refresh();
   for (let page = 1; page <= 10; page++) await h.view.loadMore();
-  expect(ids(h)).toEqual(new Set(newest.slice(10, 510).map((row) => row.id)));
+  expect(ids(h)).toEqual(expectedDetached);
+  const bottomBeforeBack = h.view.snapshot().replies.at(-1)?.id;
   await h.view.refresh();
-  expect(ids(h)).toEqual(new Set(newest.slice(10, 510).map((row) => row.id)));
+  expect(ids(h)).toEqual(expectedDetached);
   await h.view.loadBack();
   expect(ids(h)).toEqual(new Set(newest.slice(0, 460).map((row) => row.id)));
+  const afterBack = h.view.snapshot().replies;
+  const boundaryIndex = afterBack.findIndex(
+    (row) => row.id === bottomBeforeBack,
+  );
+  expect(boundaryIndex).toBeGreaterThan(-1);
+  for (const row of newest.filter((item) => item.created_at === cutSecond)) {
+    expect(afterBack.findIndex((item) => item.id === row.id)).toBeGreaterThan(
+      boundaryIndex,
+    );
+  }
 });
