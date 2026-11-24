@@ -11,12 +11,15 @@ const MAX_ROUND_TRIP_MS = 1500;
 const SPEED_HALF_LIFE_MS = 1000;
 // Scroll events this far apart start a new movement rather than measure one.
 const MAX_SAMPLE_GAP_MS = 250;
+const MIN_SPEED_WINDOW_MS = 80;
 
 /** An upward reader's pace: `speed` in px/ms, and older pages' smoothed round
  * trip from request to rendered rows. */
 export type HistoryPace = {
   top: number;
   at: number;
+  windowTop: number;
+  windowAt: number;
   speed: number;
   roundTripMs: number;
 };
@@ -24,6 +27,8 @@ export type HistoryPace = {
 export const historyPace = (): HistoryPace => ({
   top: 0,
   at: 0,
+  windowTop: 0,
+  windowAt: 0,
   speed: 0,
   roundTripMs: FIRST_ROUND_TRIP_MS,
 });
@@ -34,13 +39,28 @@ const speedAt = (pace: HistoryPace, at: number) =>
 /** Record a scroll offset at time `at` (ms). */
 export function observePace(pace: HistoryPace, top: number, at: number) {
   const elapsed = at - pace.at;
-  const upward =
-    pace.at && elapsed > 0 && elapsed <= MAX_SAMPLE_GAP_MS
-      ? (pace.top - top) / elapsed
-      : 0;
+  if (
+    !pace.at ||
+    elapsed <= 0 ||
+    elapsed > MAX_SAMPLE_GAP_MS ||
+    top > pace.top
+  ) {
+    pace.speed = speedAt(pace, at);
+    pace.top = top;
+    pace.at = at;
+    pace.windowTop = top;
+    pace.windowAt = at;
+    return;
+  }
+  const span = at - pace.windowAt;
+  const upward = (pace.windowTop - top) / Math.max(span, MIN_SPEED_WINDOW_MS);
   pace.speed = Math.max(upward, speedAt(pace, at));
   pace.top = top;
   pace.at = at;
+  if (span >= MIN_SPEED_WINDOW_MS) {
+    pace.windowTop = top;
+    pace.windowAt = at;
+  }
 }
 
 /** Record a page's round trip; one slow or fast page moves the estimate halfway. */

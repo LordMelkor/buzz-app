@@ -68,4 +68,28 @@ describe("history prefetch", () => {
       rows: 200,
     });
   });
+
+  it("ignores frame-stall catch-up bursts during steady upward scrolling", () => {
+    const pace = historyPace();
+    let top = 7345;
+    let at = 2000;
+    observePace(pace, top, at);
+    for (const [elapsed, delta] of [
+      [16, 26],
+      [16, 26],
+      [38, 25],
+      [5, 28],
+      [7, 41],
+      [16, 26],
+      [38, 28],
+      [4, 28],
+      [7, 39],
+      [16, 26],
+    ] as const) {
+      at += elapsed;
+      top -= delta;
+      observePace(pace, top, at);
+    }
+    expect(historyAhead(pace, at, top, 740, 404).distance).toBe(3000);
+  });
 });
