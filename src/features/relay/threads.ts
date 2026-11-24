@@ -323,7 +323,7 @@ export function createThreadView({
     for (const event of remote)
       if (isReply(event) && !gone(event)) hold(event.id);
     if (exact) hold(messageId);
-    if (pinned && byId.has(pinned)) kept.add(pinned);
+    hold(pinned);
     const dropped = new Set(
       remote
         .filter((event) => isReply(event) && !kept.has(event.id))

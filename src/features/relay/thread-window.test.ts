@@ -2323,6 +2323,48 @@ it("keeps a reply being answered loaded through eviction until the target clears
   h.view.pin(undefined);
   expect(h.view.snapshot().pinnedTarget).toBeUndefined();
   expect(ids(h).has(at(615).id)).toBe(false);
+
+  const anchor = message(author, channel, "branch anchor", 5, [
+    ["e", root.id, "", "reply"],
+  ]);
+  const mid1 = message(author, channel, "branch mid 1", 6210, [
+    ["e", root.id, "", "root"],
+    ["e", anchor.id, "", "reply"],
+  ]);
+  const mid2 = message(author, channel, "branch mid 2", 6220, [
+    ["e", root.id, "", "root"],
+    ["e", mid1.id, "", "reply"],
+  ]);
+  const deepPin = message(author, channel, "branch deep pin", 6230, [
+    ["e", root.id, "", "root"],
+    ["e", mid2.id, "", "reply"],
+  ]);
+  const branchRows = [anchor, ...rows, mid1, mid2, deepPin];
+  const serveBranch = pager(branchRows);
+  const branchH = await setup((filter) => {
+    if (filter.ids)
+      return [root, ...branchRows].filter((event) =>
+        filter.ids?.includes(event.id),
+      );
+    if (!filter.thread_window && filter["#e"]) return [];
+    return serveBranch(filter);
+  });
+  const branch = branchH.session.thread(channel, anchor.id, {
+    exact: true,
+    subthread: true,
+  });
+  await branch.refresh();
+  branch.pin(deepPin.id);
+  expect(branch.snapshot().pinnedTarget?.id).toBe(deepPin.id);
+  for (let page = 1; page <= 10; page++) await branch.loadMore();
+  expect(branch.snapshot().pinnedTarget?.id).toBe(deepPin.id);
+  const branchIds = new Set(branch.snapshot().replies.map((row) => row.id));
+  expect(branchIds.has(deepPin.id)).toBe(false);
+  expect(branchIds.has(mid2.id)).toBe(false);
+  expect(branchIds.has(mid1.id)).toBe(false);
+  branch.pin(undefined);
+  expect(branch.snapshot().pinnedTarget).toBeUndefined();
+  branch.dispose();
 });
 
 it("withdraws a pinned reply once its deletion arrives", async () => {
