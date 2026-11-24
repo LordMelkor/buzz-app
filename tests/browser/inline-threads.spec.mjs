@@ -201,6 +201,29 @@ test.describe("Inline", () => {
     await expect(sheet(page)).toHaveCount(0);
   });
 
+  test("the conversation's jump control hides under the sheet, not the sheet's own", async ({
+    page,
+    app,
+  }) => {
+    await open(page, app);
+    const display = (locator) =>
+      locator.evaluate(
+        (button) => getComputedStyle(button.closest("[data-visible]")).display,
+      );
+    const conversationJump = page.locator(
+      "[data-channel-timeline] button[data-jump-to-latest]",
+    );
+    await expect.poll(() => display(conversationJump)).not.toBe("none");
+    await clickRow(page, viewThread(page, roots(app)[0]));
+    await expect(sheet(page)).toBeVisible();
+    await expect.poll(() => display(conversationJump)).toBe("none");
+    const sheetJump = sheet(page).locator("button[data-jump-to-latest]");
+    await expect.poll(() => display(sheetJump)).not.toBe("none");
+    await page.keyboard.press("Escape");
+    await expect(sheet(page)).toHaveCount(0);
+    await expect.poll(() => display(conversationJump)).not.toBe("none");
+  });
+
   test("details nest over the inline thread: Back closes them first", async ({
     page,
     app,

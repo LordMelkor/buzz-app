@@ -728,8 +728,9 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   min-width: 0;
 }
 /* Soften the scroll edge without reserving a blank strip above the composer. */
-:is(.feed[data-jump-visible], .threadHistoryFrame:has(> [data-jump-visible]))
-+ .composerContext::before {
+/* Attributes, not :has(): a :has() here restyles the whole conversation, under
+   its size container, whenever scrolling changes what it might match. */
+:is(.feed, .threadHistoryFrame)[data-jump-visible] + .composerContext::before {
   content: "";
   position: absolute;
   inset-inline: 0;
@@ -4522,8 +4523,9 @@ html[data-keyboard-navigation]
 .composer[data-composer-covered] {
   visibility: hidden;
 }
-/* Only the reader under a sheet hides its jump control, not the sheet's own. */
-:has(> .composerDock > .detailsSheetLayer) > :not(.composerDock) .jumpToLatest {
+/* Only the reader under a sheet hides its jump control, not the sheet's own.
+   ComposerSheet marks the pane that holds the sheet's dock. */
+[data-holds-sheet] > :not(.composerDock) .jumpToLatest {
   display: none;
 }
 

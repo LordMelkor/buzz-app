@@ -480,6 +480,7 @@ export function ComposerSheet({
   const [surface, setSurface] = useState<HTMLDivElement | null>(null);
   const style = useDockGeometry(dock, mounted);
   useCoveredComposer(composer, mounted, containsComposer, readerOnly);
+  useHeldPane(dock, mounted);
   useComposerHandoff(surface, composer, open, containsComposer);
   const popup = useRef<HTMLDivElement | null>(null);
   const backdrop = useRef<HTMLDivElement | null>(null);
@@ -574,6 +575,25 @@ export function ComposerSheet({
       </BaseDialog.Portal>
     </SheetRoot>
   );
+}
+
+// Sheets drawn in each pane's dock: one may still be closing as the next opens.
+const heldPanes = new WeakMap<HTMLElement, number>();
+/** Marks the pane `dock` is in (`data-holds-sheet`) while a sheet is drawn in
+ * the dock, so the reader under the sheet hides its jump control. */
+function useHeldPane(dock: HTMLElement, mounted: boolean) {
+  useLayoutEffect(() => {
+    const pane = dock.parentElement;
+    if (!mounted || !pane) return;
+    heldPanes.set(pane, (heldPanes.get(pane) ?? 0) + 1);
+    pane.dataset.holdsSheet = "";
+    return () => {
+      const held = (heldPanes.get(pane) ?? 1) - 1;
+      if (held) return void heldPanes.set(pane, held);
+      heldPanes.delete(pane);
+      delete pane.dataset.holdsSheet;
+    };
+  }, [dock, mounted]);
 }
 
 /** The view's own composer stays usable under a details reader; a sheet's

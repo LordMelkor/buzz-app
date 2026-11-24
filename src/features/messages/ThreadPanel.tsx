@@ -2341,7 +2341,11 @@ function ThreadMessages({
         }
       />
       {/* The reader's scrollport, with its edge material for a sheet. */}
-      <div className={styles.threadHistoryFrame} data-thread-history-frame="">
+      <div
+        className={styles.threadHistoryFrame}
+        data-thread-history-frame=""
+        data-jump-visible={showJumpToLatest || undefined}
+      >
         <section
           ref={scroller}
           data-message-scroller
