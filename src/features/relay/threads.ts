@@ -1161,8 +1161,11 @@ export function createThreadView({
         limit: PAGE_SIZE,
         include_aux: true,
       };
+      const speculativeBack = kind === "back";
+      const pageReader = speculativeBack ? targetReader : reader;
+      const rawBackPages: (readonly RelayEvent[])[] = [];
       const windowRead = (signal: AbortSignal) =>
-        reader.read(
+        pageReader.read(
           [
             {
               ...filter,
@@ -1183,7 +1186,7 @@ export function createThreadView({
         // verified root first so channel-less root aux has visibility evidence:
         // the first window's rows are read only after it.
         // Revalidate once per run, not once per page of a retained-range repair.
-        const rootRead = reader.read([rootFilter], {
+        const rootRead = pageReader.read([rootFilter], {
           signal: owned.signal,
           ...yielding,
         });
@@ -1195,7 +1198,7 @@ export function createThreadView({
         }
         const rootResponse = await rootRead;
         if (!active()) return;
-        root = admit(rootResponse);
+        root = speculativeBack ? visible(rootResponse) : admit(rootResponse);
         if (!active()) return;
         if (
           !root.some(
@@ -1211,7 +1214,7 @@ export function createThreadView({
           publish({ canLoadMore: false, canLoadBack: false });
           throw new Error("The original thread message is unavailable.");
         }
-        setRemote(union(remote, related(root)));
+        if (!speculativeBack) setRemote(union(remote, related(root)));
       }
       // A strict refresh at the window's newest end re-reads from it. Live
       // replay covers minutes, not a long disconnect, so keep paging until a
@@ -1263,12 +1266,12 @@ export function createThreadView({
             mode = "legacy";
             nextCursor = undefined;
             nextPages = 0;
-            response = await reader.read([rootFilter, filter], {
+            response = await pageReader.read([rootFilter, filter], {
               signal: owned.signal,
             });
           }
         } else {
-          response = await reader.read(
+          response = await pageReader.read(
             [
               rootFilter,
               {
@@ -1285,7 +1288,7 @@ export function createThreadView({
           );
         }
         if (!active()) return;
-        const events = admit(response);
+        const events = speculativeBack ? visible(response) : admit(response);
         if (!active()) return;
         if (
           !events.some(
@@ -1319,7 +1322,8 @@ export function createThreadView({
           ? (bounds.cursor ?? undefined)
           : (replies.at(-1) ?? nextCursor);
         nextPages++;
-        fetched = union(fetched, related(events));
+        if (speculativeBack) rawBackPages.push(response);
+        else fetched = union(fetched, related(events));
         // Only strict bounds prove exhaustion. Legacy short pages may be filtered
         // after LIMIT, so an empty continuation means merely no more returned.
         more = bounds ? bounds.hasMore : replies.length > 0;
@@ -1345,6 +1349,25 @@ export function createThreadView({
           ...paging(),
         });
         return;
+      }
+      if (speculativeBack && rawBackPages.length) {
+        const admitted = acceptTarget(union(...rawBackPages));
+        if (!active()) return;
+        if (
+          !admitted.some(
+            (event) =>
+              event.id === rootId &&
+              isThreadContent(event) &&
+              inChannel(event, channelId) &&
+              !threadReference(event),
+          )
+        ) {
+          rootUnavailable = true;
+          rewind();
+          publish({ canLoadMore: false, canLoadBack: false });
+          throw new Error("The original thread message is unavailable.");
+        }
+        fetched = related(admitted);
       }
       // A bounded response cannot retract observed evidence. Retain known edits,
       // tombstones and live rows even when a later finite read omits them. Replies

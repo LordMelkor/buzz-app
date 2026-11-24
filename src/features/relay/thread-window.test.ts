@@ -2153,6 +2153,50 @@ it("keeps the window when reading back never reaches its boundary, leaving Jump 
   expect(ids(h).has(at(1120).id)).toBe(true);
 }, 30_000);
 
+it("keeps rejected loadBack pages out of other session observers and admits accepted pages after overlap", async () => {
+  const rows = Array.from({ length: 620 }, (_, n) => at(n + 1));
+  const h = await setup(pager(rows));
+  await h.view.refresh();
+  for (let page = 1; page <= 10; page++) await h.view.loadMore();
+  const resident = ids(h);
+  const burst = Array.from({ length: 550 }, (_, n) => at(621 + n));
+  rows.push(...burst);
+  const burstIds = new Set(burst.map((row) => row.id));
+  const seen = new Set<string>();
+  const observer = h.session.observe([
+    { "#h": [channel], kinds: [9], limit: 2000 },
+  ]);
+  const record = () => {
+    for (const event of observer.snapshot().events) seen.add(event.id);
+  };
+  const stop = observer.subscribe(record);
+  try {
+    await h.view.loadBack();
+    record();
+    expect(h.view.snapshot()).toMatchObject({
+      status: "ready",
+      canLoadBack: true,
+      error: undefined,
+    });
+    expect(ids(h)).toEqual(resident);
+    expect([...seen].filter((id) => burstIds.has(id))).toEqual([]);
+
+    rows.length = 620;
+    const accepted = Array.from({ length: 20 }, (_, n) => at(1200 + n));
+    rows.push(...accepted);
+    await h.view.loadBack();
+    record();
+    expect(h.view.snapshot()).toMatchObject({
+      status: "ready",
+      canLoadBack: false,
+    });
+    for (const row of accepted) expect(seen.has(row.id)).toBe(true);
+  } finally {
+    stop();
+    observer.dispose();
+  }
+});
+
 it("divides the only resident page when live replies outgrow the budget, then reads its evicted half again", async () => {
   const rows = Array.from({ length: 12 }, (_, n) => at(n + 1));
   const h = await setup(pager(rows));
