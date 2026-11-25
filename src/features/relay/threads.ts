@@ -1164,6 +1164,7 @@ export function createThreadView({
       const speculativeBack = kind === "back";
       const pageReader = speculativeBack ? targetReader : reader;
       const rawBackPages: (readonly RelayEvent[])[] = [];
+      const backStarts: (ThreadCursor | undefined)[] = [];
       const windowRead = (signal: AbortSignal) =>
         pageReader.read(
           [
@@ -1329,6 +1330,13 @@ export function createThreadView({
         more = bounds ? bounds.hasMore : replies.length > 0;
         // A page read again keeps the window's recorded boundary.
         if (kind !== "back") starts[nextPages] = nextCursor;
+        else if (
+          boundary &&
+          more &&
+          nextCursor &&
+          order(nextCursor, boundary) < 0
+        )
+          backStarts.push(nextCursor);
         // Each older page commits as it lands, so a later failure retries
         // from the next page rather than the first.
         if (kind === "more") {
@@ -1342,6 +1350,11 @@ export function createThreadView({
       // Replies arrived above the window since it left them: the read cap ended
       // short of its boundary, and joining the two ranges would leave a gap.
       if (boundary && more && nextCursor && order(nextCursor, boundary) < 0) {
+        if (backStarts.length) {
+          starts.splice(lo, 0, ...backStarts);
+          lo += backStarts.length;
+          pages += backStarts.length;
+        }
         publish({
           status: "ready",
           error: undefined,
@@ -1382,8 +1395,13 @@ export function createThreadView({
         ),
       );
       rootUnavailable = false;
-      if (kind === "back") lo = first;
-      else {
+      if (kind === "back") {
+        if (backStarts.length) {
+          starts.splice(lo, 0, ...backStarts);
+          pages += backStarts.length;
+        }
+        lo = first;
+      } else {
         if (kind === "latest") {
           lo = 0;
           filled = false;

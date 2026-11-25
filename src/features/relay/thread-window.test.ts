@@ -2184,7 +2184,7 @@ it("keeps rejected loadBack pages out of other session observers and admits acce
     rows.length = 620;
     const accepted = Array.from({ length: 20 }, (_, n) => at(1200 + n));
     rows.push(...accepted);
-    await h.view.loadBack();
+    while (h.view.snapshot().canLoadBack) await h.view.loadBack();
     record();
     expect(h.view.snapshot()).toMatchObject({
       status: "ready",
@@ -2195,6 +2195,47 @@ it("keeps rejected loadBack pages out of other session observers and admits acce
     stop();
     observer.dispose();
   }
+});
+
+it("resumes an unreached loadBack where the previous read stopped without repeating requests", async () => {
+  const rows = Array.from({ length: 620 }, (_, n) => at(n + 1));
+  const h = await setup(pager(rows));
+  await h.view.refresh();
+  for (let page = 1; page <= 10; page++) await h.view.loadMore();
+  const resident = ids(h);
+  rows.push(...Array.from({ length: 500 }, (_, n) => at(621 + n)));
+
+  const beforeFirst = h.requests.length;
+  await h.view.loadBack();
+  const firstWindows = h.requests
+    .slice(beforeFirst)
+    .flat()
+    .filter((filter) => filter.thread_window);
+  expect(firstWindows).toHaveLength(10);
+  expect(ids(h)).toEqual(resident);
+  const firstCursors = new Set(
+    firstWindows.map(
+      (filter) => `${filter.until ?? "head"}:${filter.before_id ?? ""}`,
+    ),
+  );
+
+  const beforeSecond = h.requests.length;
+  await h.view.loadBack();
+  const secondWindows = h.requests
+    .slice(beforeSecond)
+    .flat()
+    .filter((filter) => filter.thread_window);
+  expect(secondWindows).toHaveLength(1);
+  const secondKey = `${secondWindows[0]?.until ?? "head"}:${secondWindows[0]?.before_id ?? ""}`;
+  expect(firstCursors.has(secondKey)).toBe(false);
+  expect(h.view.snapshot()).toMatchObject({
+    status: "ready",
+    canLoadBack: true,
+  });
+  expect(ids(h).has(at(620).id)).toBe(true);
+  expect(ids(h).has(at(650).id)).toBe(true);
+  while (h.view.snapshot().canLoadBack) await h.view.loadBack();
+  expect(ids(h).has(at(1120).id)).toBe(true);
 });
 
 it("divides the only resident page when live replies outgrow the budget, then reads its evicted half again", async () => {
